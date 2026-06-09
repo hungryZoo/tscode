@@ -1738,6 +1738,19 @@ pub struct CompletionState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorHoverInfo {
+    pub symbol: String,
+    pub path: PathBuf,
+    pub line: usize,
+    pub col: usize,
+    pub definition_count: usize,
+    pub reference_count: usize,
+    pub definition: Option<EditorLocation>,
+    pub definition_detail: Option<String>,
+    pub definition_preview: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipboardAction {
     Copy,
     Cut,
@@ -1882,6 +1895,7 @@ pub struct App {
     pub show_ignored: bool,
     pub quick_panel: Option<QuickPanel>,
     pub completion_state: Option<CompletionState>,
+    pub editor_hover: Option<EditorHoverInfo>,
     pub quick_panel_height: usize,
     pub explorer_clipboard: Option<ExplorerClipboard>,
     pub editor_clipboard: Option<String>,
@@ -1941,6 +1955,7 @@ impl App {
             show_ignored: false,
             quick_panel: None,
             completion_state: None,
+            editor_hover: None,
             quick_panel_height: 0,
             explorer_clipboard: None,
             editor_clipboard: None,
@@ -2127,6 +2142,7 @@ impl App {
         self.hit_regions.last_mouse_y = mouse.row;
         let target = self.hit_regions.target_at(mouse.column, mouse.row);
         self.hover = target.clone();
+        self.update_editor_hover_for_target(&target);
 
         if self.terminal_selection.is_some()
             && matches!(
@@ -6255,6 +6271,50 @@ impl App {
             tab.scroll + self.hit_regions.last_mouse_y.saturating_sub(body.y) as usize;
         let line = tab.visible_line_at(visible_row)?;
         Some((line, col))
+    }
+
+    fn update_editor_hover_for_target(&mut self, target: &HoverTarget) {
+        self.editor_hover = if matches!(target, HoverTarget::Editor)
+            && self.prompt.is_none()
+            && self.quick_panel.is_none()
+        {
+            self.editor_hover_at_mouse()
+        } else {
+            None
+        };
+    }
+
+    fn editor_hover_at_mouse(&self) -> Option<EditorHoverInfo> {
+        let (line, col) = self.editor_mouse_position()?;
+        let tab = self.active_tab()?;
+        let source_line = tab.lines.get(line)?;
+        let (_, _, symbol) = identifier_range_at_char(source_line, col)?;
+        if is_control_symbol_name(&symbol) {
+            return None;
+        }
+
+        let definitions = self.definition_items(&symbol).ok()?;
+        let references = self.reference_items(&symbol).ok()?;
+        let first_definition = definitions.first();
+        let definition = first_definition.and_then(|item| {
+            Some(EditorLocation {
+                path: item.path.clone(),
+                line: item.line?,
+                col: item.col.unwrap_or(0),
+            })
+        });
+
+        Some(EditorHoverInfo {
+            symbol,
+            path: tab.path.clone(),
+            line,
+            col,
+            definition_count: definitions.len(),
+            reference_count: references.len(),
+            definition,
+            definition_detail: first_definition.map(|item| item.detail.clone()),
+            definition_preview: first_definition.and_then(|item| item.preview.clone()),
+        })
     }
 
     fn editor_mouse_fold_line(&self) -> Option<usize> {
@@ -12136,6 +12196,71 @@ src/lib.rs:3:1: note: trailing note
             app.message.as_deref(),
             Some("jumped to definition: make_client")
         );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_hover_reports_symbol_definition_and_references() {
+        let root = std::env::temp_dir().join(format!("tscode-test-hover-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn make_client() {}\n").unwrap();
+        fs::write(
+            src.join("main.rs"),
+            "fn main() {\n    make_client();\n    make_client_extra();\n}\n",
+        )
+        .unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let lib = canonical_root.join("src/lib.rs");
+        let main = canonical_root.join("src/main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&main);
+        app.hit_regions.editor_area = Some(Rect::new(0, 0, 80, 8));
+        app.hit_regions.editor_body = Some(Rect::new(0, 0, 80, 8));
+
+        let gutter = editor_gutter_width(app.active_tab().unwrap().lines.len()) as u16;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: gutter + 6,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        let hover = app.editor_hover.as_ref().expect("editor hover");
+        assert_eq!(hover.symbol, "make_client");
+        assert_eq!(hover.path, main);
+        assert_eq!(hover.line, 1);
+        assert_eq!(hover.definition_count, 1);
+        assert_eq!(hover.reference_count, 2);
+        assert_eq!(
+            hover.definition,
+            Some(EditorLocation {
+                path: lib,
+                line: 0,
+                col: 7,
+            })
+        );
+        assert!(
+            hover
+                .definition_preview
+                .as_deref()
+                .is_some_and(|preview| preview.contains("pub fn make_client"))
+        );
+
+        app.hit_regions.explorer_area = Some(Rect::new(0, 10, 20, 4));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 1,
+            row: 11,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        assert!(app.editor_hover.is_none());
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

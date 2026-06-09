@@ -63,6 +63,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_editor(frame, app, main[0]);
         draw_terminal(frame, app, main[1]);
     }
+    draw_editor_hover(frame, app, root_chunks[1]);
     draw_quick_panel(frame, app, root_chunks[1]);
     draw_status(frame, app, root_chunks[2]);
 }
@@ -169,11 +170,22 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         .as_ref()
         .map(|text| format!("  editor-clip:{} chars", text.chars().count()))
         .unwrap_or_default();
+    let hover_detail = app
+        .editor_hover
+        .as_ref()
+        .map(|hover| {
+            format!(
+                "  symbol:{} defs:{} refs:{}",
+                hover.symbol, hover.definition_count, hover.reference_count
+            )
+        })
+        .unwrap_or_default();
     let text = format!(
-        " {} tabs:{}  hover:{}{}{}{}{} ",
+        " {} tabs:{}  hover:{}{}{}{}{}{} ",
         active,
         app.tabs.len(),
         hover_name(&app.hover),
+        hover_detail,
         clipboard,
         editor_clipboard,
         message,
@@ -387,6 +399,98 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
 
     frame.render_widget(
         Paragraph::new(rendered).style(Style::default().fg(TEXT).bg(PANEL_BG)),
+        inner,
+    );
+}
+
+fn draw_editor_hover(frame: &mut Frame, app: &App, area: Rect) {
+    if app.quick_panel.is_some() || app.prompt.is_some() {
+        return;
+    }
+    let Some(hover) = &app.editor_hover else {
+        return;
+    };
+    if app.hit_regions.editor_body.is_none() || area.width < 8 || area.height < 4 {
+        return;
+    }
+
+    let definition = hover
+        .definition
+        .as_ref()
+        .map(|location| {
+            let path = location
+                .path
+                .strip_prefix(&app.root)
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| location.path.display().to_string());
+            format!("def {path}:{}:{}", location.line + 1, location.col + 1)
+        })
+        .unwrap_or_else(|| "def not found".to_owned());
+    let detail = hover
+        .definition_detail
+        .as_deref()
+        .map(|detail| truncate_width(detail, 72))
+        .unwrap_or_default();
+    let preview = hover
+        .definition_preview
+        .as_deref()
+        .map(|preview| truncate_width(preview, 72))
+        .unwrap_or_default();
+
+    let mut rows = vec![
+        format!(
+            "{}  defs:{} refs:{}",
+            hover.symbol, hover.definition_count, hover.reference_count
+        ),
+        if detail.is_empty() {
+            definition
+        } else {
+            format!("{definition}  {detail}")
+        },
+    ];
+    if !preview.is_empty() {
+        rows.push(preview);
+    }
+
+    let text_width = rows
+        .iter()
+        .map(|row| row.width())
+        .max()
+        .unwrap_or(24)
+        .clamp(24, 76);
+    let width = (text_width + 4).min(area.width as usize) as u16;
+    let height = (rows.len() + 2).min(area.height as usize) as u16;
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let mut x = app.hit_regions.last_mouse_x.saturating_add(1);
+    if x.saturating_add(width) > area.right() {
+        x = area.right().saturating_sub(width);
+    }
+    let mut y = app.hit_regions.last_mouse_y.saturating_add(1);
+    if y.saturating_add(height) > area.bottom() {
+        y = app.hit_regions.last_mouse_y.saturating_sub(height);
+    }
+    x = x.max(area.x);
+    y = y.max(area.y);
+
+    let popup = Rect::new(x, y, width, height);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Hover ")
+        .border_style(Style::default().fg(ACCENT));
+    let inner = block.inner(popup);
+    let inner_width = inner.width as usize;
+    let lines = rows
+        .into_iter()
+        .map(|row| Line::from(truncate_width(&row, inner_width)))
+        .collect::<Vec<_>>();
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block.style(Style::default().bg(PANEL_BG)), popup);
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(TEXT).bg(PANEL_BG)),
         inner,
     );
 }

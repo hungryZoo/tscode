@@ -260,6 +260,10 @@ The app shall detect when an open editor tab's backing file is modified or delet
 
 The editor shall detect foldable delimiter and indentation blocks in the active buffer. Clicking a fold marker in the editor gutter, pressing `Alt-[`, using the command palette, or using the editor context menu shall fold or unfold the block at that line. `Alt-]`, the command palette, and the editor context menu shall unfold all folded blocks. Folded blocks shall hide their interior lines from the rendered editor viewport, vertical scroll calculations, and editor mouse-coordinate mapping while preserving the underlying file contents, dirty state, undo/redo history, and line numbers. If the editor cursor moves into a folded block through search, navigation, or editing, the block containing the cursor shall unfold so the cursor remains visible.
 
+### R-236C Symbol Hover
+
+Moving the mouse over an identifier in the editor body shall compute a lightweight symbol hover without changing the editor cursor. The hover shall use the same visible workspace text-file provider as go-to-definition and find-references, include dirty open buffers from memory, ignore generated/hidden paths according to the current visibility settings, and display the hovered symbol, definition count, reference count, and first matching definition location/preview when available. Moving the mouse away from the editor body shall clear the symbol hover.
+
 ### R-237 Format Document
 
 `Shift-alt-f` or the command palette shall format the active editor buffer by piping its current text to a configured external formatter for the file type. Supported formatter integrations shall include `rustfmt` for Rust, `prettier` for JavaScript/TypeScript/JSON/CSS/HTML/Markdown/YAML, `gofmt` for Go, `black` for Python, `shfmt` for shell scripts, and `clang-format` for C-family files where those tools are installed. The command shall update the editor buffer as one undoable edit, mark the tab dirty when formatting changes text, preserve the on-disk file until save, and report a clear message when no formatter is configured.
