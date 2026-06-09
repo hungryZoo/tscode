@@ -10,7 +10,7 @@ The product starts with:
 tscode [path]
 ```
 
-If `path` is omitted, `tscode` opens the current working directory. The initial release focuses on browsing a real filesystem, opening files into tabs, reading code with syntax highlighting and line numbers, and running shell commands in an integrated terminal panel.
+If `path` is omitted, `tscode` opens the current working directory. The initial release focuses on browsing a real filesystem, opening and editing files in tabs, reading code with syntax highlighting and line numbers, and interacting with a real PTY-backed shell in the integrated terminal panel.
 
 ## 2. Goals
 
@@ -18,15 +18,15 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - Prefer mouse and wheel interactions while preserving keyboard fallbacks.
 - Work as a cross-platform binary distributed through GitHub Releases.
 - Be installable through a one-line `curl | sh` installer on Unix-like systems.
-- Keep the first release intentionally read-oriented and shell-capable rather than a full text editor.
+- Keep the first release lightweight while supporting essential editing, saving, file management, and shell workflows.
 
 ## 3. Non-Goals for the First Prerelease
 
-- Full text editing and persistence.
+- Advanced editor behavior such as multi-cursor editing and full VS Code command parity.
 - Language server protocol integration.
 - Debug adapter protocol integration.
 - Extension marketplace compatibility.
-- Embedded pseudo-terminal emulation with fully interactive alternate-screen apps.
+- Perfect terminal emulation for every alternate-screen application and terminal mouse protocol edge case.
 
 ## 4. Target Users
 
@@ -43,7 +43,9 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can scroll the tree, code view, and terminal output with the mouse wheel.
 - As a developer, I can see hover highlights for clickable rows, tabs, and panel controls.
 - As a developer, I can run shell commands from the bottom terminal panel and see real output.
-- As a keyboard user, I can navigate, open files, switch focus, scroll, and submit commands without a mouse.
+- As a developer, I can type into a real shell session, use `Ctrl-c`, and keep session state between commands.
+- As a developer, I can edit text, save files, create files/folders, rename, delete, and refresh the explorer.
+- As a keyboard user, I can navigate, open files, switch focus, edit, scroll, and submit shell input without a mouse.
 
 ## 6. Required Layout
 
@@ -67,11 +69,11 @@ Mouse input is first-class:
 
 Keyboard fallback:
 
-- `Tab` cycles focus
+- `Tab` cycles focus until terminal focus, where it is sent to the shell
 - arrow keys navigate focused panels
-- `Enter` opens files or submits terminal commands
+- `Enter` opens files, edits newlines, or submits shell input depending on focus
 - `Esc` clears transient mode or exits when appropriate
-- `q` / `Ctrl-c` exits
+- `q` exits outside terminal focus; `Ctrl-q` exits globally
 
 ## 8. Release Requirements
 
@@ -90,7 +92,7 @@ GitHub Actions should build and upload release artifacts automatically for tagge
 - `docs/PRD.md`, `docs/SRS.md`, and `docs/SDD.md` exist.
 - `cargo build` succeeds on macOS.
 - Running `tscode` on macOS shows explorer, editor, terminal, title/status bars, and hover/click/wheel interactions.
-- The integrated terminal runs real shell commands and captures output.
+- The integrated terminal runs a real PTY shell and forwards interactive input.
 - Cross-platform packaging workflow exists.
 - `install.sh` detects OS/architecture and installs the matching release binary.
 - A GitHub prerelease contains release notes, supported platforms, `install.sh`, and build artifacts.

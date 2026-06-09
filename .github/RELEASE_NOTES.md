@@ -5,8 +5,9 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 ## Highlights
 
 - Mouse-first file explorer with real filesystem reads, expand/collapse, file open, hover, and wheel scrolling.
-- Tabbed code viewer with line numbers, syntax highlighting, tab hover/click, and vertical scrolling.
-- Bottom integrated terminal panel that executes shell commands in the workspace directory and captures stdout/stderr.
+- Editable tabbed code buffers with line numbers, syntax highlighting, dirty markers, cursor movement, save, and search.
+- File explorer actions for refresh, new file, new folder, rename, and delete with confirmation.
+- Bottom integrated terminal panel backed by a real PTY shell with forwarded keyboard input, shell state, `Ctrl-C`, and terminal scrollback.
 - Keyboard fallback for focus cycling, navigation, scrolling, command entry, and exit.
 
 ## Install

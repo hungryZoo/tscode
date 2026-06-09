@@ -7,7 +7,8 @@
 - `ratatui` for layout and rendering
 - `crossterm` for terminal events, raw mode, alternate screen, and mouse capture
 - `syntect` for syntax highlighting
-- standard process APIs for command execution
+- `portable-pty` for a real cross-platform shell-backed pseudo terminal
+- `vt100` for terminal screen parsing and scrollback
 
 The application is a single event loop that updates an in-memory model and redraws the full screen after meaningful input.
 
@@ -18,7 +19,7 @@ src/
   app.rs        application state and actions
   fs_tree.rs    filesystem tree loading, flattening, and selection
   main.rs       terminal setup, event loop, panic restoration
-  shell.rs      shell command execution and output buffer
+  shell.rs      PTY shell session, terminal parser, input/output routing
   syntax.rs     syntect loading and line highlighting
   ui.rs         ratatui layout and widgets
 ```
@@ -51,18 +52,22 @@ Each opened file tab stores:
 - display name
 - decoded lines
 - vertical scroll offset
-- optional syntax extension/name
+- cursor line and column
+- dirty state
+
+Editor buffers support insertion, deletion, newline, cursor movement, save, and in-file search. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
 
 ### Terminal
 
-The integrated terminal stores:
+The integrated terminal owns:
 
-- command input
-- output lines
-- output scroll offset
-- workspace root
+- a native PTY master/slave pair
+- a spawned platform shell running in the workspace root
+- a background reader thread
+- a writer for user input
+- a `vt100::Parser` screen with scrollback
 
-Commands run synchronously for the first prerelease. The UI appends a prompt, then stdout/stderr lines, then a status line for failed exit codes.
+Keyboard input while terminal-focused is encoded as terminal byte sequences and written to the PTY. PTY output is parsed asynchronously and rendered into the bottom panel.
 
 ## 4. Rendering Design
 
@@ -105,7 +110,7 @@ Wheel events route to the hovered panel if known, otherwise to the focused panel
 
 ### Keyboard
 
-Keyboard events map to panel-specific actions. Terminal input receives printable characters when focused.
+Keyboard events map to panel-specific actions. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active.
 
 ## 6. Syntax Highlighting
 
@@ -115,12 +120,12 @@ If highlighting fails, rendering falls back to plain text.
 
 ## 7. Cross-Platform Shell Design
 
-Command execution uses:
+The integrated terminal uses:
 
-- Unix: `$SHELL -lc <command>` or `/bin/sh -lc <command>`
-- Windows: `cmd /C <command>`
+- Unix: `$SHELL` or `/bin/sh`
+- Windows: `%COMSPEC%` or `cmd.exe`
 
-Commands inherit the workspace root as the current directory.
+The shell runs inside a PTY with `TERM=xterm-256color`, receives resize notifications from the terminal panel, and inherits the workspace root as the current directory.
 
 ## 8. Release and Packaging Design
 
@@ -135,6 +140,6 @@ The release workflow builds archive artifacts on macOS, Linux, and Windows runne
 
 ## 9. Risks and Mitigations
 
-- Fully interactive terminal emulation is complex. The prerelease uses command execution and captured output while preserving the panel UX.
+- Full terminal emulation is complex. The prerelease uses `vt100` parsing and a real PTY, which supports normal shell interaction and many CLI programs, while deeper terminal mouse/application-mode edge cases remain ongoing work.
 - Cross-compiling every target from one machine may require external linkers. CI uses native runners and cross/zig where practical.
 - Terminal mouse support varies by emulator. The app uses crossterm's standard mouse capture and also provides keyboard fallbacks.

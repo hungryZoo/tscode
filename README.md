@@ -6,7 +6,7 @@
 tscode [path]
 ```
 
-The prerelease includes a real filesystem explorer, tabbed code viewer with line numbers and syntax highlighting, mouse hover/click/wheel interactions, and a bottom integrated terminal panel that executes shell commands in the workspace directory.
+The prerelease includes a real filesystem explorer, editable tabbed code buffers with line numbers and syntax highlighting, mouse hover/click/wheel interactions, and a bottom integrated terminal backed by a real PTY shell.
 
 ## Install
 
@@ -19,18 +19,19 @@ The installer detects OS and CPU architecture, downloads the newest GitHub Relea
 To install a specific tag:
 
 ```sh
-TSCODE_VERSION=v0.1.0-pre.2 curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | sh
+TSCODE_VERSION=v0.1.0-pre.3 curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | sh
 ```
 
 ## Controls
 
 - Mouse hover: highlight explorer rows, tabs, and terminal input.
-- Mouse click: focus panels, open files, toggle folders, select tabs.
+- Mouse click: focus panels, open files, toggle folders, select tabs, and place the editor cursor.
 - Mouse wheel: scroll the panel under the cursor.
-- `Tab`: cycle focus.
-- `Enter`: open/toggle explorer item or run terminal command.
-- Arrow keys / PageUp / PageDown: navigate or scroll the focused panel.
-- `q`, `Esc`, or `Ctrl-c`: exit.
+- `Tab`: cycle focus until terminal focus; in terminal focus it is sent to the shell.
+- Explorer: `n` new file, `N` new folder, `e` rename, `D` delete with confirmation, `r` refresh.
+- Editor: type to edit, `Enter` newline, `Backspace`/`Delete`, arrows, `Ctrl-S` save, `Ctrl-F` find.
+- Terminal: interactive shell input is sent to the PTY, including `Ctrl-C`, arrows, and tab completion.
+- App exit: `Ctrl-Q`, or `q`/`Esc` outside terminal focus.
 
 ## Supported Release Targets
 
@@ -52,4 +53,4 @@ Linux release jobs also produce `.deb` and `.rpm` packages for GNU targets.
 cargo run -- .
 ```
 
-This project uses Rust, ratatui, crossterm, and syntect.
+This project uses Rust, ratatui, crossterm, syntect, portable-pty, and vt100.

@@ -54,9 +54,9 @@ The editor shall support multiple open file tabs.
 
 Clicking a tab shall make it active.
 
-### R-203 File Reading
+### R-203 File Reading and Editing
 
-The editor shall read UTF-8 text files and render their contents. Invalid UTF-8 shall be lossily decoded.
+The editor shall read UTF-8 text files and render their contents. Invalid UTF-8 shall be lossily decoded. The active editor buffer shall support text insertion, deletion, newline, cursor movement, and save.
 
 ### R-204 Line Numbers
 
@@ -74,19 +74,27 @@ Mouse wheel and keyboard shortcuts shall vertically scroll the active file.
 
 Tabs shall visually highlight on mouse hover.
 
+### R-208 Save
+
+`Ctrl-s` in editor focus shall write the active buffer to its file path and clear dirty state.
+
+### R-209 Search
+
+`Ctrl-f` in editor focus shall prompt for text and move the cursor to the next match when found.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
 
-The bottom panel shall contain a shell command input line.
+The bottom panel shall contain an interactive platform shell running in a pseudo terminal.
 
 ### R-302 Command Execution
 
-Submitting a command shall execute it through the user's platform shell.
+Typing while the terminal is focused shall send input bytes to the shell PTY.
 
 ### R-303 Output Capture
 
-The terminal panel shall capture stdout and stderr and append them to the visible output buffer.
+The terminal panel shall parse PTY output and render the resulting terminal screen.
 
 ### R-304 Working Directory
 
@@ -99,6 +107,10 @@ Mouse wheel and keyboard shortcuts shall scroll terminal output.
 ### R-306 Hover
 
 Terminal panel controls and focusable areas shall visually react to hover/focus.
+
+### R-307 Interactive Signals
+
+When the terminal is focused, `Ctrl-c` shall be forwarded to the PTY shell rather than exiting the application.
 
 ## 6. Mouse Requirements
 
@@ -126,7 +138,7 @@ Mouse move events shall update hover target state and cause a redraw.
 
 ### R-502 Exit
 
-`q`, `Esc`, or `Ctrl-c` shall exit from normal browsing mode.
+`q` or `Esc` shall exit from non-terminal normal browsing mode. `Ctrl-q` shall exit globally.
 
 ### R-503 Editor Scroll
 
@@ -134,7 +146,7 @@ Mouse move events shall update hover target state and cause a redraw.
 
 ### R-504 Terminal Editing
 
-When terminal input is focused, printable characters shall append to the command input, `Backspace` shall delete, and `Enter` shall execute.
+When terminal focus is active, printable characters and supported control/navigation keys shall be forwarded to the PTY shell.
 
 ## 8. Packaging Requirements
 
