@@ -130,6 +130,10 @@ Keyboard events map to panel-specific actions. Quick-panel input handles query e
 
 The editor clipboard is an in-memory application clipboard used by `Ctrl-C`, `Ctrl-X`, and `Ctrl-V` in editor focus. It is deliberately separate from explorer copy/cut state and from terminal `Ctrl-C`, which remains a PTY signal when terminal focus is active. Range deletion and replacement are performed as single undoable edits.
 
+In-file search state lives on `App::search_needle`. The editor renderer overlays visible search-match highlights on top of plain line text when a match is present, while keeping explicit editor selections higher priority. The status bar computes the active file's match count from the same search string.
+
+Replace in file is modeled as a two-step prompt: find text, then replacement text. Single replace changes the current match when the cursor is on one or otherwise searches forward with wraparound. Replace-all updates every active-buffer line match in one `EditorTab` undo snapshot so a single undo restores the previous file contents.
+
 ## 6. Syntax Highlighting
 
 `syntect` loads default syntax and theme sets once during startup. The renderer chooses syntax by token or file extension, highlights visible lines only, and converts style foreground colors into ratatui `Color::Rgb`.

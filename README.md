@@ -19,7 +19,7 @@ The installer detects OS and CPU architecture, downloads the newest GitHub Relea
 To install a specific tag:
 
 ```sh
-TSCODE_VERSION=v0.1.0-pre.9 curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | sh
+TSCODE_VERSION=v0.1.0-pre.10 curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | sh
 ```
 
 ## Controls
@@ -32,7 +32,7 @@ TSCODE_VERSION=v0.1.0-pre.9 curl -fsSL https://raw.githubusercontent.com/hungryZ
 - `Tab`: cycle focus from the explorer; indent the current editor line in editor focus; send tab completion to the shell in terminal focus.
 - Explorer: `n` new file, `N` new folder, `e` rename, `D` delete with confirmation, `c` copy, `x` cut, `p` paste, `y` duplicate, `o` reveal active file, `r` refresh.
 - Workspace: `Ctrl-P` quick-open files by fuzzy path, `Ctrl-Shift-F` or `Ctrl-G` search text across workspace files.
-- Editor: type to edit, paste text, `Enter` newline, `Backspace`/`Delete`, arrows, `Shift`+arrows select text, `Ctrl-A` select all, `Ctrl-C`/`Ctrl-X`/`Ctrl-V` copy/cut/paste through the internal editor clipboard, `Tab`/`Shift-Tab` indent or outdent, `Ctrl-S` save, `Ctrl-F` find in file, `Ctrl-L` go to line, `Ctrl-/` toggle line comment, `Ctrl-D` duplicate line, `Alt-Up`/`Alt-Down` move line, `F3` next match, `Shift-F3` previous match, `Ctrl-Z` undo, `Ctrl-Y` redo, `Ctrl-W` close saved tab, `Ctrl-Tab` next tab.
+- Editor: type to edit, paste text, `Enter` newline, `Backspace`/`Delete`, arrows, `Shift`+arrows select text, `Ctrl-A` select all, `Ctrl-C`/`Ctrl-X`/`Ctrl-V` copy/cut/paste through the internal editor clipboard, `Tab`/`Shift-Tab` indent or outdent, `Ctrl-S` save, `Ctrl-F` find in file with visible match highlighting, `Ctrl-H` replace next/current match, command palette replace-all, `Ctrl-L` go to line, `Ctrl-/` toggle line comment, `Ctrl-D` duplicate line, `Alt-Up`/`Alt-Down` move line, `F3` next match, `Shift-F3` previous match, `Ctrl-Z` undo, `Ctrl-Y` redo, `Ctrl-W` close saved tab, `Ctrl-Tab` next tab.
 - Terminal: interactive shell input is sent to the PTY, including `Ctrl-C`, arrows, modified navigation keys, tab completion, and bracketed paste. ANSI colors/styles are rendered in the panel. `Shift-PageUp` and `Shift-PageDown` scroll terminal scrollback. Clicking a visible `path:line:column` shell output reference opens that file in the editor when the shell app has not requested terminal mouse events. The command palette can clear the terminal viewport/scrollback or restart the PTY shell.
 - App exit: `Ctrl-Q`, or `q`/`Esc` outside terminal focus. Unsaved buffers require typing `quit` to confirm.
 

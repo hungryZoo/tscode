@@ -154,6 +154,18 @@ When editor focus is active, `Ctrl-a` shall select the full buffer, `Ctrl-c` sha
 
 Typing, paste events, `Enter`, `Backspace`, or `Delete` with an active editor selection shall replace or remove the selected range as a single undoable edit.
 
+### R-224 Search Highlighting
+
+When an active in-file search exists, the editor shall visually highlight visible matches and show the match count in the status bar for the active file.
+
+### R-225 Replace in File
+
+`Ctrl-h` or the command palette shall prompt for a search string and replacement string, then replace the current match when the cursor is on a match or the next match otherwise. The replacement shall be undoable as one edit.
+
+### R-226 Replace All in File
+
+The command palette shall include a replace-all-in-file action that prompts for a search string and replacement string, then replaces every active-file match as one undoable edit.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
@@ -284,6 +296,9 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Open a file, reveal it in the explorer, and confirm its row is selected.
 - Edit text, use `Ctrl-z`/`Ctrl-y`, save with `Ctrl-s`, and confirm file contents on disk.
 - Use `Ctrl-f` and `F3` to move through search matches.
+- Use `Ctrl-f` and confirm visible search highlights and match count.
+- Use `Ctrl-h` to replace one match, save, and confirm file contents on disk.
+- Use the command palette replace-all action and confirm all active-file matches change as one undoable edit.
 - Use `F1` to open the command palette and execute an editor command.
 - Use `Ctrl-l` or the command palette to jump to a line.
 - Select all text, cut it, paste it back, save, and confirm file contents on disk.

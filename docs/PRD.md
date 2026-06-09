@@ -50,6 +50,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can copy, cut, paste, and duplicate files or folders from the explorer.
 - As a developer, I can reveal the active editor file in the explorer.
 - As a developer, I can undo and redo edits, paste text, repeat search matches, and close saved tabs without losing unsaved changes.
+- As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
 - As a developer, I can select text with the keyboard or mouse, then copy, cut, and paste through an editor clipboard.
 - As a developer, I can use common line editing actions: indent, outdent, duplicate line, delete line, move line, toggle line comment, and go to line.
@@ -88,7 +89,7 @@ Keyboard fallback:
 - Explorer `c`, `x`, `p`, `y`, and `o` perform copy, cut, paste, duplicate, and reveal-active-file actions
 - `Ctrl-P` opens the quick file picker
 - `Ctrl-Shift-F` and `Ctrl-G` open workspace text search
-- `Ctrl-S`, `Ctrl-F`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/history/tab-close actions
+- `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions
 - `Shift` with arrow keys and mouse drag select editor text
 - `Ctrl-A`, `Ctrl-C`, `Ctrl-X`, and `Ctrl-V` provide editor select-all, copy, cut, and paste when editor focus is active
 - `Ctrl-L`, `Ctrl-/`, `Ctrl-D`, `Alt-Up`, `Alt-Down`, `Tab`, and `Shift-Tab` provide editor go-to-line and line editing actions
