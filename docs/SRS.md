@@ -236,6 +236,10 @@ The command palette shall include a revert-file action for the active editor tab
 
 `Ctrl-d` or the command palette shall add the next active-file occurrence of the current single-line selection, or the identifier under the editor cursor when no selection exists, to the editor selection set. `Ctrl-shift-l` or the command palette shall select all active-file occurrences. Identifier-based occurrence selection shall respect identifier boundaries. Copy, cut, typing, paste, `Enter`, `Backspace`, and `Delete` shall operate on all selected occurrence ranges as one undoable edit, and the status bar shall show the selected occurrence count. Continued typing after replacing selected occurrences shall preserve the resulting cursor set for additional simultaneous edits.
 
+### R-239 Editor Navigation History
+
+The app shall record the current editor file, line, and column before quick-panel result jumps, go-to-definition jumps, go-to-line jumps, and terminal `path:line:column` reference jumps when the destination differs from the current location. `Alt-left`, `Alt-right`, and command palette actions shall move backward and forward through this navigation history, reopening the target file if needed and restoring the recorded cursor position. Renaming or moving files and folders through the explorer shall remap matching navigation-history paths; deleting files or folders through the explorer shall remove matching history entries.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input

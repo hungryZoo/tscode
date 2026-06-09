@@ -68,6 +68,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can list functions, types, classes, interfaces, modules, and similar code symbols in the active file or across the workspace, then jump to the selected symbol.
 - As a developer, I can jump from the symbol under the editor cursor to a likely workspace definition without leaving the terminal.
 - As a developer, I can list whole-word workspace references for the symbol under the editor cursor and jump to any occurrence.
+- As a developer, I can move backward and forward through previous editor locations after definition, reference, search, line, or terminal-output jumps.
 - As a developer, I can replace text across real workspace files while clean open tabs stay synchronized and dirty open buffers are not overwritten.
 - As a developer, I can send the current editor selection, or the current line when nothing is selected, directly into the integrated terminal shell.
 - As a developer, I can clean up trailing spaces and tabs in the active file through the command palette, save the cleaned file, and undo the cleanup if needed.
@@ -117,6 +118,7 @@ Keyboard fallback:
 - `Ctrl-Shift-F` and `Ctrl-G` open workspace text search
 - `Ctrl-Shift-H` opens replace-in-files; the command palette provides the same action as an SSH-friendly fallback
 - `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, and `Ctrl-R` provide document symbols, workspace symbols, go-to-definition, and find-references code navigation
+- `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
 - `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor
 - `Shift` with arrow keys and mouse drag select editor text

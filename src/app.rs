@@ -21,6 +21,7 @@ use crate::{
 const MAX_QUICK_ITEMS: usize = 200;
 const MAX_FILE_SCAN_BYTES: u64 = 1_000_000;
 const MAX_OSC52_CLIPBOARD_BYTES: usize = 512 * 1024;
+const MAX_NAVIGATION_HISTORY: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPanel {
@@ -1309,6 +1310,13 @@ pub struct QuickItem {
     pub command: Option<CommandAction>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorLocation {
+    pub path: PathBuf,
+    pub line: usize,
+    pub col: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandAction {
     QuickOpen,
@@ -1317,6 +1325,8 @@ pub enum CommandAction {
     WorkspaceSymbols,
     GoToDefinition,
     FindReferences,
+    GoBack,
+    GoForward,
     WorkspaceReplace,
     SaveFile,
     SaveAll,
@@ -1495,6 +1505,8 @@ pub struct App {
     pub editor_clipboard: Option<String>,
     pub git_statuses: HashMap<PathBuf, GitStatusKind>,
     pub git_dirty_dirs: HashSet<PathBuf>,
+    pub navigation_back: Vec<EditorLocation>,
+    pub navigation_forward: Vec<EditorLocation>,
     pending_clipboard_export: Option<String>,
 }
 
@@ -1536,6 +1548,8 @@ impl App {
             editor_clipboard: None,
             git_statuses,
             git_dirty_dirs,
+            navigation_back: Vec::new(),
+            navigation_forward: Vec::new(),
             pending_clipboard_export: None,
         })
     }
@@ -1814,6 +1828,8 @@ impl App {
 
         if key.modifiers.contains(KeyModifiers::ALT) {
             match key.code {
+                KeyCode::Left => self.go_back(),
+                KeyCode::Right => self.go_forward(),
                 KeyCode::Up => self.move_active_line_up(),
                 KeyCode::Down => self.move_active_line_down(),
                 KeyCode::Char('f') | KeyCode::Char('F')
@@ -2074,6 +2090,129 @@ impl App {
             }
             Err(error) => self.last_error = Some(error.to_string()),
         }
+    }
+
+    fn current_editor_location(&self) -> Option<EditorLocation> {
+        let tab = self.active_tab()?;
+        Some(EditorLocation {
+            path: tab.path.clone(),
+            line: tab.cursor_line,
+            col: tab.cursor_col,
+        })
+    }
+
+    fn navigation_target_location(
+        &self,
+        path: &Path,
+        line: Option<usize>,
+        col: Option<usize>,
+    ) -> EditorLocation {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let (line, col) = match line {
+            Some(line) => (line, col.unwrap_or(0)),
+            None => self
+                .tabs
+                .iter()
+                .find(|tab| tab.path == path)
+                .map(EditorTab::cursor_position)
+                .unwrap_or((0, 0)),
+        };
+        EditorLocation { path, line, col }
+    }
+
+    fn push_navigation_stack(stack: &mut Vec<EditorLocation>, location: EditorLocation) {
+        if stack.last().is_some_and(|last| last == &location) {
+            return;
+        }
+        if stack.len() >= MAX_NAVIGATION_HISTORY {
+            stack.remove(0);
+        }
+        stack.push(location);
+    }
+
+    fn push_navigation_location_for_jump(
+        &mut self,
+        path: &Path,
+        line: Option<usize>,
+        col: Option<usize>,
+    ) {
+        let Some(current) = self.current_editor_location() else {
+            return;
+        };
+        let target = self.navigation_target_location(path, line, col);
+        if current != target {
+            Self::push_navigation_stack(&mut self.navigation_back, current);
+            self.navigation_forward.clear();
+        }
+    }
+
+    fn jump_to_editor_location(&mut self, location: &EditorLocation) -> bool {
+        self.open_file(&location.path);
+        let Some(tab) = self.active_tab_mut() else {
+            return false;
+        };
+        if tab.path != location.path {
+            return false;
+        }
+        tab.set_cursor(location.line, location.col);
+        self.ensure_editor_cursor_visible();
+        self.focus = FocusPanel::Editor;
+        true
+    }
+
+    fn navigation_label(&self, location: &EditorLocation) -> String {
+        format!(
+            "{}:{}:{}",
+            relative_path(&self.root, &location.path),
+            location.line + 1,
+            location.col + 1
+        )
+    }
+
+    fn go_back(&mut self) {
+        let Some(current) = self.current_editor_location() else {
+            self.message = Some("no active editor location".to_owned());
+            return;
+        };
+
+        while let Some(target) = self.navigation_back.pop() {
+            if target == current {
+                continue;
+            }
+            Self::push_navigation_stack(&mut self.navigation_forward, current.clone());
+            if self.jump_to_editor_location(&target) {
+                self.message = Some(format!("back to {}", self.navigation_label(&target)));
+            } else {
+                let _ = self.navigation_forward.pop();
+                self.message = Some(format!("could not reopen {}", target.path.display()));
+            }
+            return;
+        }
+
+        self.message = Some("no previous editor location".to_owned());
+    }
+
+    fn go_forward(&mut self) {
+        let Some(current) = self.current_editor_location() else {
+            self.message = Some("no active editor location".to_owned());
+            return;
+        };
+
+        while let Some(target) = self.navigation_forward.pop() {
+            if target == current {
+                continue;
+            }
+            Self::push_navigation_stack(&mut self.navigation_back, current.clone());
+            if self.jump_to_editor_location(&target) {
+                self.message = Some(format!("forward to {}", self.navigation_label(&target)));
+            } else {
+                let _ = self.navigation_back.pop();
+                self.message = Some(format!("could not reopen {}", target.path.display()));
+            }
+            return;
+        }
+
+        self.message = Some("no next editor location".to_owned());
     }
 
     pub fn drain_terminal(&mut self) -> bool {
@@ -2408,6 +2547,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "List whole-word workspace references for the symbol under the editor cursor",
             shortcut: "Ctrl-R",
             action: CommandAction::FindReferences,
+        },
+        CommandSpec {
+            label: "Go Back",
+            detail: "Return to the previous editor navigation location",
+            shortcut: "Alt-Left",
+            action: CommandAction::GoBack,
+        },
+        CommandSpec {
+            label: "Go Forward",
+            detail: "Move forward in editor navigation history after going back",
+            shortcut: "Alt-Right",
+            action: CommandAction::GoForward,
         },
         CommandSpec {
             label: "Replace in Files",
@@ -3120,7 +3271,11 @@ impl App {
             }
             ClipboardAction::Cut => {
                 fs::rename(&source, &destination)?;
+                let destination = destination
+                    .canonicalize()
+                    .unwrap_or_else(|_| destination.clone());
                 self.update_open_tabs_for_move(&source, &destination);
+                self.update_navigation_for_move(&source, &destination);
                 self.explorer_clipboard = None;
                 success_message = format!("moved to {}", destination.display());
             }
@@ -3409,7 +3564,9 @@ impl App {
             .map(|parent| parent.join(name))
             .unwrap_or_else(|| self.root.join(name));
         fs::rename(&path, &new_path)?;
+        let new_path = new_path.canonicalize().unwrap_or(new_path);
         self.update_open_tabs_for_move(&path, &new_path);
+        self.update_navigation_for_move(&path, &new_path);
         self.refresh_explorer()?;
         self.reveal_path(&new_path)?;
         self.message = Some(format!("renamed to {}", new_path.display()));
@@ -3427,6 +3584,7 @@ impl App {
             fs::remove_file(&path)?;
         }
         self.tabs.retain(|tab| !tab.path.starts_with(&path));
+        self.prune_navigation_for_deleted_path(&path);
         if self
             .explorer_clipboard
             .as_ref()
@@ -3456,6 +3614,25 @@ impl App {
                     .to_owned();
             }
         }
+    }
+
+    fn update_navigation_for_move(&mut self, old_path: &Path, new_path: &Path) {
+        for location in self
+            .navigation_back
+            .iter_mut()
+            .chain(self.navigation_forward.iter_mut())
+        {
+            if let Ok(relative) = location.path.strip_prefix(old_path) {
+                location.path = new_path.join(relative);
+            }
+        }
+    }
+
+    fn prune_navigation_for_deleted_path(&mut self, path: &Path) {
+        self.navigation_back
+            .retain(|location| !location.path.starts_with(path));
+        self.navigation_forward
+            .retain(|location| !location.path.starts_with(path));
     }
 
     fn reveal_path(&mut self, path: &Path) -> Result<()> {
@@ -4244,6 +4421,7 @@ impl App {
     }
 
     fn open_quick_item(&mut self, item: QuickItem, search_query: Option<String>) {
+        self.push_navigation_location_for_jump(&item.path, item.line, item.col);
         self.open_file(&item.path);
         if let Some(line) = item.line
             && let Some(tab) = self.active_tab_mut()
@@ -4271,6 +4449,8 @@ impl App {
             }
             CommandAction::GoToDefinition => self.go_to_definition_under_cursor()?,
             CommandAction::FindReferences => self.find_references_under_cursor()?,
+            CommandAction::GoBack => self.go_back(),
+            CommandAction::GoForward => self.go_forward(),
             CommandAction::WorkspaceReplace => self.start_workspace_replace_prompt(),
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAll => self.save_all_tabs(),
@@ -4391,6 +4571,7 @@ impl App {
             return false;
         };
 
+        self.push_navigation_location_for_jump(&reference.path, reference.line, reference.col);
         self.open_file(&reference.path);
         if let Some(line) = reference.line
             && let Some(tab) = self.active_tab_mut()
@@ -4499,6 +4680,10 @@ impl App {
             self.message = Some("enter a line number, optionally line:column".to_owned());
             return;
         };
+        let Some(path) = self.active_tab().map(|tab| tab.path.clone()) else {
+            return;
+        };
+        self.push_navigation_location_for_jump(&path, Some(line), Some(col));
         if let Some(tab) = self.active_tab_mut() {
             tab.set_cursor(line, col);
             self.ensure_editor_cursor_visible();
@@ -7290,6 +7475,99 @@ mod tests {
             app.message.as_deref(),
             Some("jumped to definition: make_client")
         );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn navigation_history_moves_back_and_forward_after_definition_jump() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-navigation-definition-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn make_client() {}\n").unwrap();
+        fs::write(src.join("main.rs"), "fn main() {\n    make_client();\n}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let lib = canonical_root.join("src/lib.rs");
+        let main = canonical_root.join("src/main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&main);
+        app.active_tab_mut().unwrap().set_cursor(1, 6);
+
+        app.run_command(CommandAction::GoToDefinition).unwrap();
+
+        assert_eq!(app.active_tab().unwrap().path, lib);
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (0, 7));
+        assert_eq!(
+            app.navigation_back,
+            vec![EditorLocation {
+                path: main.clone(),
+                line: 1,
+                col: 6,
+            }]
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT))
+            .unwrap();
+        assert_eq!(app.active_tab().unwrap().path, main);
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (1, 6));
+        assert_eq!(
+            app.navigation_forward,
+            vec![EditorLocation {
+                path: lib.clone(),
+                line: 0,
+                col: 7,
+            }]
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT))
+            .unwrap();
+        assert_eq!(app.active_tab().unwrap().path, lib);
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (0, 7));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn navigation_history_tracks_goto_line_and_command_actions() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-navigation-line-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let path = canonical_root.join("main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&path);
+        app.active_tab_mut().unwrap().set_cursor(0, 2);
+
+        app.goto_line_from_prompt("3:3".to_owned());
+
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (2, 2));
+        assert_eq!(
+            app.navigation_back,
+            vec![EditorLocation {
+                path: path.clone(),
+                line: 0,
+                col: 2,
+            }]
+        );
+
+        app.run_command(CommandAction::GoBack).unwrap();
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (0, 2));
+
+        app.run_command(CommandAction::GoForward).unwrap();
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (2, 2));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
