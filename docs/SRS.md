@@ -240,6 +240,10 @@ The command palette shall include a revert-file action for the active editor tab
 
 The app shall record the current editor file, line, and column before quick-panel result jumps, go-to-definition jumps, go-to-line jumps, and terminal `path:line:column` reference jumps when the destination differs from the current location. `Alt-left`, `Alt-right`, and command palette actions shall move backward and forward through this navigation history, reopening the target file if needed and restoring the recorded cursor position. Renaming or moving files and folders through the explorer shall remap matching navigation-history paths; deleting files or folders through the explorer shall remove matching history entries.
 
+### R-240 Rename Symbol
+
+`F2` or the command palette shall prompt for a replacement identifier for the active editor selection, when it is a valid identifier, or the identifier under the editor cursor. The command shall replace whole-identifier occurrences across visible workspace text files using the same hidden/generated-folder visibility policy as workspace search. Open editor buffers shall be updated in memory as undoable dirty edits without immediately writing their backing files. Matching closed files shall be written to disk, binary and oversized files shall be skipped, and longer identifiers that merely contain the old name shall not be modified.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input

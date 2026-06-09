@@ -1278,6 +1278,7 @@ pub enum PromptKind {
     ReplaceWith { needle: String, all: bool },
     WorkspaceReplaceFind,
     WorkspaceReplaceWith { needle: String },
+    RenameSymbol { old: String },
     GotoLine,
     QuitDirty,
 }
@@ -1327,6 +1328,7 @@ pub enum CommandAction {
     FindReferences,
     GoBack,
     GoForward,
+    RenameSymbol,
     WorkspaceReplace,
     SaveFile,
     SaveAll,
@@ -1904,6 +1906,7 @@ impl App {
             KeyCode::PageDown => self.scroll_editor(self.editor_height as isize),
             KeyCode::Home => self.set_editor_cursor_col(0, selecting),
             KeyCode::End => self.set_editor_cursor_end(selecting),
+            KeyCode::F(2) => self.start_rename_symbol_prompt(),
             KeyCode::F(3) => self.find_next(true),
             KeyCode::Tab => self.indent_active_line(),
             KeyCode::BackTab => self.outdent_active_line(),
@@ -2559,6 +2562,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Move forward in editor navigation history after going back",
             shortcut: "Alt-Right",
             action: CommandAction::GoForward,
+        },
+        CommandSpec {
+            label: "Rename Symbol",
+            detail: "Rename the identifier under the editor cursor across workspace files",
+            shortcut: "F2",
+            action: CommandAction::RenameSymbol,
         },
         CommandSpec {
             label: "Replace in Files",
@@ -3388,6 +3397,9 @@ impl App {
             PromptKind::WorkspaceReplaceWith { needle } => {
                 self.replace_workspace_matches(needle, prompt.input)?;
             }
+            PromptKind::RenameSymbol { old } => {
+                self.rename_symbol_from_prompt(old, prompt.input)?;
+            }
             PromptKind::GotoLine => self.goto_line_from_prompt(prompt.input),
             PromptKind::QuitDirty => {
                 if prompt.input == "quit" {
@@ -3806,6 +3818,111 @@ impl App {
 
         self.search_needle = Some(needle.clone());
         self.start_prompt(PromptKind::WorkspaceReplaceWith { needle }, "");
+    }
+
+    fn start_rename_symbol_prompt(&mut self) {
+        let Some(symbol) = self.active_identifier_under_cursor() else {
+            self.message = Some("no symbol under cursor".to_owned());
+            return;
+        };
+
+        self.start_prompt(
+            PromptKind::RenameSymbol {
+                old: symbol.clone(),
+            },
+            &symbol,
+        );
+        self.message = Some(format!("rename symbol: {symbol}"));
+    }
+
+    fn rename_symbol_from_prompt(&mut self, old: String, new_name: String) -> Result<()> {
+        let new_name = new_name.trim().to_owned();
+        if !is_identifier_token(&new_name) {
+            self.message = Some("rename symbol requires a valid identifier".to_owned());
+            return Ok(());
+        }
+        self.rename_symbol_occurrences(old, new_name)
+    }
+
+    fn rename_symbol_occurrences(&mut self, old: String, new_name: String) -> Result<()> {
+        let old = old.trim().to_owned();
+        if !is_identifier_token(&old) {
+            self.message = Some("rename symbol requires a symbol under cursor".to_owned());
+            return Ok(());
+        }
+        if !is_identifier_token(&new_name) {
+            self.message = Some("rename symbol requires a valid identifier".to_owned());
+            return Ok(());
+        }
+        if old == new_name {
+            self.message = Some("rename symbol unchanged".to_owned());
+            return Ok(());
+        }
+
+        let open_paths = self
+            .tabs
+            .iter()
+            .map(|tab| tab.path.clone())
+            .collect::<HashSet<_>>();
+        let mut match_count = 0usize;
+        let mut open_count = 0usize;
+        let mut file_count = 0usize;
+
+        for tab in &mut self.tabs {
+            let (replaced, count) =
+                replace_identifier_occurrences_in_text(&tab.text(), &old, &new_name);
+            if count == 0 {
+                continue;
+            }
+            if tab.replace_entire_text_as_edit(&replaced) {
+                match_count += count;
+                open_count += 1;
+            }
+        }
+
+        for path in collect_workspace_files(&self.root, self.show_hidden, self.show_ignored)? {
+            if open_paths.contains(&path) {
+                continue;
+            }
+
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.len() > MAX_FILE_SCAN_BYTES {
+                continue;
+            }
+
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            if bytes.contains(&0) {
+                continue;
+            }
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let (replaced, count) = replace_identifier_occurrences_in_text(&text, &old, &new_name);
+            if count == 0 {
+                continue;
+            }
+
+            fs::write(&path, replaced.as_bytes())?;
+            match_count += count;
+            file_count += 1;
+        }
+
+        if file_count > 0 {
+            self.refresh_git_status();
+        }
+        self.search_needle = Some(new_name.clone());
+        self.message = if match_count == 0 {
+            Some(format!("rename symbol found no matches for '{old}'"))
+        } else {
+            Some(format!(
+                "renamed symbol '{old}' to '{new_name}': {match_count} occurrence(s), {open_count} open buffer(s), {file_count} saved file(s)"
+            ))
+        };
+        Ok(())
     }
 
     fn replace_workspace_matches(&mut self, needle: String, replacement: String) -> Result<()> {
@@ -4451,6 +4568,7 @@ impl App {
             CommandAction::FindReferences => self.find_references_under_cursor()?,
             CommandAction::GoBack => self.go_back(),
             CommandAction::GoForward => self.go_forward(),
+            CommandAction::RenameSymbol => self.start_rename_symbol_prompt(),
             CommandAction::WorkspaceReplace => self.start_workspace_replace_prompt(),
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAll => self.save_all_tabs(),
@@ -5940,6 +6058,42 @@ fn identifier_occurrences(line: &str, symbol: &str) -> Vec<usize> {
     cols
 }
 
+fn replace_identifier_occurrences_in_text(
+    text: &str,
+    symbol: &str,
+    replacement: &str,
+) -> (String, usize) {
+    if !is_identifier_token(symbol) || !is_identifier_token(replacement) || symbol == replacement {
+        return (text.to_owned(), 0);
+    }
+
+    let mut output = String::with_capacity(text.len());
+    let mut last_byte = 0usize;
+    let mut search_byte = 0usize;
+    let mut count = 0usize;
+
+    while search_byte <= text.len() {
+        let Some(found) = text[search_byte..].find(symbol) else {
+            break;
+        };
+        let byte = search_byte + found;
+        if has_identifier_boundaries(text, byte, symbol.len()) {
+            output.push_str(&text[last_byte..byte]);
+            output.push_str(replacement);
+            last_byte = byte + symbol.len();
+            count += 1;
+        }
+        search_byte = byte + symbol.len();
+    }
+
+    if count == 0 {
+        return (text.to_owned(), 0);
+    }
+
+    output.push_str(&text[last_byte..]);
+    (output, count)
+}
+
 fn has_identifier_boundaries(line: &str, byte: usize, len: usize) -> bool {
     let before = line[..byte]
         .chars()
@@ -7016,6 +7170,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::FindReferences))
         );
+        let commands = app.command_palette_items("rename symbol");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RenameSymbol))
+        );
         let commands = app.command_palette_items("copy relative path");
         assert!(commands.iter().any(|item| {
             item.command == Some(CommandAction::CopyActiveFileRelativePath)
@@ -7143,6 +7303,114 @@ mod tests {
             app.message
                 .as_deref()
                 .is_some_and(|message| message.contains("skipped 1 dirty open file"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn identifier_text_replacement_respects_symbol_boundaries() {
+        let (text, count) = replace_identifier_occurrences_in_text(
+            "make_client make_client_extra object.make_client\n",
+            "make_client",
+            "build_client",
+        );
+        assert_eq!(count, 2);
+        assert_eq!(text, "build_client make_client_extra object.build_client\n");
+    }
+
+    #[test]
+    fn rename_symbol_updates_open_buffers_and_closed_workspace_files() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-rename-symbol-{}", std::process::id()));
+        let src = root.join("src");
+        let target = root.join("target");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn make_client() {}\n").unwrap();
+        fs::write(
+            src.join("main.rs"),
+            "fn main() {\n    make_client();\n    make_client_extra();\n}\n",
+        )
+        .unwrap();
+        fs::write(root.join("dirty.rs"), "let cached = make_client();\n").unwrap();
+        fs::write(
+            root.join("README.md"),
+            "docs make_client make_client_extra\n",
+        )
+        .unwrap();
+        fs::write(target.join("generated.rs"), "make_client generated\n").unwrap();
+        fs::write(root.join("binary.bin"), b"make_client\0skip").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let lib = canonical_root.join("src/lib.rs");
+        let main = canonical_root.join("src/main.rs");
+        let dirty = canonical_root.join("dirty.rs");
+        let readme = canonical_root.join("README.md");
+        let generated = canonical_root.join("target/generated.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&dirty);
+        {
+            let tab = app.active_tab_mut().unwrap();
+            tab.set_cursor(0, tab.lines[0].chars().count());
+            tab.insert_text("\nlet unsaved = make_client();");
+        }
+        app.open_file(&main);
+        app.active_tab_mut().unwrap().set_cursor(1, 6);
+
+        app.handle_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(
+            app.prompt,
+            Some(PromptState {
+                kind: PromptKind::RenameSymbol {
+                    old: "make_client".to_owned()
+                },
+                input: "make_client".to_owned()
+            })
+        );
+        app.prompt = None;
+
+        app.rename_symbol_occurrences("make_client".to_owned(), "build_client".to_owned())
+            .unwrap();
+
+        let main_tab = app.tabs.iter().find(|tab| tab.path == main).unwrap();
+        assert!(main_tab.dirty);
+        assert!(main_tab.text().contains("build_client();"));
+        assert!(main_tab.text().contains("make_client_extra();"));
+        assert!(!main_tab.text().contains("make_client();"));
+
+        let dirty_tab = app.tabs.iter().find(|tab| tab.path == dirty).unwrap();
+        assert!(dirty_tab.dirty);
+        assert_eq!(dirty_tab.text().matches("build_client").count(), 2);
+
+        assert_eq!(
+            fs::read_to_string(&main).unwrap(),
+            "fn main() {\n    make_client();\n    make_client_extra();\n}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&dirty).unwrap(),
+            "let cached = make_client();\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&lib).unwrap(),
+            "pub fn build_client() {}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&readme).unwrap(),
+            "docs build_client make_client_extra\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&generated).unwrap(),
+            "make_client generated\n"
+        );
+        assert_eq!(app.search_needle.as_deref(), Some("build_client"));
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("5 occurrence"))
         );
 
         app.kill_all_terminals();
