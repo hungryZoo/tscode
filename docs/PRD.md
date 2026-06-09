@@ -138,9 +138,9 @@ Keyboard fallback:
 - Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
 - Explorer `t` opens a new integrated terminal in the selected folder or selected file's parent folder
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the terminal clipboard
-- Explorer `/`, `.`, and `i` perform visible-tree filtering, dotfile visibility toggling, and generated-folder visibility toggling
+- Explorer `/`, `.`, and `i` perform visible-tree filtering, dotfile visibility toggling, and ignored/generated-entry visibility toggling backed by `.gitignore`, `.ignore`, global Git ignore rules, and built-in generated-folder names
 - `Ctrl-P` opens the quick file picker
-- `Ctrl-Shift-F` and `Ctrl-G` open workspace text search, including dirty open buffers from memory
+- `Ctrl-Shift-F` and `Ctrl-G` open workspace text search, including dirty open buffers from memory, while respecting the explorer's hidden/ignored/generated visibility policy
 - `Ctrl-Shift-H` opens replace-in-files; the command palette provides the same action as an SSH-friendly fallback
 - `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, and `Ctrl-R` provide document symbols, workspace symbols, go-to-definition, and find-references code navigation
 - `Ctrl-Space` or the command palette opens code suggestions for the identifier at the editor cursor

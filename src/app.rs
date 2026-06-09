@@ -11,6 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use ignore::WalkBuilder;
 use ratatui::layout::Rect;
 use serde_json::Value;
 
@@ -1908,6 +1909,7 @@ pub struct App {
     pub problems: Vec<QuickItem>,
     pending_clipboard_export: Option<String>,
     workspace_snapshot: Option<WorkspaceSnapshot>,
+    workspace_visible_paths: HashSet<PathBuf>,
     last_workspace_tree_check: Instant,
 }
 
@@ -1927,6 +1929,12 @@ impl App {
         let terminal = TerminalSession::new(1, root.clone())?;
         let (git_statuses, git_dirty_dirs) = load_git_status(&root);
         let workspace_snapshot = workspace_snapshot(&root, true, false).ok();
+        let workspace_visible_paths =
+            workspace_visible_paths(&root, true, false).unwrap_or_else(|_| {
+                let mut paths = HashSet::new();
+                paths.insert(root.clone());
+                paths
+            });
         let mut app = Self {
             root: root.clone(),
             explorer,
@@ -1968,6 +1976,7 @@ impl App {
             problems: Vec::new(),
             pending_clipboard_export: None,
             workspace_snapshot,
+            workspace_visible_paths,
             last_workspace_tree_check: Instant::now(),
         };
 
@@ -1986,6 +1995,7 @@ impl App {
             &self.root,
             self.show_hidden,
             self.show_ignored,
+            &self.workspace_visible_paths,
             self.explorer_filter.as_deref(),
         )
     }
@@ -3129,11 +3139,20 @@ fn filtered_visible_nodes(
     root: &Path,
     show_hidden: bool,
     show_ignored: bool,
+    workspace_visible_paths: &HashSet<PathBuf>,
     filter: Option<&str>,
 ) -> Vec<VisibleNode> {
     let base_visible = nodes
         .into_iter()
-        .filter(|node| node_passes_explorer_visibility(node, root, show_hidden, show_ignored))
+        .filter(|node| {
+            node_passes_explorer_visibility(
+                node,
+                root,
+                show_hidden,
+                show_ignored,
+                workspace_visible_paths,
+            )
+        })
         .collect::<Vec<_>>();
 
     let Some(filter) = filter.map(str::trim).filter(|filter| !filter.is_empty()) else {
@@ -3169,6 +3188,7 @@ fn node_passes_explorer_visibility(
     root: &Path,
     show_hidden: bool,
     show_ignored: bool,
+    workspace_visible_paths: &HashSet<PathBuf>,
 ) -> bool {
     if node.path == root {
         return true;
@@ -3177,6 +3197,9 @@ fn node_passes_explorer_visibility(
         return false;
     }
     if !show_ignored && path_has_generated_component(root, &node.path) {
+        return false;
+    }
+    if !workspace_visible_paths.is_empty() && !workspace_visible_paths.contains(&node.path) {
         return false;
     }
     true
@@ -5017,6 +5040,7 @@ impl App {
             .get(self.explorer.selected)
             .map(|node| node.path.clone());
         self.show_hidden = !self.show_hidden;
+        self.refresh_workspace_visibility_cache();
         self.expand_active_explorer_filter_matches();
         self.restore_explorer_selection(selected_path);
         self.update_workspace_snapshot();
@@ -5036,6 +5060,7 @@ impl App {
             .get(self.explorer.selected)
             .map(|node| node.path.clone());
         self.show_ignored = !self.show_ignored;
+        self.refresh_workspace_visibility_cache();
         self.expand_active_explorer_filter_matches();
         self.restore_explorer_selection(selected_path);
         self.update_workspace_snapshot();
@@ -5244,11 +5269,19 @@ impl App {
     }
 
     fn update_workspace_snapshot(&mut self) {
+        self.refresh_workspace_visibility_cache();
         match workspace_snapshot(&self.root, self.show_hidden, self.show_ignored) {
             Ok(snapshot) => self.workspace_snapshot = Some(snapshot),
             Err(error) => self.last_error = Some(error.to_string()),
         }
         self.last_workspace_tree_check = Instant::now();
+    }
+
+    fn refresh_workspace_visibility_cache(&mut self) {
+        match workspace_visible_paths(&self.root, self.show_hidden, self.show_ignored) {
+            Ok(paths) => self.workspace_visible_paths = paths,
+            Err(error) => self.last_error = Some(error.to_string()),
+        }
     }
 
     fn refresh_git_status(&mut self) {
@@ -7451,8 +7484,10 @@ fn collect_workspace_files(
     show_hidden: bool,
     show_ignored: bool,
 ) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    collect_workspace_files_into(root, &mut files, show_hidden, show_ignored)?;
+    let mut files = workspace_walk_paths(root, show_hidden, show_ignored)?
+        .into_iter()
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
     files.sort();
     Ok(files)
 }
@@ -7462,8 +7497,8 @@ fn collect_workspace_paths(
     show_hidden: bool,
     show_ignored: bool,
 ) -> Result<Vec<PathBuf>> {
-    let mut paths = Vec::new();
-    collect_workspace_paths_into(root, &mut paths, show_hidden, show_ignored)?;
+    let mut paths = workspace_walk_paths(root, show_hidden, show_ignored)?;
+    paths.retain(|path| path != root);
     paths.sort();
     Ok(paths)
 }
@@ -7474,138 +7509,72 @@ fn workspace_snapshot(
     show_ignored: bool,
 ) -> Result<WorkspaceSnapshot> {
     let mut snapshot = Vec::new();
-    collect_workspace_snapshot_into(root, &mut snapshot, show_hidden, show_ignored)?;
+    for path in workspace_walk_paths(root, show_hidden, show_ignored)? {
+        let metadata = fs::metadata(&path)?;
+        snapshot.push(WorkspaceEntryStamp {
+            path,
+            is_dir: metadata.is_dir(),
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            readonly: metadata.permissions().readonly(),
+        });
+    }
     snapshot.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(snapshot)
 }
 
-fn collect_workspace_snapshot_into(
-    path: &Path,
-    snapshot: &mut WorkspaceSnapshot,
+fn workspace_visible_paths(
+    root: &Path,
     show_hidden: bool,
     show_ignored: bool,
-) -> Result<()> {
-    let metadata = fs::metadata(path)?;
-    let is_dir = metadata.is_dir();
-    snapshot.push(WorkspaceEntryStamp {
-        path: path.to_path_buf(),
-        is_dir,
-        len: metadata.len(),
-        modified: metadata.modified().ok(),
-        readonly: metadata.permissions().readonly(),
+) -> Result<HashSet<PathBuf>> {
+    Ok(workspace_walk_paths(root, show_hidden, show_ignored)?
+        .into_iter()
+        .collect())
+}
+
+fn workspace_walk_paths(
+    root: &Path,
+    show_hidden: bool,
+    show_ignored: bool,
+) -> Result<Vec<PathBuf>> {
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(!show_hidden)
+        .ignore(!show_ignored)
+        .git_ignore(!show_ignored)
+        .git_global(!show_ignored)
+        .git_exclude(!show_ignored)
+        .parents(!show_ignored)
+        .require_git(false);
+
+    let root = root.to_path_buf();
+    builder.filter_entry(move |entry| {
+        let path = entry.path();
+        if path == root {
+            return true;
+        }
+        if !show_hidden && path_has_hidden_component(&root, path) {
+            return false;
+        }
+        if !show_ignored && path_has_generated_component(&root, path) {
+            return false;
+        }
+        true
     });
 
-    if !is_dir {
-        return Ok(());
-    }
-
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(path)? {
-        entries.push(entry?);
-    }
-    entries.sort_by_key(|entry| entry.file_name());
-
-    for entry in entries {
-        let entry_path = entry.path();
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(_) => continue,
-        };
-        let name = entry.file_name();
-        let hidden = name.to_str().is_some_and(is_hidden_file_name);
-        if file_type.is_dir() {
-            if (!show_hidden && hidden) || (!show_ignored && should_skip_dir(&entry_path)) {
-                continue;
-            }
-            let _ =
-                collect_workspace_snapshot_into(&entry_path, snapshot, show_hidden, show_ignored);
-        } else if file_type.is_file() && (show_hidden || !hidden) {
-            let _ =
-                collect_workspace_snapshot_into(&entry_path, snapshot, show_hidden, show_ignored);
-        }
-    }
-
-    Ok(())
-}
-
-fn collect_workspace_paths_into(
-    dir: &Path,
-    paths: &mut Vec<PathBuf>,
-    show_hidden: bool,
-    show_ignored: bool,
-) -> Result<()> {
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        entries.push(entry?);
-    }
-    entries.sort_by_key(|entry| entry.file_name());
-
-    for entry in entries {
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        let name = entry.file_name();
-        let hidden = name.to_str().is_some_and(is_hidden_file_name);
-        if file_type.is_dir() {
-            if (!show_hidden && hidden) || (!show_ignored && should_skip_dir(&path)) {
-                continue;
-            }
-            paths.push(path.clone());
-            let _ = collect_workspace_paths_into(&path, paths, show_hidden, show_ignored);
-        } else if file_type.is_file() && (show_hidden || !hidden) {
-            paths.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn collect_workspace_files_into(
-    dir: &Path,
-    files: &mut Vec<PathBuf>,
-    show_hidden: bool,
-    show_ignored: bool,
-) -> Result<()> {
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(dir)? {
+    let mut paths = Vec::new();
+    for entry in builder.build() {
         let entry = entry?;
-        entries.push(entry);
-    }
-    entries.sort_by_key(|a| a.file_name());
-
-    for entry in entries {
         let path = entry.path();
-        let file_type = entry.file_type()?;
-        let name = entry.file_name();
-        let hidden = name.to_str().is_some_and(is_hidden_file_name);
-        if file_type.is_dir() {
-            if (!show_hidden && hidden) || (!show_ignored && should_skip_dir(&path)) {
-                continue;
-            }
-            let _ = collect_workspace_files_into(&path, files, show_hidden, show_ignored);
-        } else if file_type.is_file() && (show_hidden || !hidden) {
-            files.push(path);
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() || file_type.is_file() {
+            paths.push(path.to_path_buf());
         }
     }
-    Ok(())
-}
-
-fn should_skip_dir(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    matches!(
-        name,
-        ".git"
-            | ".hg"
-            | ".svn"
-            | "target"
-            | "node_modules"
-            | "dist"
-            | "build"
-            | ".next"
-            | ".nuxt"
-            | ".cache"
-            | "__pycache__"
-    )
+    Ok(paths)
 }
 
 fn path_has_hidden_component(root: &Path, path: &Path) -> bool {
@@ -12455,6 +12424,74 @@ src/lib.rs:3:1: note: trailing note
             .collect::<Vec<_>>();
         assert!(names.contains(&"src".to_owned()));
         assert!(!names.contains(&"target".to_owned()));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_visibility_respects_gitignore_and_toggle() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-gitignore-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("logs")).unwrap();
+        fs::write(root.join(".gitignore"), "ignored.log\nlogs/\n*.tmp\n").unwrap();
+        fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join("ignored.log"), "ignored\n").unwrap();
+        fs::write(root.join("scratch.tmp"), "ignored tmp\n").unwrap();
+        fs::write(root.join("logs/output.txt"), "ignored dir\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        let names = app
+            .visible_nodes()
+            .into_iter()
+            .map(|node| node.name)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"main.rs".to_owned()));
+        assert!(!names.contains(&"ignored.log".to_owned()));
+        assert!(!names.contains(&"scratch.tmp".to_owned()));
+        assert!(!names.contains(&"logs".to_owned()));
+
+        app.toggle_ignored_files();
+        let names = app
+            .visible_nodes()
+            .into_iter()
+            .map(|node| node.name)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"ignored.log".to_owned()));
+        assert!(names.contains(&"scratch.tmp".to_owned()));
+        assert!(names.contains(&"logs".to_owned()));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_search_respects_gitignore_and_toggle() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-search-gitignore-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(root.join("visible.txt"), "needle visible\n").unwrap();
+        fs::write(root.join("ignored.txt"), "needle ignored\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        let items = app.workspace_search_items("needle").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].path, canonical_root.join("visible.txt"));
+
+        app.toggle_ignored_files();
+        let items = app.workspace_search_items("needle").unwrap();
+        let paths = items.into_iter().map(|item| item.path).collect::<Vec<_>>();
+        assert!(paths.contains(&canonical_root.join("visible.txt")));
+        assert!(paths.contains(&canonical_root.join("ignored.txt")));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

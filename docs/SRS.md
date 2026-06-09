@@ -86,6 +86,10 @@ The explorer shall detect externally-created, externally-deleted, renamed, and m
 
 Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, rename, delete, New Terminal Here, refresh, collapse folders, toggle hidden files, and toggle generated folders. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
 
+### R-116 Ignore-Aware Workspace Visibility
+
+When ignored/generated entries are hidden, the explorer, quick open, workspace search, workspace symbols, go-to-definition, find-references, rename-symbol, and replace-in-files scans shall apply a shared workspace visibility policy. That policy shall respect `.gitignore`, `.ignore`, parent/global Git ignore files, and built-in generated folders such as `target`, `node_modules`, `dist`, and `build`. The `i` explorer toggle and matching command palette action shall reveal those ignored/generated entries and make them available to the same workspace scans.
+
 ## 4. Editor Requirements
 
 ### R-201 Tabs
@@ -158,11 +162,11 @@ Saving an edited file shall preserve an existing trailing newline unless the buf
 
 ### R-216 Workspace Text Search
 
-`Ctrl-shift-f` or `Ctrl-g` outside terminal focus shall open a workspace search overlay. The overlay shall scan real workspace files, scan dirty open editor buffers from their in-memory text instead of stale disk text, show file/line previews, mark dirty-buffer results as unsaved, and open the selected result at its matching line.
+`Ctrl-shift-f` or `Ctrl-g` outside terminal focus shall open a workspace search overlay. The overlay shall scan real workspace files under the shared hidden/ignored/generated visibility policy, scan dirty open editor buffers from their in-memory text instead of stale disk text, show file/line previews, mark dirty-buffer results as unsaved, and open the selected result at its matching line.
 
 ### R-216A Replace in Files
 
-`Ctrl-shift-h` or the command palette shall prompt for a search string and replacement string, then replace literal matches across real workspace text files. The operation shall skip generated folders according to the current explorer visibility policy, skip binary or oversized files, update clean open tabs with the saved replacement content, and skip dirty open tabs so unsaved work is not overwritten.
+`Ctrl-shift-h` or the command palette shall prompt for a search string and replacement string, then replace literal matches across real workspace text files. The operation shall skip files hidden by the shared hidden/ignored/generated visibility policy, skip binary or oversized files, update clean open tabs with the saved replacement content, and skip dirty open tabs so unsaved work is not overwritten.
 
 ### R-217 Command Palette
 
