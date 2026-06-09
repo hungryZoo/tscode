@@ -126,6 +126,22 @@ Saving an edited file shall preserve an existing trailing newline unless the buf
 
 `Ctrl-shift-f` or `Ctrl-g` outside terminal focus shall open a workspace search overlay. The overlay shall scan real workspace files, show file/line previews, and open the selected result at its matching line.
 
+### R-217 Command Palette
+
+`F1` or `Ctrl-shift-p` outside terminal focus shall open a command palette overlay. The command palette shall fuzzy-match available commands and execute the selected command with `Enter`.
+
+### R-218 Line Editing Commands
+
+The editor shall support indenting, outdenting, duplicating, deleting, moving, and toggling comments for the active line. `Tab`, `Shift-tab`, `Ctrl-d`, `Ctrl-/`, `Alt-up`, and `Alt-down` shall invoke the corresponding editor actions where the terminal can report those keys.
+
+### R-219 Go To Line
+
+The editor shall support jumping to one-based `line` or `line:column` input through `Ctrl-l` or the command palette.
+
+### R-220 Save All
+
+The command palette shall include a save-all command that writes every dirty editor tab to disk.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
@@ -160,6 +176,14 @@ When the terminal is focused, `Ctrl-c` shall be forwarded to the PTY shell rathe
 
 Paste events while terminal focus is active shall write pasted bytes to the PTY shell.
 
+### R-309 Terminal Clear
+
+The command palette shall include a clear-terminal command that resets the rendered terminal viewport and scrollback while keeping the current shell session alive.
+
+### R-310 Terminal Restart
+
+The command palette shall include a restart-terminal command that terminates the current PTY child and creates a fresh shell session in the workspace root.
+
 ## 6. Mouse Requirements
 
 ### R-401 Mouse Capture
@@ -182,7 +206,7 @@ Mouse move events shall update hover target state and cause a redraw.
 
 ### R-501 Focus Cycle
 
-`Tab` shall cycle through explorer, editor, and terminal focus.
+`Tab` shall cycle focus from the explorer, indent the active line in editor focus, and be forwarded to the PTY shell in terminal focus.
 
 ### R-502 Exit
 
@@ -226,8 +250,12 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Open a file, reveal it in the explorer, and confirm its row is selected.
 - Edit text, use `Ctrl-z`/`Ctrl-y`, save with `Ctrl-s`, and confirm file contents on disk.
 - Use `Ctrl-f` and `F3` to move through search matches.
+- Use `F1` to open the command palette and execute an editor command.
+- Use `Ctrl-l` or the command palette to jump to a line.
+- Use line editing commands, save, and confirm file contents on disk.
 - Use `Ctrl-p` to quick-open a file by path fragment.
 - Use workspace search to find text in a different file and jump to the matching line.
+- Use the command palette to clear and restart the integrated terminal.
 - Use the mouse wheel over explorer/editor/terminal and confirm scroll changes.
 - Type `pwd` in the terminal panel and confirm the output points at the workspace.
 - Build release artifacts through the release workflow.

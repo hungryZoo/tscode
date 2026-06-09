@@ -7,13 +7,16 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Mouse-first file explorer with real filesystem reads, expand/collapse, file open, hover, and wheel scrolling.
 - Explorer copy, cut, paste, duplicate, and reveal-active-file actions backed by real filesystem operations.
 - File moves keep open editor tab paths in sync and reveal pasted/duplicated targets in the tree.
+- Command Palette with `F1` or `Ctrl-Shift-P`, fuzzy command matching, and actions for files, editor commands, explorer operations, focus changes, and terminal management.
 - Quick Open overlay with `Ctrl-P` fuzzy matching across workspace file paths.
 - Workspace text search overlay with `Ctrl-Shift-F` or `Ctrl-G`, real file scanning, result previews, and jump-to-line open.
 - Editable tabbed code buffers with line numbers, syntax highlighting, dirty markers, cursor movement, paste, save, repeated search, undo, and redo.
+- Editor line commands for indent/outdent, duplicate line, delete line, move line up/down, toggle line comment, go to line, and save all.
 - File explorer actions for refresh, new file, new folder, rename, and delete with confirmation; folder rename/delete keeps open tabs in sync.
+- Explorer collapse-all is available through the command palette.
 - Tab close support through the tab `x`, middle click, or `Ctrl-W`, with unsaved-buffer protection.
 - File save preserves existing trailing newlines.
-- Bottom integrated terminal panel backed by a real PTY shell with forwarded keyboard input, shell state, `Ctrl-C`, and terminal scrollback.
+- Bottom integrated terminal panel backed by a real PTY shell with forwarded keyboard input, shell state, `Ctrl-C`, terminal scrollback, clear-terminal, and restart-terminal commands.
 - Keyboard fallback for focus cycling, navigation, scrolling, command entry, and exit.
 
 ## Install

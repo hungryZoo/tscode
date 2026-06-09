@@ -36,7 +36,7 @@ The top-level state owns:
 - active tab index
 - focused panel
 - hover target
-- quick panel state for quick open and workspace search
+- quick panel state for quick open, workspace search, and command palette
 - terminal state
 - cached UI hit regions from the most recent draw
 - syntax highlighter
@@ -60,11 +60,11 @@ Each opened file tab stores:
 - trailing-newline state
 - bounded undo and redo stacks
 
-Editor buffers support insertion, deletion, newline, paste, cursor movement, save, undo, redo, and in-file search. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
+Editor buffers support insertion, deletion, newline, paste, cursor movement, save, undo, redo, in-file search, go-to-line, and active-line commands. Line commands include indent, outdent, duplicate, delete, move up/down, and file-type-aware line-comment toggling. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
 
 ### Quick Panel
 
-The quick panel stores a mode, query text, result list, selected index, and scroll offset. Quick Open recursively scans workspace files while skipping common generated directories, then fuzzy matches path fragments. Workspace Search scans bounded-size text files, builds file/line preview results, and opens the selected result at its matching cursor location.
+The quick panel stores a mode, query text, result list, selected index, and scroll offset. Quick Open recursively scans workspace files while skipping common generated directories, then fuzzy matches path fragments. Workspace Search scans bounded-size text files, builds file/line preview results, and opens the selected result at its matching cursor location. Command Palette uses the same overlay model with `CommandAction` entries instead of file paths; activating a command dispatches through the app action layer.
 
 ### Terminal
 
@@ -77,6 +77,8 @@ The integrated terminal owns:
 - a `vt100::Parser` screen with scrollback
 
 Keyboard input while terminal-focused is encoded as terminal byte sequences and written to the PTY. PTY output is parsed asynchronously and rendered into the bottom panel.
+
+Terminal management commands reset only the `vt100::Parser` for clear-terminal, or kill the current PTY child and replace the `ShellPanel` with a new workspace-root shell for restart-terminal.
 
 ## 4. Rendering Design
 
@@ -121,7 +123,7 @@ Wheel events route to the hovered panel if known, otherwise to the focused panel
 
 ### Keyboard
 
-Keyboard events map to panel-specific actions. Quick-panel input handles query editing, result movement, and activation before normal panel shortcuts. Editor-focused input supports save, search, repeated search, undo, redo, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
+Keyboard events map to panel-specific actions. Quick-panel input handles query editing, result movement, and activation before normal panel shortcuts. `F1` opens the command palette because many terminal sessions cannot reliably distinguish `Ctrl-P` from `Ctrl-Shift-P`. Editor-focused input supports save, search, go-to-line, repeated search, undo, redo, line commands, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
 
 ## 6. Syntax Highlighting
 
