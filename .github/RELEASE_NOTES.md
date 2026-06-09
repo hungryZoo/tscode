@@ -23,7 +23,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Internal editor clipboard support for `Ctrl-A`, `Ctrl-C`, `Ctrl-X`, and `Ctrl-V`, including replacing selected ranges as single undoable edits.
 - Editor copy/cut now also exports selected text through OSC52 terminal clipboard integration where the host terminal allows it.
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the same terminal clipboard export without disturbing explorer file copy/cut state.
-- Editor line commands for indent/outdent, duplicate line, delete line, move line up/down, toggle line comment, go to line, and save all.
+- Editor line commands for indent/outdent, duplicate, delete, move up/down, and toggle comments now work on selected line ranges as one undoable edit, while still supporting the current line when no selection is active.
 - File explorer actions for refresh, new file, new folder, rename, and delete with confirmation; folder rename/delete keeps open tabs in sync.
 - Explorer collapse-all is available through the command palette.
 - Tab close support through the tab `x`, middle click, or `Ctrl-W`, with unsaved-buffer protection.

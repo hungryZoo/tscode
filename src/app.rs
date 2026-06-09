@@ -383,68 +383,119 @@ impl EditorTab {
     }
 
     fn indent_line(&mut self) {
+        let (start, end, had_selection) = self.command_line_range();
         self.push_undo();
-        self.lines[self.cursor_line].insert_str(0, "    ");
-        self.cursor_col = self.cursor_col.saturating_add(4);
+        for line_index in start..=end {
+            self.lines[line_index].insert_str(0, "    ");
+        }
+        if had_selection {
+            self.select_line_range(start, end);
+        } else {
+            self.cursor_col = self.cursor_col.saturating_add(4);
+        }
         self.dirty = true;
     }
 
     fn outdent_line(&mut self) -> bool {
-        let remove_count = leading_indent_width(&self.lines[self.cursor_line]);
-        if remove_count == 0 {
+        let (start, end, had_selection) = self.command_line_range();
+        let removals = (start..=end)
+            .filter_map(|line_index| {
+                let remove_count = leading_indent_width(&self.lines[line_index]);
+                (remove_count > 0).then_some((line_index, remove_count))
+            })
+            .collect::<Vec<_>>();
+        if removals.is_empty() {
             return false;
         }
 
         self.push_undo();
-        let end = byte_index_for_char(&self.lines[self.cursor_line], remove_count);
-        self.lines[self.cursor_line].replace_range(0..end, "");
-        self.cursor_col = self.cursor_col.saturating_sub(remove_count);
+        let cursor_removed = removals
+            .iter()
+            .find_map(|(line_index, remove_count)| {
+                (*line_index == self.cursor_line).then_some(*remove_count)
+            })
+            .unwrap_or(0);
+        for (line_index, remove_count) in removals {
+            let end_byte = byte_index_for_char(&self.lines[line_index], remove_count);
+            self.lines[line_index].replace_range(0..end_byte, "");
+        }
+        if had_selection {
+            self.select_line_range(start, end);
+        } else {
+            self.cursor_col = self.cursor_col.saturating_sub(cursor_removed);
+        }
         self.dirty = true;
         true
     }
 
     fn duplicate_line(&mut self) {
+        let (start, end, had_selection) = self.command_line_range();
         self.push_undo();
-        let duplicate = self.lines[self.cursor_line].clone();
-        self.cursor_line += 1;
-        self.lines.insert(self.cursor_line, duplicate);
-        self.clamp_cursor_col();
-        self.dirty = true;
-    }
-
-    fn delete_line(&mut self) {
-        self.push_undo();
-        if self.lines.len() == 1 {
-            self.lines[0].clear();
-            self.cursor_col = 0;
+        let duplicates = self.lines[start..=end].to_vec();
+        let insert_at = end + 1;
+        for (offset, duplicate) in duplicates.iter().cloned().enumerate() {
+            self.lines.insert(insert_at + offset, duplicate);
+        }
+        if had_selection {
+            let duplicated_start = insert_at;
+            let duplicated_end = insert_at + duplicates.len() - 1;
+            self.select_line_range(duplicated_start, duplicated_end);
         } else {
-            self.lines.remove(self.cursor_line);
-            self.cursor_line = self.cursor_line.min(self.lines.len().saturating_sub(1));
+            self.cursor_line += 1;
             self.clamp_cursor_col();
         }
         self.dirty = true;
     }
 
+    fn delete_line(&mut self) {
+        let (start, end, _) = self.command_line_range();
+        self.push_undo();
+        if start == 0 && end + 1 >= self.lines.len() {
+            self.lines.clear();
+            self.lines.push(String::new());
+            self.cursor_line = 0;
+            self.cursor_col = 0;
+        } else {
+            self.lines.drain(start..=end);
+            self.cursor_line = start.min(self.lines.len().saturating_sub(1));
+            self.cursor_col = 0;
+        }
+        self.clear_selection();
+        self.dirty = true;
+    }
+
     fn move_line_up(&mut self) -> bool {
-        if self.cursor_line == 0 {
+        let (start, end, had_selection) = self.command_line_range();
+        if start == 0 {
             return false;
         }
 
         self.push_undo();
-        self.lines.swap(self.cursor_line, self.cursor_line - 1);
-        self.cursor_line -= 1;
+        let previous = self.lines.remove(start - 1);
+        self.lines.insert(end, previous);
+        if had_selection {
+            self.select_line_range(start - 1, end - 1);
+        } else {
+            self.cursor_line -= 1;
+        }
         self.dirty = true;
         true
     }
 
     fn move_line_down(&mut self) -> bool {
-        if self.cursor_line + 1 >= self.lines.len() {
+        let (start, end, had_selection) = self.command_line_range();
+        if end + 1 >= self.lines.len() {
             return false;
         }
 
         self.push_undo();
-        self.lines.swap(self.cursor_line, self.cursor_line + 1);
-        self.cursor_line += 1;
+        let next = self.lines.remove(end + 1);
+        self.lines.insert(start, next);
+        if had_selection {
+            self.select_line_range(start + 1, end + 1);
+        } else {
+            self.cursor_line += 1;
+        }
         self.dirty = true;
         true
     }
@@ -454,29 +505,46 @@ impl EditorTab {
             return false;
         };
 
-        self.push_undo();
-        let line = &mut self.lines[self.cursor_line];
-        let indent_chars = line.chars().take_while(|c| c.is_whitespace()).count();
-        let indent_byte = byte_index_for_char(line, indent_chars);
-        let body = &line[indent_byte..];
+        let (start, end, had_selection) = self.command_line_range();
         let token_with_space = format!("{token} ");
+        let should_uncomment = (start..=end)
+            .all(|line_index| comment_removal_range(&self.lines[line_index], token).is_some());
 
-        if body.starts_with(&token_with_space) {
-            let remove_end = indent_byte + token_with_space.len();
-            line.replace_range(indent_byte..remove_end, "");
-            self.cursor_col = self
-                .cursor_col
-                .saturating_sub(token_with_space.chars().count());
-        } else if body.starts_with(token) {
-            let remove_end = indent_byte + token.len();
-            line.replace_range(indent_byte..remove_end, "");
-            self.cursor_col = self.cursor_col.saturating_sub(token.chars().count());
+        self.push_undo();
+        if should_uncomment {
+            let cursor_removed = comment_removal_range(&self.lines[self.cursor_line], token)
+                .map(|(_, _, count)| count)
+                .unwrap_or(0);
+            for line_index in start..=end {
+                if let Some((remove_start, remove_end, _)) =
+                    comment_removal_range(&self.lines[line_index], token)
+                {
+                    self.lines[line_index].replace_range(remove_start..remove_end, "");
+                }
+            }
+            if had_selection {
+                self.select_line_range(start, end);
+            } else {
+                self.cursor_col = self.cursor_col.saturating_sub(cursor_removed);
+            }
         } else {
-            line.insert_str(indent_byte, &token_with_space);
-            if self.cursor_col >= indent_chars {
-                self.cursor_col = self
-                    .cursor_col
-                    .saturating_add(token_with_space.chars().count());
+            let cursor_line = self.cursor_line;
+            let mut cursor_add = 0usize;
+            for line_index in start..=end {
+                let indent_chars = self.lines[line_index]
+                    .chars()
+                    .take_while(|c| c.is_whitespace())
+                    .count();
+                let indent_byte = byte_index_for_char(&self.lines[line_index], indent_chars);
+                self.lines[line_index].insert_str(indent_byte, &token_with_space);
+                if line_index == cursor_line && self.cursor_col >= indent_chars {
+                    cursor_add = token_with_space.chars().count();
+                }
+            }
+            if had_selection {
+                self.select_line_range(start, end);
+            } else {
+                self.cursor_col = self.cursor_col.saturating_add(cursor_add);
             }
         }
 
@@ -587,6 +655,26 @@ impl EditorTab {
         self.selection_anchor = Some((0, 0));
         self.cursor_line = self.lines.len().saturating_sub(1);
         self.cursor_col = self.lines[self.cursor_line].chars().count();
+    }
+
+    fn command_line_range(&self) -> (usize, usize, bool) {
+        let Some((start, end)) = self.selection_range() else {
+            return (self.cursor_line, self.cursor_line, false);
+        };
+        let start_line = start.0.min(self.lines.len().saturating_sub(1));
+        let mut end_line = end.0.min(self.lines.len().saturating_sub(1));
+        if end.1 == 0 && end_line > start_line {
+            end_line -= 1;
+        }
+        (start_line, end_line, true)
+    }
+
+    fn select_line_range(&mut self, start: usize, end: usize) {
+        let start = start.min(self.lines.len().saturating_sub(1));
+        let end = end.min(self.lines.len().saturating_sub(1));
+        self.selection_anchor = Some((start, 0));
+        self.cursor_line = end;
+        self.cursor_col = self.lines[end].chars().count();
     }
 
     pub fn selected_text(&self) -> Option<String> {
@@ -3950,6 +4038,29 @@ fn comment_token_for_path(path: &Path) -> Option<&'static str> {
     }
 }
 
+fn comment_removal_range(line: &str, token: &str) -> Option<(usize, usize, usize)> {
+    let indent_chars = line.chars().take_while(|c| c.is_whitespace()).count();
+    let indent_byte = byte_index_for_char(line, indent_chars);
+    let body = &line[indent_byte..];
+    let token_with_space = format!("{token} ");
+
+    if body.starts_with(&token_with_space) {
+        Some((
+            indent_byte,
+            indent_byte + token_with_space.len(),
+            token_with_space.chars().count(),
+        ))
+    } else if body.starts_with(token) {
+        Some((
+            indent_byte,
+            indent_byte + token.len(),
+            token.chars().count(),
+        ))
+    } else {
+        None
+    }
+}
+
 fn parse_line_col(input: &str) -> Option<(usize, usize)> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -4160,6 +4271,65 @@ mod tests {
 
         tab.delete_line();
         assert_eq!(tab.lines, vec!["fn main() {", "println!(\"hi\");", "}"]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn editor_line_commands_apply_to_selected_line_ranges() {
+        let path = temp_file("line-range-commands.rs");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.set_cursor(0, 0);
+        tab.set_cursor_selecting(2, 0);
+        assert_eq!(tab.command_line_range(), (0, 1, true));
+
+        tab.indent_line();
+        assert_eq!(tab.lines, vec!["    alpha", "    beta", "gamma", "delta"]);
+
+        assert!(tab.outdent_line());
+        assert_eq!(tab.lines, vec!["alpha", "beta", "gamma", "delta"]);
+
+        tab.set_cursor(1, 0);
+        tab.set_cursor_selecting(3, 0);
+        assert!(tab.toggle_line_comment());
+        assert_eq!(tab.lines, vec!["alpha", "// beta", "// gamma", "delta"]);
+        assert!(tab.toggle_line_comment());
+        assert_eq!(tab.lines, vec!["alpha", "beta", "gamma", "delta"]);
+
+        tab.duplicate_line();
+        assert_eq!(
+            tab.lines,
+            vec!["alpha", "beta", "gamma", "beta", "gamma", "delta"]
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn editor_selected_line_ranges_move_and_delete_as_blocks() {
+        let path = temp_file("line-range-move-delete.rs");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.set_cursor(1, 0);
+        tab.set_cursor_selecting(3, 0);
+
+        assert!(tab.move_line_up());
+        assert_eq!(tab.lines, vec!["beta", "gamma", "alpha", "delta"]);
+        assert_eq!(tab.command_line_range(), (0, 1, true));
+
+        assert!(tab.move_line_down());
+        assert_eq!(tab.lines, vec!["alpha", "beta", "gamma", "delta"]);
+        assert_eq!(tab.command_line_range(), (1, 2, true));
+
+        tab.delete_line();
+        assert_eq!(tab.lines, vec!["alpha", "delta"]);
+        assert_eq!(tab.cursor_position(), (1, 0));
+        assert!(tab.selection_range().is_none());
+
         let _ = fs::remove_file(path);
     }
 

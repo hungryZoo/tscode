@@ -144,7 +144,7 @@ Saving an edited file shall preserve an existing trailing newline unless the buf
 
 ### R-218 Line Editing Commands
 
-The editor shall support indenting, outdenting, duplicating, deleting, moving, and toggling comments for the active line. `Tab`, `Shift-tab`, `Ctrl-d`, `Ctrl-/`, `Alt-up`, and `Alt-down` shall invoke the corresponding editor actions where the terminal can report those keys.
+The editor shall support indenting, outdenting, duplicating, deleting, moving, and toggling comments for the active line or selected line range. `Tab`, `Shift-tab`, `Ctrl-d`, `Ctrl-/`, `Alt-up`, and `Alt-down` shall invoke the corresponding editor actions where the terminal can report those keys. Each selected-range line command shall be undoable as a single edit.
 
 ### R-219 Go To Line
 

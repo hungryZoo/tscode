@@ -57,7 +57,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
 - As a developer, I can select text with the keyboard or mouse, copy or cut it to both the editor clipboard and a terminal clipboard export where supported, then paste it back into the editor.
 - As a developer, I can copy active-file or selected-explorer absolute and workspace-relative paths for use in shell commands, bug reports, or external tools.
-- As a developer, I can use common line editing actions: indent, outdent, duplicate line, delete line, move line, toggle line comment, and go to line.
+- As a developer, I can use common line editing actions on the current line or selected line range: indent, outdent, duplicate, delete, move, toggle comments, and go to line.
 - As a developer, I can rely on editor conveniences such as auto-indent on newline, bracket/quote auto-pairs, skip-over of existing closing pairs, and paired deletion with Backspace.
 - As a developer, I can move and select by word in the editor with modified arrow keys.
 - As a developer, I can quickly open files by typing a fuzzy path fragment.
@@ -106,7 +106,7 @@ Keyboard fallback:
 - `Enter` preserves indentation and adds one extra indent level after opening braces/brackets/parentheses
 - bracket, quote, apostrophe, and backtick entry provides editor auto-pair insertion, selection wrapping, closing-pair skip-over, and paired Backspace deletion
 - `Ctrl-A`, `Ctrl-C`, `Ctrl-X`, and `Ctrl-V` provide editor select-all, copy, cut, and paste when editor focus is active; copy and cut also export text through OSC52-compatible terminal clipboards
-- `Ctrl-L`, `Ctrl-/`, `Ctrl-D`, `Alt-Up`, `Alt-Down`, `Tab`, and `Shift-Tab` provide editor go-to-line and line editing actions
+- `Ctrl-L`, `Ctrl-/`, `Ctrl-D`, `Alt-Up`, `Alt-Down`, `Tab`, and `Shift-Tab` provide editor go-to-line and selection-aware line editing actions
 - `Esc` clears transient mode or exits when appropriate
 - `q` exits outside terminal focus; `Ctrl-q` exits globally
 - `Shift-PageUp` and `Shift-PageDown` scroll terminal scrollback when terminal focus is active
