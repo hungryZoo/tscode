@@ -128,6 +128,7 @@ pub struct EditorTab {
     pub scroll: usize,
     pub cursor_line: usize,
     pub cursor_col: usize,
+    pub selection_anchor: Option<(usize, usize)>,
     pub dirty: bool,
     trailing_newline: bool,
     undo_stack: Vec<EditorSnapshot>,
@@ -157,6 +158,7 @@ impl EditorTab {
             scroll: 0,
             cursor_line: 0,
             cursor_col: 0,
+            selection_anchor: None,
             dirty: false,
             trailing_newline,
             undo_stack: Vec::new(),
@@ -175,6 +177,11 @@ impl EditorTab {
     }
 
     fn insert_char(&mut self, c: char) {
+        if self.selection_range().is_some() {
+            self.replace_selection_with(&c.to_string());
+            return;
+        }
+
         self.push_undo();
         self.insert_char_raw(c);
         self.dirty = true;
@@ -185,7 +192,17 @@ impl EditorTab {
             return;
         }
 
+        if self.selection_range().is_some() {
+            self.replace_selection_with(text);
+            return;
+        }
+
         self.push_undo();
+        self.insert_text_raw(text);
+        self.dirty = true;
+    }
+
+    fn insert_text_raw(&mut self, text: &str) {
         for c in text.chars() {
             match c {
                 '\r' => {}
@@ -193,7 +210,6 @@ impl EditorTab {
                 c => self.insert_char_raw(c),
             }
         }
-        self.dirty = true;
     }
 
     fn insert_char_raw(&mut self, c: char) {
@@ -205,6 +221,11 @@ impl EditorTab {
     }
 
     fn newline(&mut self) {
+        if self.selection_range().is_some() {
+            self.replace_selection_with("\n");
+            return;
+        }
+
         self.push_undo();
         self.newline_raw();
         self.dirty = true;
@@ -221,6 +242,10 @@ impl EditorTab {
     }
 
     fn backspace(&mut self) {
+        if self.delete_selection().is_some() {
+            return;
+        }
+
         if self.cursor_col == 0 && self.cursor_line == 0 {
             return;
         }
@@ -243,6 +268,10 @@ impl EditorTab {
     }
 
     fn delete(&mut self) {
+        if self.delete_selection().is_some() {
+            return;
+        }
+
         let line_len = self.lines[self.cursor_line].chars().count();
         if self.cursor_col >= line_len && self.cursor_line + 1 >= self.lines.len() {
             return;
@@ -364,17 +393,42 @@ impl EditorTab {
         true
     }
 
-    fn move_cursor(&mut self, line_delta: isize, col_delta: isize) {
+    fn move_cursor_with_selection(&mut self, line_delta: isize, col_delta: isize, selecting: bool) {
+        let previous = self.cursor_position();
+        if selecting && self.selection_anchor.is_none() {
+            self.selection_anchor = Some(previous);
+        } else if !selecting {
+            self.selection_anchor = None;
+        }
+
         self.cursor_line =
             add_signed(self.cursor_line, line_delta).min(self.lines.len().saturating_sub(1));
         self.cursor_col = add_signed(self.cursor_col, col_delta);
         self.clamp_cursor_col();
+        self.clear_collapsed_selection();
     }
 
     fn set_cursor(&mut self, line: usize, col: usize) {
+        self.selection_anchor = None;
+        self.set_cursor_raw(line, col);
+    }
+
+    fn set_cursor_selecting(&mut self, line: usize, col: usize) {
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.cursor_position());
+        }
+        self.set_cursor_raw(line, col);
+        self.clear_collapsed_selection();
+    }
+
+    fn set_cursor_raw(&mut self, line: usize, col: usize) {
         self.cursor_line = line.min(self.lines.len().saturating_sub(1));
         self.cursor_col = col;
         self.clamp_cursor_col();
+    }
+
+    fn cursor_position(&self) -> (usize, usize) {
+        (self.cursor_line, self.cursor_col)
     }
 
     fn current_line_mut(&mut self) -> &mut String {
@@ -384,6 +438,97 @@ impl EditorTab {
     fn clamp_cursor_col(&mut self) {
         let line_len = self.lines[self.cursor_line].chars().count();
         self.cursor_col = self.cursor_col.min(line_len);
+    }
+
+    pub fn selection_range(&self) -> Option<((usize, usize), (usize, usize))> {
+        let anchor = self.selection_anchor?;
+        let cursor = self.cursor_position();
+        if anchor == cursor {
+            None
+        } else if anchor < cursor {
+            Some((anchor, cursor))
+        } else {
+            Some((cursor, anchor))
+        }
+    }
+
+    fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+    }
+
+    fn clear_collapsed_selection(&mut self) {
+        if self.selection_anchor == Some(self.cursor_position()) {
+            self.selection_anchor = None;
+        }
+    }
+
+    fn select_all(&mut self) {
+        self.selection_anchor = Some((0, 0));
+        self.cursor_line = self.lines.len().saturating_sub(1);
+        self.cursor_col = self.lines[self.cursor_line].chars().count();
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        Some(self.text_in_range(start, end))
+    }
+
+    fn delete_selection(&mut self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        let deleted = self.text_in_range(start, end);
+        self.push_undo();
+        self.delete_range_raw(start, end);
+        self.dirty = true;
+        Some(deleted)
+    }
+
+    fn replace_selection_with(&mut self, text: &str) {
+        let Some((start, end)) = self.selection_range() else {
+            return;
+        };
+        self.push_undo();
+        self.delete_range_raw(start, end);
+        self.insert_text_raw(text);
+        self.dirty = true;
+    }
+
+    fn text_in_range(&self, start: (usize, usize), end: (usize, usize)) -> String {
+        let (start_line, start_col) = start;
+        let (end_line, end_col) = end;
+        if start_line == end_line {
+            return slice_chars(&self.lines[start_line], start_col, end_col);
+        }
+
+        let mut parts = Vec::new();
+        parts.push(skip_chars_owned(&self.lines[start_line], start_col));
+        for line_index in (start_line + 1)..end_line {
+            parts.push(self.lines[line_index].clone());
+        }
+        parts.push(take_chars_owned(&self.lines[end_line], end_col));
+        parts.join("\n")
+    }
+
+    fn delete_range_raw(&mut self, start: (usize, usize), end: (usize, usize)) {
+        let (start_line, start_col) = start;
+        let (end_line, end_col) = end;
+        if start_line == end_line {
+            let start_byte = byte_index_for_char(&self.lines[start_line], start_col);
+            let end_byte = byte_index_for_char(&self.lines[start_line], end_col);
+            self.lines[start_line].replace_range(start_byte..end_byte, "");
+        } else {
+            let prefix = take_chars_owned(&self.lines[start_line], start_col);
+            let suffix = skip_chars_owned(&self.lines[end_line], end_col);
+            self.lines[start_line] = format!("{prefix}{suffix}");
+            self.lines.drain((start_line + 1)..=end_line);
+        }
+
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        self.cursor_line = start_line.min(self.lines.len().saturating_sub(1));
+        self.cursor_col = start_col;
+        self.clamp_cursor_col();
+        self.clear_selection();
     }
 
     fn undo(&mut self) -> bool {
@@ -425,6 +570,7 @@ impl EditorTab {
         self.cursor_line = snapshot.cursor_line.min(self.lines.len().saturating_sub(1));
         self.cursor_col = snapshot.cursor_col;
         self.clamp_cursor_col();
+        self.clear_selection();
     }
 
     fn push_undo(&mut self) {
@@ -495,6 +641,10 @@ pub enum CommandAction {
     ToggleLineComment,
     IndentLine,
     OutdentLine,
+    SelectAll,
+    CopySelection,
+    CutSelection,
+    PasteClipboard,
     FocusExplorer,
     FocusEditor,
     FocusTerminal,
@@ -544,6 +694,7 @@ pub struct App {
     pub quick_panel: Option<QuickPanel>,
     pub quick_panel_height: usize,
     pub explorer_clipboard: Option<ExplorerClipboard>,
+    pub editor_clipboard: Option<String>,
 }
 
 impl App {
@@ -566,11 +717,12 @@ impl App {
             terminal_height: 0,
             last_error: None,
             prompt: None,
-            message: Some("F1/Ctrl-Shift-P commands | Ctrl-P files | Explorer: c/x/p/y/o | Editor: Ctrl-S save | Terminal: Ctrl-Q quit".to_owned()),
+            message: Some("F1/Ctrl-Shift-P commands | Ctrl-P files | Editor: Ctrl-A/C/X/V selection | Terminal: Ctrl-Q quit".to_owned()),
             search_needle: None,
             quick_panel: None,
             quick_panel_height: 0,
             explorer_clipboard: None,
+            editor_clipboard: None,
         })
     }
 
@@ -660,6 +812,12 @@ impl App {
         match mouse.kind {
             MouseEventKind::Moved => {}
             MouseEventKind::Down(MouseButton::Left) => self.activate_target(target)?,
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if target == HoverTarget::Editor {
+                    self.focus = FocusPanel::Editor;
+                    self.set_editor_cursor_from_mouse(true);
+                }
+            }
             MouseEventKind::Down(MouseButton::Middle) => {
                 if let HoverTarget::Tab(index) | HoverTarget::TabClose(index) = target {
                     self.close_tab(index);
@@ -701,7 +859,7 @@ impl App {
             HoverTarget::TabClose(index) => self.close_tab(index),
             HoverTarget::QuickRow(index) => self.activate_quick_row(index),
             HoverTarget::Editor => {
-                self.set_editor_cursor_from_mouse();
+                self.set_editor_cursor_from_mouse(false);
             }
             HoverTarget::Terminal | HoverTarget::TerminalInput => {
                 self.send_terminal_mouse_click();
@@ -753,6 +911,10 @@ impl App {
 
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
+                KeyCode::Char('a') | KeyCode::Char('A') => self.select_all_active_tab(),
+                KeyCode::Char('c') | KeyCode::Char('C') => self.copy_editor_selection(),
+                KeyCode::Char('x') | KeyCode::Char('X') => self.cut_editor_selection(),
+                KeyCode::Char('v') | KeyCode::Char('V') => self.paste_editor_clipboard(),
                 KeyCode::Char('s') => self.save_active_tab(),
                 KeyCode::Char('f') => {
                     let initial = self.search_needle.clone().unwrap_or_default();
@@ -769,15 +931,16 @@ impl App {
             return Ok(());
         }
 
+        let selecting = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
-            KeyCode::Up => self.move_editor_cursor(-1, 0),
-            KeyCode::Down => self.move_editor_cursor(1, 0),
-            KeyCode::Left => self.move_editor_cursor(0, -1),
-            KeyCode::Right => self.move_editor_cursor(0, 1),
+            KeyCode::Up => self.move_editor_cursor_with_selection(-1, 0, selecting),
+            KeyCode::Down => self.move_editor_cursor_with_selection(1, 0, selecting),
+            KeyCode::Left => self.move_editor_cursor_with_selection(0, -1, selecting),
+            KeyCode::Right => self.move_editor_cursor_with_selection(0, 1, selecting),
             KeyCode::PageUp => self.scroll_editor(-(self.editor_height as isize)),
             KeyCode::PageDown => self.scroll_editor(self.editor_height as isize),
-            KeyCode::Home => self.set_editor_cursor_col(0),
-            KeyCode::End => self.set_editor_cursor_end(),
+            KeyCode::Home => self.set_editor_cursor_col(0, selecting),
+            KeyCode::End => self.set_editor_cursor_end(selecting),
             KeyCode::F(3) => self.find_next(true),
             KeyCode::Tab => self.indent_active_line(),
             KeyCode::BackTab => self.outdent_active_line(),
@@ -1152,6 +1315,30 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Outdent the current editor line",
             shortcut: "Shift-Tab",
             action: CommandAction::OutdentLine,
+        },
+        CommandSpec {
+            label: "Select All",
+            detail: "Select the entire active editor buffer",
+            shortcut: "Ctrl-A",
+            action: CommandAction::SelectAll,
+        },
+        CommandSpec {
+            label: "Copy Selection",
+            detail: "Copy the current editor selection to the internal clipboard",
+            shortcut: "Ctrl-C",
+            action: CommandAction::CopySelection,
+        },
+        CommandSpec {
+            label: "Cut Selection",
+            detail: "Cut the current editor selection to the internal clipboard",
+            shortcut: "Ctrl-X",
+            action: CommandAction::CutSelection,
+        },
+        CommandSpec {
+            label: "Paste Clipboard",
+            detail: "Paste the internal editor clipboard at the cursor",
+            shortcut: "Ctrl-V",
+            action: CommandAction::PasteClipboard,
         },
         CommandSpec {
             label: "Focus Explorer",
@@ -1772,24 +1959,81 @@ impl App {
         }
     }
 
-    fn move_editor_cursor(&mut self, line_delta: isize, col_delta: isize) {
+    fn select_all_active_tab(&mut self) {
         if let Some(tab) = self.active_tab_mut() {
-            tab.move_cursor(line_delta, col_delta);
+            tab.select_all();
+            self.ensure_editor_cursor_visible();
+            self.message = Some("selected all".to_owned());
+        }
+    }
+
+    fn copy_editor_selection(&mut self) {
+        let Some(text) = self.active_tab().and_then(EditorTab::selected_text) else {
+            self.message = Some("no editor selection to copy".to_owned());
+            return;
+        };
+        let count = text.chars().count();
+        self.editor_clipboard = Some(text);
+        self.message = Some(format!("copied {count} char(s)"));
+    }
+
+    fn cut_editor_selection(&mut self) {
+        let Some(tab) = self.active_tab_mut() else {
+            return;
+        };
+        let Some(text) = tab.delete_selection() else {
+            self.message = Some("no editor selection to cut".to_owned());
+            return;
+        };
+        let count = text.chars().count();
+        self.editor_clipboard = Some(text);
+        self.ensure_editor_cursor_visible();
+        self.message = Some(format!("cut {count} char(s)"));
+    }
+
+    fn paste_editor_clipboard(&mut self) {
+        let Some(text) = self.editor_clipboard.clone() else {
+            self.message = Some("editor clipboard empty".to_owned());
+            return;
+        };
+        if let Some(tab) = self.active_tab_mut() {
+            tab.insert_text(&text);
+            self.ensure_editor_cursor_visible();
+            self.message = Some("pasted editor clipboard".to_owned());
+        }
+    }
+
+    fn move_editor_cursor_with_selection(
+        &mut self,
+        line_delta: isize,
+        col_delta: isize,
+        selecting: bool,
+    ) {
+        if let Some(tab) = self.active_tab_mut() {
+            tab.move_cursor_with_selection(line_delta, col_delta, selecting);
             self.ensure_editor_cursor_visible();
         }
     }
 
-    fn set_editor_cursor_col(&mut self, col: usize) {
+    fn set_editor_cursor_col(&mut self, col: usize, selecting: bool) {
         if let Some(tab) = self.active_tab_mut() {
-            tab.cursor_col = col;
-            tab.clamp_cursor_col();
+            if selecting {
+                tab.set_cursor_selecting(tab.cursor_line, col);
+            } else {
+                tab.set_cursor(tab.cursor_line, col);
+            }
             self.ensure_editor_cursor_visible();
         }
     }
 
-    fn set_editor_cursor_end(&mut self) {
+    fn set_editor_cursor_end(&mut self, selecting: bool) {
         if let Some(tab) = self.active_tab_mut() {
-            tab.cursor_col = tab.lines[tab.cursor_line].chars().count();
+            let col = tab.lines[tab.cursor_line].chars().count();
+            if selecting {
+                tab.set_cursor_selecting(tab.cursor_line, col);
+            } else {
+                tab.set_cursor(tab.cursor_line, col);
+            }
             self.ensure_editor_cursor_visible();
         }
     }
@@ -1805,7 +2049,7 @@ impl App {
         }
     }
 
-    fn set_editor_cursor_from_mouse(&mut self) {
+    fn set_editor_cursor_from_mouse(&mut self, selecting: bool) {
         let Some(body) = self.hit_regions.editor_body else {
             return;
         };
@@ -1822,7 +2066,11 @@ impl App {
                 .saturating_sub(x)
                 .saturating_sub(line_number_width as u16) as usize;
             let line = tab.scroll + mouse_y.saturating_sub(y) as usize;
-            tab.set_cursor(line, col);
+            if selecting {
+                tab.set_cursor_selecting(line, col);
+            } else {
+                tab.set_cursor(line, col);
+            }
             self.ensure_editor_cursor_visible();
         }
     }
@@ -1932,6 +2180,10 @@ impl App {
             CommandAction::ToggleLineComment => self.toggle_active_line_comment(),
             CommandAction::IndentLine => self.indent_active_line(),
             CommandAction::OutdentLine => self.outdent_active_line(),
+            CommandAction::SelectAll => self.select_all_active_tab(),
+            CommandAction::CopySelection => self.copy_editor_selection(),
+            CommandAction::CutSelection => self.cut_editor_selection(),
+            CommandAction::PasteClipboard => self.paste_editor_clipboard(),
             CommandAction::FocusExplorer => self.focus = FocusPanel::Explorer,
             CommandAction::FocusEditor => self.focus = FocusPanel::Editor,
             CommandAction::FocusTerminal => self.focus = FocusPanel::Terminal,
@@ -2072,6 +2324,21 @@ fn byte_index_for_char(s: &str, char_index: usize) -> usize {
         .nth(char_index)
         .map(|(index, _)| index)
         .unwrap_or(s.len())
+}
+
+fn take_chars_owned(s: &str, count: usize) -> String {
+    s.chars().take(count).collect()
+}
+
+fn skip_chars_owned(s: &str, count: usize) -> String {
+    s.chars().skip(count).collect()
+}
+
+fn slice_chars(s: &str, start: usize, end: usize) -> String {
+    s.chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
 }
 
 fn find_forward(tab: &EditorTab, needle: &str) -> Option<(usize, usize)> {
@@ -2391,6 +2658,57 @@ mod tests {
         tab.delete_line();
         assert_eq!(tab.lines, vec!["fn main() {", "println!(\"hi\");", "}"]);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn editor_selection_cuts_and_restores_multiline_text() {
+        let path = temp_file("selection.txt");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "abc\ndef\nghi\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.set_cursor(0, 1);
+        tab.set_cursor_selecting(1, 2);
+
+        assert_eq!(tab.selected_text().as_deref(), Some("bc\nde"));
+        let cut = tab.delete_selection().unwrap();
+        assert_eq!(cut, "bc\nde");
+        assert_eq!(tab.lines, vec!["af", "ghi"]);
+        assert_eq!(tab.cursor_position(), (0, 1));
+
+        tab.insert_text(&cut);
+        assert_eq!(tab.lines, vec!["abc", "def", "ghi"]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn editor_shortcuts_copy_cut_and_paste_internal_clipboard() {
+        let root = std::env::temp_dir().join(format!("tscode-test-edit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "alpha\nbeta\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.focus = FocusPanel::Editor;
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(app.active_tab().unwrap().selection_range().is_some());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.editor_clipboard.as_deref(), Some("alpha\nbeta"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.active_tab().unwrap().lines, vec![""]);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.active_tab().unwrap().lines, vec!["alpha", "beta"]);
+        let _ = app.terminal.kill();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

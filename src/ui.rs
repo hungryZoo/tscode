@@ -77,12 +77,17 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         .active_tab()
         .map(|tab| {
             let dirty = if tab.dirty { " *" } else { "" };
+            let selection = tab
+                .selected_text()
+                .map(|text| format!("  Sel {}", text.chars().count()))
+                .unwrap_or_default();
             format!(
-                "{}{}  Ln {}, Col {}",
+                "{}{}  Ln {}, Col {}{}",
                 tab.path.display(),
                 dirty,
                 tab.cursor_line + 1,
-                tab.cursor_col + 1
+                tab.cursor_col + 1,
+                selection
             )
         })
         .unwrap_or_else(|| "no file open".to_owned());
@@ -107,12 +112,18 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             format!("  clipboard:{action} {}", display_name(&clipboard.path))
         })
         .unwrap_or_default();
+    let editor_clipboard = app
+        .editor_clipboard
+        .as_ref()
+        .map(|text| format!("  editor-clip:{} chars", text.chars().count()))
+        .unwrap_or_default();
     let text = format!(
-        " {} tabs:{}  hover:{}{}{}{} ",
+        " {} tabs:{}  hover:{}{}{}{}{} ",
         active,
         app.tabs.len(),
         hover_name(&app.hover),
         clipboard,
+        editor_clipboard,
         message,
         error
     );
@@ -173,7 +184,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Editor;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Editor  Ctrl-S save  Ctrl-F find  Ctrl-L goto  Ctrl-/ comment  Tab indent ")
+        .title(" Editor  Ctrl-S save  Ctrl-F find  Ctrl-A/C/X/V select/copy/cut/paste ")
         .border_style(border_style(focused));
     let inner = block.inner(chunks[1]);
     app.hit_regions.editor_body = Some(inner);
@@ -212,7 +223,15 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             Span::raw(" "),
         ];
-        if focused && line_index == tab.cursor_line {
+        if let Some((selection_start, selection_end)) = line_selection_range(tab, line_index) {
+            let source = &tab.lines[line_index];
+            spans.push(Span::raw(take_chars(source, selection_start)));
+            spans.push(Span::styled(
+                slice_chars(source, selection_start, selection_end),
+                Style::default().fg(Color::White).bg(ACTIVE_BG),
+            ));
+            spans.push(Span::raw(skip_chars(source, selection_end)));
+        } else if focused && line_index == tab.cursor_line {
             let cursor_col = tab.cursor_col;
             let source = &tab.lines[line_index];
             let before = take_chars(source, cursor_col);
@@ -447,6 +466,36 @@ fn take_chars(s: &str, count: usize) -> String {
 
 fn skip_chars(s: &str, count: usize) -> String {
     s.chars().skip(count).collect()
+}
+
+fn slice_chars(s: &str, start: usize, end: usize) -> String {
+    s.chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
+}
+
+fn line_selection_range(tab: &crate::app::EditorTab, line_index: usize) -> Option<(usize, usize)> {
+    let (start, end) = tab.selection_range()?;
+    let (start_line, start_col) = start;
+    let (end_line, end_col) = end;
+    if line_index < start_line || line_index > end_line {
+        return None;
+    }
+
+    let line_len = tab.lines[line_index].chars().count();
+    let selection_start = if line_index == start_line {
+        start_col.min(line_len)
+    } else {
+        0
+    };
+    let selection_end = if line_index == end_line {
+        end_col.min(line_len)
+    } else {
+        line_len
+    };
+
+    (selection_start != selection_end).then_some((selection_start, selection_end))
 }
 
 fn display_name(path: &std::path::Path) -> String {
