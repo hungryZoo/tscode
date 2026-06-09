@@ -24,6 +24,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Rename Symbol with `F2` or the command palette renames the identifier under the cursor across visible workspace text files, updates open buffers as undoable dirty edits, writes closed files to disk, and respects identifier boundaries so `make_client` does not rewrite `make_client_extra`.
 - Replace in Files with `Ctrl-Shift-H` or the command palette scans real workspace text files, writes replacements to disk, updates clean open tabs, and skips dirty open buffers instead of overwriting unsaved work.
 - Run Workspace Check from the command palette detects Cargo, Go, or Python projects, runs the project checker, collects parseable diagnostics into a Problems panel, filters those problems, and jumps directly to the source location.
+- Collected workspace diagnostics now appear in the editor with severity gutter badges, subtle line backgrounds, active-file problem counts, and active-line status messages.
 - Run Selection in Terminal with `Ctrl-Enter` or the command palette sends selected editor text, or the current editor line when there is no selection, to the active PTY shell and focuses the integrated terminal.
 - Editable tabbed code buffers with line numbers, syntax highlighting, dirty markers, cursor movement, paste, save, repeated search, undo, and redo.
 - Save As from the command palette writes the active editor buffer to a new relative or absolute path, creates parent folders, retargets the tab, refreshes explorer and Git status, and refuses dirty open target tabs.

@@ -77,6 +77,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can rename the symbol under the editor cursor across workspace files while open buffers receive undoable edits and longer identifiers with the same prefix are left intact.
 - As a developer, I can replace text across real workspace files while clean open tabs stay synchronized and dirty open buffers are not overwritten.
 - As a developer, I can run a workspace check for supported project types, see compiler diagnostics in a Problems panel, filter the collected diagnostics, and jump directly to the source file and line.
+- As a developer, I can see collected compiler diagnostics marked directly in the editor gutter and status bar while editing the affected file.
 - As a developer, I can run detected project tasks from `.vscode/tasks.json`, `package.json` scripts, Cargo, Make, Go, and Python projects in a new integrated PTY terminal.
 - As a developer, I can send the current editor selection, or the current line when nothing is selected, directly into the integrated terminal shell.
 - As a developer, I can clean up trailing spaces and tabs in the active file through the command palette, save the cleaned file, and undo the cleanup if needed.

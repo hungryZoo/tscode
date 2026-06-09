@@ -1345,6 +1345,55 @@ pub struct QuickItem {
     pub command: Option<CommandAction>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProblemSeverity {
+    Error,
+    Warning,
+    Note,
+    Help,
+    Problem,
+}
+
+impl ProblemSeverity {
+    pub fn from_label(label: &str) -> Self {
+        match label.split_whitespace().next().unwrap_or("problem") {
+            "error" => Self::Error,
+            "warning" => Self::Warning,
+            "note" => Self::Note,
+            "help" => Self::Help,
+            _ => Self::Problem,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Note => "note",
+            Self::Help => "help",
+            Self::Problem => "problem",
+        }
+    }
+
+    fn rank(self) -> usize {
+        match self {
+            Self::Error => 0,
+            Self::Warning => 1,
+            Self::Problem => 2,
+            Self::Note => 3,
+            Self::Help => 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineProblemSummary {
+    pub severity: ProblemSeverity,
+    pub count: usize,
+    pub col: usize,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorLocation {
     pub path: PathBuf,
@@ -3534,6 +3583,56 @@ impl App {
             });
         }
         items.into_iter().take(MAX_QUICK_ITEMS).collect()
+    }
+
+    pub fn problem_summaries_for_path(&self, path: &Path) -> HashMap<usize, LineProblemSummary> {
+        let mut summaries = HashMap::new();
+        for problem in &self.problems {
+            if problem.path != path {
+                continue;
+            }
+            let Some(line) = problem.line else {
+                continue;
+            };
+            let severity = ProblemSeverity::from_label(&problem.label);
+            let col = problem.col.unwrap_or(0);
+            let message = problem.detail.clone();
+            summaries
+                .entry(line)
+                .and_modify(|summary: &mut LineProblemSummary| {
+                    summary.count += 1;
+                    if severity.rank() < summary.severity.rank()
+                        || (severity == summary.severity && col < summary.col)
+                    {
+                        summary.severity = severity;
+                        summary.col = col;
+                        summary.message = message.clone();
+                    }
+                })
+                .or_insert(LineProblemSummary {
+                    severity,
+                    count: 1,
+                    col,
+                    message,
+                });
+        }
+        summaries
+    }
+
+    pub fn active_file_problem_count(&self) -> usize {
+        let Some(tab) = self.active_tab() else {
+            return 0;
+        };
+        self.problems
+            .iter()
+            .filter(|problem| problem.path == tab.path)
+            .count()
+    }
+
+    pub fn active_line_problem_summary(&self) -> Option<LineProblemSummary> {
+        let tab = self.active_tab()?;
+        self.problem_summaries_for_path(&tab.path)
+            .remove(&tab.cursor_line)
     }
 
     fn source_control_items(&self, query: &str) -> Result<Vec<QuickItem>> {
@@ -10152,6 +10251,49 @@ SyntaxError: invalid syntax
         assert_eq!(items[2].label, "error bad.py:1:1");
         assert_eq!(items[2].detail, "invalid syntax");
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn problem_summaries_group_active_file_lines_by_severity() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-problem-summary-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn broken() {\n    missing();\n}\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let lib = root.join("src/lib.rs");
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&lib);
+        app.problems = parse_problem_items(
+            "\
+src/lib.rs:2:9: warning: first warning
+src/lib.rs:2:5: error[E0425]: cannot find value `missing` in this scope
+src/lib.rs:3:1: note: trailing note
+",
+            &root,
+        );
+
+        let summaries = app.problem_summaries_for_path(&lib);
+        let line_two = summaries.get(&1).expect("line 2 summary");
+        assert_eq!(line_two.severity, ProblemSeverity::Error);
+        assert_eq!(line_two.count, 2);
+        assert_eq!(line_two.col, 4);
+        assert!(line_two.message.contains("cannot find value"));
+        assert_eq!(summaries.get(&2).unwrap().severity, ProblemSeverity::Note);
+        assert_eq!(app.active_file_problem_count(), 3);
+
+        app.active_tab_mut().unwrap().set_cursor(1, 4);
+        assert_eq!(
+            app.active_line_problem_summary().unwrap().severity,
+            ProblemSeverity::Error
+        );
+
+        app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
 

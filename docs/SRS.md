@@ -254,7 +254,7 @@ The app shall record the current editor file, line, and column before quick-pane
 
 ### R-241 Workspace Problems
 
-The command palette shall include Run Workspace Check and Show Problems actions. Run Workspace Check shall detect supported project roots, run the matching external checker in the workspace root, collect parseable file diagnostics from checker output, and open a Problems quick panel. Selecting a problem shall open the referenced file and move the editor cursor to the diagnostic line and column. The Problems panel shall be filterable with the same quick-panel query input and shall report when no supported checker is detected or no parseable diagnostics are found. If dirty editor buffers exist, the completion message shall indicate that unsaved buffers were not checked.
+The command palette shall include Run Workspace Check and Show Problems actions. Run Workspace Check shall detect supported project roots, run the matching external checker in the workspace root, collect parseable file diagnostics from checker output, and open a Problems quick panel. Selecting a problem shall open the referenced file and move the editor cursor to the diagnostic line and column. The Problems panel shall be filterable with the same quick-panel query input and shall report when no supported checker is detected or no parseable diagnostics are found. Collected diagnostics for the active file shall also appear inside the editor as line-level gutter markers, subtle line backgrounds, active-file problem counts, and active-line status text without modifying the file buffer. If dirty editor buffers exist, the completion message shall indicate that unsaved buffers were not checked.
 
 ### R-242 Source Control
 

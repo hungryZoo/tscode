@@ -8,7 +8,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{App, ClipboardAction, FocusPanel, HoverTarget},
+    app::{App, ClipboardAction, FocusPanel, HoverTarget, ProblemSeverity},
     fs_tree::VisibleNode,
     shell::{TerminalSpan, TerminalStyle},
 };
@@ -19,6 +19,9 @@ const HOVER_BG: Color = Color::Rgb(42, 54, 71);
 const ACTIVE_BG: Color = Color::Rgb(24, 64, 92);
 const SEARCH_BG: Color = Color::Rgb(104, 76, 28);
 const SEARCH_ACTIVE_BG: Color = Color::Rgb(222, 184, 75);
+const ERROR_BG: Color = Color::Rgb(61, 27, 34);
+const WARNING_BG: Color = Color::Rgb(58, 48, 24);
+const INFO_BG: Color = Color::Rgb(29, 44, 61);
 const BORDER: Color = Color::Rgb(75, 89, 110);
 const ACCENT: Color = Color::Rgb(89, 169, 255);
 const TEXT: Color = Color::Rgb(205, 213, 224);
@@ -106,14 +109,32 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 .active_search_match_count()
                 .map(|count| format!("  Find {count}"))
                 .unwrap_or_default();
+            let problem_count = app.active_file_problem_count();
+            let problems = if problem_count == 0 {
+                String::new()
+            } else {
+                format!("  Problems {problem_count}")
+            };
+            let line_problem = app
+                .active_line_problem_summary()
+                .map(|problem| {
+                    format!(
+                        "  {}: {}",
+                        problem.severity.label(),
+                        truncate_width(&problem.message, 72)
+                    )
+                })
+                .unwrap_or_default();
             format!(
-                "{}{}  Ln {}, Col {}{}{}",
+                "{}{}  Ln {}, Col {}{}{}{}{}",
                 tab.path.display(),
                 dirty,
                 tab.cursor_line + 1,
                 tab.cursor_col + 1,
                 selection,
-                search
+                search,
+                problems,
+                line_problem
             )
         })
         .unwrap_or_else(|| "no file open".to_owned());
@@ -246,6 +267,11 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
+    let problem_summaries = app
+        .tabs
+        .get(active_index)
+        .map(|tab| app.problem_summaries_for_path(&tab.path))
+        .unwrap_or_default();
     let search_needle = app
         .search_needle
         .clone()
@@ -271,12 +297,23 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let mut rendered = Vec::new();
     for (offset, line_index) in (start..end).enumerate() {
+        let problem = problem_summaries.get(&line_index);
+        let gutter_style = problem
+            .map(|problem| problem_gutter_style(problem.severity))
+            .unwrap_or_else(|| Style::default().fg(MUTED));
         let mut spans = vec![
             Span::styled(
                 format!("{:>width$} ", line_index + 1, width = number_width),
-                Style::default().fg(MUTED),
+                gutter_style,
             ),
-            Span::raw(" "),
+            Span::styled(
+                problem
+                    .map(|problem| problem_marker(problem.severity))
+                    .unwrap_or(" "),
+                problem
+                    .map(|problem| problem_gutter_style(problem.severity))
+                    .unwrap_or_else(|| Style::default().fg(MUTED)),
+            ),
         ];
         let mut code_spans = Vec::new();
         let selection_ranges = line_selection_ranges(tab, line_index);
@@ -308,7 +345,12 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
             tab.horizontal_scroll,
             code_width,
         ));
-        rendered.push(Line::from(spans));
+        let line = if let Some(problem) = problem {
+            Line::from(spans).style(problem_line_style(problem.severity))
+        } else {
+            Line::from(spans)
+        };
+        rendered.push(line);
     }
 
     frame.render_widget(
@@ -741,6 +783,37 @@ fn row_style(selected: bool, hovered: bool) -> Style {
         Style::default().fg(Color::White).bg(HOVER_BG)
     } else {
         Style::default().fg(TEXT).bg(PANEL_BG)
+    }
+}
+
+fn problem_marker(severity: ProblemSeverity) -> &'static str {
+    match severity {
+        ProblemSeverity::Error => "E",
+        ProblemSeverity::Warning => "W",
+        ProblemSeverity::Note | ProblemSeverity::Help => "i",
+        ProblemSeverity::Problem => "!",
+    }
+}
+
+fn problem_gutter_style(severity: ProblemSeverity) -> Style {
+    match severity {
+        ProblemSeverity::Error => Style::default().fg(Color::LightRed).bg(ERROR_BG),
+        ProblemSeverity::Warning => Style::default().fg(Color::LightYellow).bg(WARNING_BG),
+        ProblemSeverity::Note | ProblemSeverity::Help => {
+            Style::default().fg(Color::LightCyan).bg(INFO_BG)
+        }
+        ProblemSeverity::Problem => Style::default().fg(Color::White).bg(INFO_BG),
+    }
+    .add_modifier(Modifier::BOLD)
+}
+
+fn problem_line_style(severity: ProblemSeverity) -> Style {
+    match severity {
+        ProblemSeverity::Error => Style::default().bg(ERROR_BG),
+        ProblemSeverity::Warning => Style::default().bg(WARNING_BG),
+        ProblemSeverity::Note | ProblemSeverity::Help | ProblemSeverity::Problem => {
+            Style::default().bg(INFO_BG)
+        }
     }
 }
 
