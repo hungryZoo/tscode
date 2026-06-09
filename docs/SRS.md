@@ -232,6 +232,10 @@ The command palette shall include a revert-file action for the active editor tab
 
 `Ctrl-r` or the command palette shall use the active editor selection, when it is a valid identifier, or the identifier under the editor cursor to open a quick panel listing whole-word workspace references. Selecting a reference shall open its file and move the cursor to the occurrence. Reference scanning shall apply the same visible workspace text-file policy as workspace search and shall use in-memory text for dirty open editor buffers.
 
+### R-236A Code Suggestions
+
+`Ctrl-space` or the command palette shall open a suggestions quick panel for the active editor cursor. The initial suggestions query shall be seeded from the identifier prefix before the cursor, while activation shall replace the current identifier span around the cursor. Suggestion candidates shall include lightweight code symbols, identifier tokens from visible workspace text files, dirty open editor buffers from memory, and file-type keywords. Selecting a suggestion shall focus the editor, update the active buffer as one undoable edit, mark the tab dirty when text changes, and preserve the backing file on disk until the user saves.
+
 ### R-237 Format Document
 
 `Shift-alt-f` or the command palette shall format the active editor buffer by piping its current text to a configured external formatter for the file type. Supported formatter integrations shall include `rustfmt` for Rust, `prettier` for JavaScript/TypeScript/JSON/CSS/HTML/Markdown/YAML, `gofmt` for Go, `black` for Python, `shfmt` for shell scripts, and `clang-format` for C-family files where those tools are installed. The command shall update the editor buffer as one undoable edit, mark the tab dirty when formatting changes text, preserve the on-disk file until save, and report a clear message when no formatter is configured.

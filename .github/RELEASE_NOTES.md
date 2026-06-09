@@ -14,6 +14,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Workspace text search overlay with `Ctrl-Shift-F` or `Ctrl-G`, real file scanning plus unsaved open-buffer scanning, result previews, dirty-buffer markers, and jump-to-line open.
 - Document Symbols with `Ctrl-Shift-O` lists functions, types, classes, interfaces, modules, and impl blocks from the active editor buffer and jumps to the selected symbol.
 - Workspace Symbols with `Ctrl-T` scans visible workspace text files for code symbols, including dirty open buffers from memory, and jumps directly to the selected file location.
+- Code suggestions with `Ctrl-Space` or command palette Trigger Suggest use workspace symbols, identifier tokens, dirty open buffers, and file-type keywords, then insert the selected suggestion into the active editor as one undoable edit.
 - Go to Definition with `Ctrl-]` or the command palette jumps from the editor cursor symbol to a matching workspace symbol definition, or lists multiple definition candidates when needed.
 - Find References with `Ctrl-R` or the command palette lists whole-word workspace references for the editor cursor symbol and jumps directly to the selected occurrence.
 - Source Control from the command palette lists Git changed files and parsed diff hunks, supports fuzzy filtering, and jumps from a hunk row to the changed source line.

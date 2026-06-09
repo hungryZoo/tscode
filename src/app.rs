@@ -920,6 +920,33 @@ impl EditorTab {
         self.dirty = true;
     }
 
+    fn replace_range_as_edit(
+        &mut self,
+        start: (usize, usize),
+        end: (usize, usize),
+        replacement: &str,
+    ) -> bool {
+        if start > end
+            || start.0 >= self.lines.len()
+            || end.0 >= self.lines.len()
+            || start.1 > self.lines[start.0].chars().count()
+            || end.1 > self.lines[end.0].chars().count()
+        {
+            return false;
+        }
+
+        if self.text_in_range(start, end) == replacement {
+            self.set_cursor_raw(end.0, end.1);
+            return false;
+        }
+
+        self.push_undo();
+        self.delete_range_raw(start, end);
+        self.insert_text_raw(replacement);
+        self.dirty = true;
+        true
+    }
+
     fn wrap_selection_with(&mut self, open: char, close: char) {
         let ranges = self.selection_ranges();
         if ranges.is_empty() {
@@ -1295,6 +1322,7 @@ pub struct PromptState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuickPanelKind {
     OpenFile,
+    Completions,
     WorkspaceSearch,
     DocumentSymbols,
     WorkspaceSymbols,
@@ -1327,6 +1355,7 @@ pub struct EditorLocation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandAction {
     QuickOpen,
+    TriggerSuggest,
     WorkspaceSearch,
     DocumentSymbols,
     WorkspaceSymbols,
@@ -1409,6 +1438,15 @@ pub struct QuickPanel {
     pub items: Vec<QuickItem>,
     pub selected: usize,
     pub scroll: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionState {
+    pub path: PathBuf,
+    pub line: usize,
+    pub start_col: usize,
+    pub end_col: usize,
+    pub prefix: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1555,6 +1593,7 @@ pub struct App {
     pub show_hidden: bool,
     pub show_ignored: bool,
     pub quick_panel: Option<QuickPanel>,
+    pub completion_state: Option<CompletionState>,
     pub quick_panel_height: usize,
     pub explorer_clipboard: Option<ExplorerClipboard>,
     pub editor_clipboard: Option<String>,
@@ -1601,6 +1640,7 @@ impl App {
             show_hidden: true,
             show_ignored: false,
             quick_panel: None,
+            completion_state: None,
             quick_panel_height: 0,
             explorer_clipboard: None,
             editor_clipboard: None,
@@ -1692,6 +1732,10 @@ impl App {
                 }
                 KeyCode::Char('p') => {
                     self.open_quick_panel(QuickPanelKind::OpenFile)?;
+                    return Ok(());
+                }
+                KeyCode::Char(' ') | KeyCode::Null if self.focus == FocusPanel::Editor => {
+                    self.trigger_suggest()?;
                     return Ok(());
                 }
                 KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -2079,7 +2123,16 @@ impl App {
 
     fn handle_quick_panel_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Esc => self.quick_panel = None,
+            KeyCode::Esc => {
+                if self
+                    .quick_panel
+                    .as_ref()
+                    .is_some_and(|panel| panel.kind == QuickPanelKind::Completions)
+                {
+                    self.completion_state = None;
+                }
+                self.quick_panel = None;
+            }
             KeyCode::Enter => self.activate_selected_quick_item(),
             KeyCode::Up => self.move_quick_selection(-1),
             KeyCode::Down => self.move_quick_selection(1),
@@ -2642,6 +2695,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::QuickOpen,
         },
         CommandSpec {
+            label: "Trigger Suggest",
+            detail: "Complete the identifier at the editor cursor from workspace symbols and words",
+            shortcut: "Ctrl-Space",
+            action: CommandAction::TriggerSuggest,
+        },
+        CommandSpec {
             label: "Search Workspace",
             detail: "Search text across workspace files and unsaved open buffers",
             shortcut: "Ctrl-Shift-F",
@@ -3109,11 +3168,25 @@ impl App {
         self.start_prompt(PromptKind::SaveAs, &initial);
     }
 
+    fn trigger_suggest(&mut self) -> Result<()> {
+        let Some(tab) = self.active_tab() else {
+            self.message = Some("no active editor for suggestions".to_owned());
+            return Ok(());
+        };
+        let state = completion_state_for_tab(tab);
+        let query = state.prefix.clone();
+        self.completion_state = Some(state);
+        self.open_quick_panel_with_query(QuickPanelKind::Completions, query)
+    }
+
     fn open_quick_panel(&mut self, kind: QuickPanelKind) -> Result<()> {
         self.open_quick_panel_with_query(kind, String::new())
     }
 
     fn open_quick_panel_with_query(&mut self, kind: QuickPanelKind, query: String) -> Result<()> {
+        if kind != QuickPanelKind::Completions {
+            self.completion_state = None;
+        }
         self.quick_panel = Some(QuickPanel {
             kind,
             query,
@@ -3132,6 +3205,7 @@ impl App {
         let query = panel.query.clone();
         let items = match kind {
             QuickPanelKind::OpenFile => self.quick_open_items(&query)?,
+            QuickPanelKind::Completions => self.completion_items(&query)?,
             QuickPanelKind::WorkspaceSearch => self.workspace_search_items(&query)?,
             QuickPanelKind::DocumentSymbols => self.document_symbol_items(&query),
             QuickPanelKind::WorkspaceSymbols => self.workspace_symbol_items(&query)?,
@@ -3183,6 +3257,95 @@ impl App {
             .into_iter()
             .take(MAX_QUICK_ITEMS)
             .map(|(_, _, item)| item)
+            .collect())
+    }
+
+    fn completion_items(&self, query: &str) -> Result<Vec<QuickItem>> {
+        let Some(active_tab) = self.active_tab() else {
+            return Ok(Vec::new());
+        };
+        let active_path = active_tab.path.clone();
+        let query = query.trim();
+        let mut candidates = HashMap::<String, (CompletionRank, QuickItem)>::new();
+
+        for file in self.workspace_text_files()? {
+            let source_rank = usize::from(file.path != active_path);
+            for symbol in extract_code_symbols(&file.path, &file.text) {
+                let Some(rank) = completion_rank(&symbol.name, query, source_rank, 0, symbol.line)
+                else {
+                    continue;
+                };
+                let detail = if file.path == active_path {
+                    format!("{}  line {}", symbol.kind, symbol.line + 1)
+                } else {
+                    format!("{}:{}  {}", file.relative, symbol.line + 1, symbol.kind)
+                };
+                upsert_completion_item(
+                    &mut candidates,
+                    rank,
+                    QuickItem {
+                        label: symbol.name,
+                        detail,
+                        path: file.path.clone(),
+                        line: Some(symbol.line),
+                        col: Some(symbol.col),
+                        preview: Some(symbol.preview),
+                        command: None,
+                    },
+                );
+            }
+
+            for token in identifier_completion_tokens(&file.text) {
+                let Some(rank) = completion_rank(&token.name, query, source_rank, 1, token.line)
+                else {
+                    continue;
+                };
+                let detail = if file.path == active_path {
+                    format!("identifier  line {}", token.line + 1)
+                } else {
+                    format!("{}:{}  identifier", file.relative, token.line + 1)
+                };
+                upsert_completion_item(
+                    &mut candidates,
+                    rank,
+                    QuickItem {
+                        label: token.name,
+                        detail,
+                        path: file.path.clone(),
+                        line: Some(token.line),
+                        col: Some(token.col),
+                        preview: Some(token.preview),
+                        command: None,
+                    },
+                );
+            }
+        }
+
+        for &keyword in completion_keywords_for_path(&active_path) {
+            let Some(rank) = keyword_completion_rank(keyword, query, 0, 2, usize::MAX) else {
+                continue;
+            };
+            upsert_completion_item(
+                &mut candidates,
+                rank,
+                QuickItem {
+                    label: keyword.to_owned(),
+                    detail: "keyword".to_owned(),
+                    path: active_path.clone(),
+                    line: None,
+                    col: None,
+                    preview: None,
+                    command: None,
+                },
+            );
+        }
+
+        let mut scored = candidates.into_values().collect::<Vec<_>>();
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.label.cmp(&b.1.label)));
+        Ok(scored
+            .into_iter()
+            .take(MAX_QUICK_ITEMS)
+            .map(|(_, item)| item)
             .collect())
     }
 
@@ -5040,6 +5203,12 @@ impl App {
             return;
         }
 
+        if kind == QuickPanelKind::Completions {
+            self.quick_panel = None;
+            self.apply_completion_item(item);
+            return;
+        }
+
         if let Some(command) = item.command {
             self.quick_panel = None;
             if let Err(error) = self.run_command(command) {
@@ -5075,9 +5244,40 @@ impl App {
         self.message = Some(format!("opened {}", item.path.display()));
     }
 
+    fn apply_completion_item(&mut self, item: QuickItem) {
+        let Some(state) = self.completion_state.take() else {
+            self.message = Some("no active completion request".to_owned());
+            return;
+        };
+
+        let Some(tab) = self.active_tab_mut() else {
+            self.message = Some("no active editor for completion".to_owned());
+            return;
+        };
+
+        if tab.path != state.path || state.line >= tab.lines.len() {
+            self.message = Some("completion target is no longer active".to_owned());
+            return;
+        }
+
+        let changed = tab.replace_range_as_edit(
+            (state.line, state.start_col),
+            (state.line, state.end_col),
+            &item.label,
+        );
+        self.ensure_editor_cursor_visible();
+        self.focus = FocusPanel::Editor;
+        self.message = Some(if changed {
+            format!("completed {}", item.label)
+        } else {
+            format!("completion unchanged: {}", item.label)
+        });
+    }
+
     fn run_command(&mut self, command: CommandAction) -> Result<()> {
         match command {
             CommandAction::QuickOpen => self.open_quick_panel(QuickPanelKind::OpenFile)?,
+            CommandAction::TriggerSuggest => self.trigger_suggest()?,
             CommandAction::WorkspaceSearch => {
                 self.open_quick_panel(QuickPanelKind::WorkspaceSearch)?
             }
@@ -6429,11 +6629,191 @@ struct WorkspaceTextFile {
     text: String,
 }
 
+type CompletionRank = (usize, usize, usize, usize, String);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IdentifierToken {
+    name: String,
+    line: usize,
+    col: usize,
+    preview: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FormatterCommand {
     label: &'static str,
     program: &'static str,
     args: Vec<String>,
+}
+
+fn upsert_completion_item(
+    candidates: &mut HashMap<String, (CompletionRank, QuickItem)>,
+    rank: CompletionRank,
+    item: QuickItem,
+) {
+    let key = item.label.clone();
+    match candidates.get(&key) {
+        Some((existing, _)) if *existing <= rank => {}
+        _ => {
+            candidates.insert(key, (rank, item));
+        }
+    }
+}
+
+fn completion_rank(
+    name: &str,
+    query: &str,
+    source_rank: usize,
+    kind_rank: usize,
+    line_rank: usize,
+) -> Option<CompletionRank> {
+    if !is_completion_candidate_name(name) {
+        return None;
+    }
+    if !query.is_empty() && name == query {
+        return None;
+    }
+
+    let score = if query.is_empty() {
+        0
+    } else {
+        fuzzy_score(name, query)?
+    };
+
+    Some((
+        score,
+        source_rank,
+        kind_rank,
+        line_rank,
+        name.to_ascii_lowercase(),
+    ))
+}
+
+fn keyword_completion_rank(
+    name: &str,
+    query: &str,
+    source_rank: usize,
+    kind_rank: usize,
+    line_rank: usize,
+) -> Option<CompletionRank> {
+    if !is_identifier_token(name) || name.chars().count() < 2 {
+        return None;
+    }
+    if !query.is_empty() && name == query {
+        return None;
+    }
+
+    let score = if query.is_empty() {
+        0
+    } else {
+        fuzzy_score(name, query)?
+    };
+
+    Some((
+        score,
+        source_rank,
+        kind_rank,
+        line_rank,
+        name.to_ascii_lowercase(),
+    ))
+}
+
+fn is_completion_candidate_name(name: &str) -> bool {
+    is_identifier_token(name)
+        && name.chars().count() >= 2
+        && !is_control_symbol_name(name)
+        && !matches!(
+            name,
+            "true"
+                | "false"
+                | "null"
+                | "None"
+                | "Some"
+                | "Ok"
+                | "Err"
+                | "self"
+                | "super"
+                | "crate"
+                | "this"
+        )
+}
+
+fn identifier_completion_tokens(text: &str) -> Vec<IdentifierToken> {
+    let mut tokens = Vec::new();
+    for (line_index, line) in text.lines().enumerate() {
+        let chars = line.chars().collect::<Vec<_>>();
+        let mut col = 0usize;
+        while col < chars.len() {
+            if !is_symbol_ident_start(chars[col]) {
+                col += 1;
+                continue;
+            }
+
+            let start = col;
+            col += 1;
+            while col < chars.len() && is_symbol_ident_continue(chars[col]) {
+                col += 1;
+            }
+            let name = chars[start..col].iter().collect::<String>();
+            if is_completion_candidate_name(&name) {
+                tokens.push(IdentifierToken {
+                    name,
+                    line: line_index,
+                    col: start,
+                    preview: line.trim().to_owned(),
+                });
+            }
+        }
+    }
+    tokens
+}
+
+fn completion_keywords_for_path(path: &Path) -> &'static [&'static str] {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("rs") => &[
+            "async", "await", "const", "enum", "fn", "impl", "let", "match", "mod", "mut", "pub",
+            "struct", "trait", "use", "where",
+        ],
+        Some("js") | Some("jsx") | Some("ts") | Some("tsx") => &[
+            "async",
+            "await",
+            "class",
+            "const",
+            "export",
+            "function",
+            "import",
+            "interface",
+            "let",
+            "return",
+            "type",
+        ],
+        Some("py") => &[
+            "async", "await", "class", "def", "from", "import", "lambda", "return", "self", "with",
+            "yield",
+        ],
+        Some("go") => &[
+            "chan",
+            "const",
+            "defer",
+            "func",
+            "go",
+            "interface",
+            "package",
+            "range",
+            "return",
+            "struct",
+            "type",
+            "var",
+        ],
+        _ => &[
+            "class", "const", "def", "fn", "function", "let", "return", "struct", "type",
+        ],
+    }
 }
 
 fn symbols_to_quick_items(
@@ -6940,6 +7320,32 @@ fn parse_cargo_edition(text: &str) -> Option<String> {
 
 fn identifier_at_char(line: &str, char_col: usize) -> Option<String> {
     identifier_range_at_char(line, char_col).map(|(_, _, token)| token)
+}
+
+fn completion_state_for_tab(tab: &EditorTab) -> CompletionState {
+    let line_index = tab.cursor_line.min(tab.lines.len().saturating_sub(1));
+    let line = tab.lines.get(line_index).map(String::as_str).unwrap_or("");
+    let chars = line.chars().collect::<Vec<_>>();
+    let cursor = tab.cursor_col.min(chars.len());
+
+    let mut start = cursor;
+    while start > 0 && is_symbol_ident_continue(chars[start - 1]) {
+        start -= 1;
+    }
+
+    let mut end = cursor;
+    while end < chars.len() && is_symbol_ident_continue(chars[end]) {
+        end += 1;
+    }
+
+    let prefix = chars[start..cursor].iter().collect::<String>();
+    CompletionState {
+        path: tab.path.clone(),
+        line: line_index,
+        start_col: start,
+        end_col: end,
+        prefix,
+    }
 }
 
 fn identifier_range_at_char(line: &str, char_col: usize) -> Option<(usize, usize, String)> {
@@ -8862,6 +9268,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::RenameSymbol))
         );
+        let commands = app.command_palette_items("trigger suggest");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::TriggerSuggest))
+        );
         let commands = app.command_palette_items("copy relative path");
         assert!(commands.iter().any(|item| {
             item.command == Some(CommandAction::CopyActiveFileRelativePath)
@@ -9179,6 +9591,95 @@ mod tests {
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn trigger_suggest_completes_workspace_symbol_at_cursor() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-completion-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {\n    make_cl\n}\n").unwrap();
+        fs::write(root.join("src/client.rs"), "fn make_client() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let main = canonical_root.join("src/main.rs");
+        let mut app = App::new(canonical_root).unwrap();
+        app.open_file(&main);
+        app.active_tab_mut()
+            .unwrap()
+            .set_cursor(1, "    make_cl".chars().count());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL))
+            .unwrap();
+        let panel = app.quick_panel.as_ref().expect("completion panel");
+        assert_eq!(panel.kind, QuickPanelKind::Completions);
+        assert_eq!(panel.query, "make_cl");
+        let index = panel
+            .items
+            .iter()
+            .position(|item| item.label == "make_client")
+            .expect("make_client completion");
+        app.set_quick_selection(index);
+        app.activate_selected_quick_item();
+
+        let tab = app.active_tab_mut().unwrap();
+        assert_eq!(tab.lines[1], "    make_client");
+        assert_eq!(
+            tab.cursor_position(),
+            (1, "    make_client".chars().count())
+        );
+        assert!(tab.dirty);
+        assert!(tab.undo());
+        assert_eq!(tab.lines[1], "    make_cl");
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completion_items_include_dirty_open_buffer_identifiers() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-completion-dirty-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("main.rs"), "fn main() {\n    memory_h\n}\n").unwrap();
+        fs::write(root.join("helper.rs"), "fn disk_helper() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let main = canonical_root.join("main.rs");
+        let helper = canonical_root.join("helper.rs");
+        let mut app = App::new(canonical_root).unwrap();
+        app.open_file(&helper);
+        {
+            let tab = app.active_tab_mut().unwrap();
+            assert!(tab.replace_entire_text_as_edit("fn memory_helper() {}\n"));
+        }
+        app.open_file(&main);
+
+        let items = app.completion_items("memory_h").unwrap();
+        let item = items
+            .iter()
+            .find(|item| item.label == "memory_helper")
+            .expect("dirty helper identifier completion");
+        assert!(item.detail.contains("helper.rs"));
+        assert!(
+            item.preview
+                .as_deref()
+                .is_some_and(|preview| preview.contains("memory_helper"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completion_keywords_include_control_words() {
+        assert!(keyword_completion_rank("return", "ret", 0, 2, usize::MAX).is_some());
+        assert!(keyword_completion_rank("await", "awa", 0, 2, usize::MAX).is_some());
+        assert!(completion_rank("return", "ret", 0, 1, 0).is_none());
     }
 
     #[test]
