@@ -5,6 +5,8 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 ## Highlights
 
 - Mouse-first file explorer with real filesystem reads, expand/collapse, file open, hover, and wheel scrolling.
+- Explorer copy, cut, paste, duplicate, and reveal-active-file actions backed by real filesystem operations.
+- File moves keep open editor tab paths in sync and reveal pasted/duplicated targets in the tree.
 - Quick Open overlay with `Ctrl-P` fuzzy matching across workspace file paths.
 - Workspace text search overlay with `Ctrl-Shift-F` or `Ctrl-G`, real file scanning, result previews, and jump-to-line open.
 - Editable tabbed code buffers with line numbers, syntax highlighting, dirty markers, cursor movement, paste, save, repeated search, undo, and redo.

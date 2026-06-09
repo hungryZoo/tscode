@@ -43,7 +43,9 @@ The top-level state owns:
 
 ### Explorer
 
-The explorer stores a tree of `FsNode` values. Directories are loaded lazily when expanded. A flattened visible row list is produced after changes and during rendering.
+The explorer stores a tree of `FsNode` values. Directories are loaded lazily when expanded. A flattened visible row list is produced after changes and during rendering. Explorer reveal expands path ancestors and selects the requested file or folder row.
+
+Explorer clipboard state stores copy/cut intent and the source path. Paste performs real filesystem copy or move operations, recursively copies directories, creates non-conflicting copy names, and updates open editor tab paths after moves.
 
 ### Editor
 

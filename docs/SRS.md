@@ -48,6 +48,18 @@ The explorer shall visually highlight the row under the mouse cursor.
 
 Renaming a file or folder shall update matching open tab paths. Deleting a file or folder shall close matching open tabs.
 
+### R-108 Explorer Clipboard
+
+The explorer shall support copying and cutting a selected file or folder, pasting it into the selected directory or selected file's parent directory, and recursively copying folder contents.
+
+### R-109 Duplicate
+
+The explorer shall duplicate the selected file or folder beside the original using a non-conflicting copy name.
+
+### R-110 Reveal Active File
+
+The explorer shall reveal the active editor file by expanding parent folders and selecting the file row.
+
 ## 4. Editor Requirements
 
 ### R-201 Tabs
@@ -210,6 +222,8 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Click a directory and confirm it expands or collapses.
 - Click a file and confirm a tab opens.
 - Hover rows/tabs and confirm highlight changes.
+- Copy, paste, duplicate, and cut/move explorer items and confirm filesystem results.
+- Open a file, reveal it in the explorer, and confirm its row is selected.
 - Edit text, use `Ctrl-z`/`Ctrl-y`, save with `Ctrl-s`, and confirm file contents on disk.
 - Use `Ctrl-f` and `F3` to move through search matches.
 - Use `Ctrl-p` to quick-open a file by path fragment.
