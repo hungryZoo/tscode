@@ -54,8 +54,10 @@ Each opened file tab stores:
 - vertical scroll offset
 - cursor line and column
 - dirty state
+- trailing-newline state
+- bounded undo and redo stacks
 
-Editor buffers support insertion, deletion, newline, cursor movement, save, and in-file search. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
+Editor buffers support insertion, deletion, newline, paste, cursor movement, save, undo, redo, and in-file search. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
 
 ### Terminal
 
@@ -103,6 +105,7 @@ Mouse clicks use the current coordinate to:
 - toggle a directory
 - open a file
 - select a tab
+- close a tab through its tab-strip close target
 
 ### Mouse Wheel
 
@@ -110,7 +113,7 @@ Wheel events route to the hovered panel if known, otherwise to the focused panel
 
 ### Keyboard
 
-Keyboard events map to panel-specific actions. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active.
+Keyboard events map to panel-specific actions. Editor-focused input supports save, search, repeated search, undo, redo, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
 
 ## 6. Syntax Highlighting
 

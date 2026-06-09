@@ -44,6 +44,10 @@ Mouse wheel and keyboard navigation shall scroll the explorer when content excee
 
 The explorer shall visually highlight the row under the mouse cursor.
 
+### R-107 Open Tab Synchronization
+
+Renaming a file or folder shall update matching open tab paths. Deleting a file or folder shall close matching open tabs.
+
 ## 4. Editor Requirements
 
 ### R-201 Tabs
@@ -82,6 +86,26 @@ Tabs shall visually highlight on mouse hover.
 
 `Ctrl-f` in editor focus shall prompt for text and move the cursor to the next match when found.
 
+### R-210 Repeated Search
+
+`F3` shall move to the next match for the active search text. `Shift-F3` shall move to the previous match.
+
+### R-211 Undo and Redo
+
+`Ctrl-z` and `Ctrl-y` in editor focus shall undo and redo text edits for the active buffer.
+
+### R-212 Tab Close Safety
+
+Clicking a tab close target, middle-clicking a tab, or pressing `Ctrl-w` shall close a saved tab. Dirty tabs shall not close until saved.
+
+### R-213 Paste
+
+Paste events shall insert pasted text into the active editor buffer or send pasted text to the PTY when terminal focus is active.
+
+### R-214 Newline Preservation
+
+Saving an edited file shall preserve an existing trailing newline unless the buffer content already encodes its own final newline.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
@@ -112,6 +136,10 @@ Terminal panel controls and focusable areas shall visually react to hover/focus.
 
 When the terminal is focused, `Ctrl-c` shall be forwarded to the PTY shell rather than exiting the application.
 
+### R-308 Terminal Paste
+
+Paste events while terminal focus is active shall write pasted bytes to the PTY shell.
+
 ## 6. Mouse Requirements
 
 ### R-401 Mouse Capture
@@ -139,6 +167,8 @@ Mouse move events shall update hover target state and cause a redraw.
 ### R-502 Exit
 
 `q` or `Esc` shall exit from non-terminal normal browsing mode. `Ctrl-q` shall exit globally.
+
+Dirty editor buffers shall require an explicit `quit` confirmation before the application exits.
 
 ### R-503 Editor Scroll
 
@@ -172,6 +202,8 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Click a directory and confirm it expands or collapses.
 - Click a file and confirm a tab opens.
 - Hover rows/tabs and confirm highlight changes.
+- Edit text, use `Ctrl-z`/`Ctrl-y`, save with `Ctrl-s`, and confirm file contents on disk.
+- Use `Ctrl-f` and `F3` to move through search matches.
 - Use the mouse wheel over explorer/editor/terminal and confirm scroll changes.
 - Type `pwd` in the terminal panel and confirm the output points at the workspace.
 - Build release artifacts through the release workflow.
