@@ -19,6 +19,10 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Tab close support through the tab `x`, middle click, or `Ctrl-W`, with unsaved-buffer protection.
 - File save preserves existing trailing newlines.
 - Bottom integrated terminal panel backed by a real PTY shell with forwarded keyboard input, shell state, `Ctrl-C`, terminal scrollback, clear-terminal, and restart-terminal commands.
+- Terminal ANSI rendering preserves parsed foreground/background colors plus bold, dim, italic, underline, and inverse styles.
+- Terminal paste now honors bracketed paste mode when the child application requests it.
+- Terminal modified navigation keys use xterm-compatible CSI sequences for better shell/editor behavior inside the PTY.
+- Terminal clicks on visible existing `path:line:column` references open the file in the editor, while terminal apps that request mouse events receive those clicks and wheel events through the PTY.
 - Keyboard fallback for focus cycling, navigation, scrolling, command entry, and exit.
 
 ## Install

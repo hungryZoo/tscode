@@ -145,6 +145,12 @@ The integrated terminal uses:
 
 The shell runs inside a PTY with `TERM=xterm-256color`, receives resize notifications from the terminal panel, and inherits the workspace root as the current directory.
 
+PTY output is parsed into `vt100` cells. `ShellPanel::styled_rows` groups adjacent cells with the same foreground color, background color, and text modifiers into lightweight terminal spans. The UI layer maps those spans into ratatui `Span` values so command output keeps ANSI color and style information without exposing ratatui rendering concerns to the PTY layer.
+
+Paste events use normal byte writes unless the parsed terminal screen has bracketed paste mode enabled. In bracketed paste mode, pasted text is wrapped with the standard begin/end paste control sequences before being sent to the PTY.
+
+Terminal mouse handling has two modes. If the child application has requested xterm mouse events, clicks and wheel events are passed through to the PTY. Otherwise, a terminal click is interpreted as normal application UI input: the app inspects the clicked visible row and opens an existing `path`, `path:line`, or `path:line:column` reference in the editor when one is found.
+
 ## 8. Release and Packaging Design
 
 The repository includes:

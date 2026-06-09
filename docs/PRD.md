@@ -44,6 +44,8 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can see hover highlights for clickable rows, tabs, and panel controls.
 - As a developer, I can run shell commands from the bottom terminal panel and see real output.
 - As a developer, I can type into a real shell session, use `Ctrl-c`, and keep session state between commands.
+- As a developer, I can see ANSI-colored command output such as compiler errors, `git status`, and `ls --color` without losing terminal styling.
+- As a developer, I can click a `path:line:column` reference printed by the shell and jump to that source location in the editor.
 - As a developer, I can edit text, save files, create files/folders, rename, delete, and refresh the explorer.
 - As a developer, I can copy, cut, paste, and duplicate files or folders from the explorer.
 - As a developer, I can reveal the active editor file in the explorer.
@@ -92,6 +94,7 @@ Keyboard fallback:
 - `Ctrl-L`, `Ctrl-/`, `Ctrl-D`, `Alt-Up`, `Alt-Down`, `Tab`, and `Shift-Tab` provide editor go-to-line and line editing actions
 - `Esc` clears transient mode or exits when appropriate
 - `q` exits outside terminal focus; `Ctrl-q` exits globally
+- `Shift-PageUp` and `Shift-PageDown` scroll terminal scrollback when terminal focus is active
 
 ## 8. Release Requirements
 

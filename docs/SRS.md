@@ -198,6 +198,26 @@ The command palette shall include a clear-terminal command that resets the rende
 
 The command palette shall include a restart-terminal command that terminates the current PTY child and creates a fresh shell session in the workspace root.
 
+### R-311 Terminal ANSI Styles
+
+The terminal renderer shall preserve visible ANSI foreground colors, background colors, bold, dim, italic, underline, and inverse styles parsed from PTY output.
+
+### R-312 Terminal Modified Keys
+
+When terminal focus is active, modified navigation keys shall be encoded as xterm-compatible CSI sequences where crossterm reports the modifiers.
+
+### R-313 Terminal Bracketed Paste
+
+When the child terminal application enables bracketed paste mode, paste events shall be wrapped in bracketed paste control sequences before being written to the PTY.
+
+### R-314 Terminal File References
+
+Clicking a visible shell output token that resolves to an existing workspace file path, optionally followed by `:line` or `:line:column`, shall open that file in the editor and move the cursor to the referenced location.
+
+### R-315 Terminal Mouse Pass-Through
+
+When the child terminal application requests xterm mouse events, terminal clicks and wheel events shall be forwarded to the PTY instead of being interpreted as source-reference clicks or scrollback movement.
+
 ## 6. Mouse Requirements
 
 ### R-401 Mouse Capture
@@ -274,4 +294,6 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use the command palette to clear and restart the integrated terminal.
 - Use the mouse wheel over explorer/editor/terminal and confirm scroll changes.
 - Type `pwd` in the terminal panel and confirm the output points at the workspace.
+- Print colored terminal output and confirm ANSI colors/styles are rendered.
+- Print `src/app.rs:10:1`, click it in the terminal panel, and confirm the editor opens that file at line 10, column 1.
 - Build release artifacts through the release workflow.
