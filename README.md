@@ -19,7 +19,7 @@ The installer detects OS and CPU architecture, downloads the newest GitHub Relea
 To install a specific tag:
 
 ```sh
-TSCODE_VERSION=v0.1.0-pre.4 curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | sh
+TSCODE_VERSION=v0.1.0-pre.5 curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | sh
 ```
 
 ## Controls
@@ -29,7 +29,8 @@ TSCODE_VERSION=v0.1.0-pre.4 curl -fsSL https://raw.githubusercontent.com/hungryZ
 - Mouse wheel: scroll the panel under the cursor.
 - `Tab`: cycle focus until terminal focus; in terminal focus it is sent to the shell.
 - Explorer: `n` new file, `N` new folder, `e` rename, `D` delete with confirmation, `r` refresh.
-- Editor: type to edit, paste text, `Enter` newline, `Backspace`/`Delete`, arrows, `Ctrl-S` save, `Ctrl-F` find, `F3` next match, `Shift-F3` previous match, `Ctrl-Z` undo, `Ctrl-Y` redo, `Ctrl-W` close saved tab, `Ctrl-Tab` next tab, `Shift-Tab` previous tab.
+- Workspace: `Ctrl-P` quick-open files by fuzzy path, `Ctrl-Shift-F` or `Ctrl-G` search text across workspace files.
+- Editor: type to edit, paste text, `Enter` newline, `Backspace`/`Delete`, arrows, `Ctrl-S` save, `Ctrl-F` find in file, `F3` next match, `Shift-F3` previous match, `Ctrl-Z` undo, `Ctrl-Y` redo, `Ctrl-W` close saved tab, `Ctrl-Tab` next tab, `Shift-Tab` previous tab.
 - Terminal: interactive shell input is sent to the PTY, including `Ctrl-C`, arrows, and tab completion.
 - App exit: `Ctrl-Q`, or `q`/`Esc` outside terminal focus. Unsaved buffers require typing `quit` to confirm.
 

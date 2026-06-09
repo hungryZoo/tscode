@@ -36,6 +36,7 @@ The top-level state owns:
 - active tab index
 - focused panel
 - hover target
+- quick panel state for quick open and workspace search
 - terminal state
 - cached UI hit regions from the most recent draw
 - syntax highlighter
@@ -58,6 +59,10 @@ Each opened file tab stores:
 - bounded undo and redo stacks
 
 Editor buffers support insertion, deletion, newline, paste, cursor movement, save, undo, redo, and in-file search. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
+
+### Quick Panel
+
+The quick panel stores a mode, query text, result list, selected index, and scroll offset. Quick Open recursively scans workspace files while skipping common generated directories, then fuzzy matches path fragments. Workspace Search scans bounded-size text files, builds file/line preview results, and opens the selected result at its matching cursor location.
 
 ### Terminal
 
@@ -106,6 +111,7 @@ Mouse clicks use the current coordinate to:
 - open a file
 - select a tab
 - close a tab through its tab-strip close target
+- activate a quick-panel result when an overlay is visible
 
 ### Mouse Wheel
 
@@ -113,7 +119,7 @@ Wheel events route to the hovered panel if known, otherwise to the focused panel
 
 ### Keyboard
 
-Keyboard events map to panel-specific actions. Editor-focused input supports save, search, repeated search, undo, redo, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
+Keyboard events map to panel-specific actions. Quick-panel input handles query editing, result movement, and activation before normal panel shortcuts. Editor-focused input supports save, search, repeated search, undo, redo, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
 
 ## 6. Syntax Highlighting
 

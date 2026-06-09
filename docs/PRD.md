@@ -46,6 +46,8 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can type into a real shell session, use `Ctrl-c`, and keep session state between commands.
 - As a developer, I can edit text, save files, create files/folders, rename, delete, and refresh the explorer.
 - As a developer, I can undo and redo edits, paste text, repeat search matches, and close saved tabs without losing unsaved changes.
+- As a developer, I can quickly open files by typing a fuzzy path fragment.
+- As a developer, I can search text across the workspace, see file/line previews, and jump to a matching location.
 - As a developer, I can rename or delete folders and have open tabs update or close consistently with the filesystem change.
 - As a keyboard user, I can navigate, open files, switch focus, edit, scroll, and submit shell input without a mouse.
 
@@ -74,6 +76,8 @@ Keyboard fallback:
 - `Tab` cycles focus until terminal focus, where it is sent to the shell
 - arrow keys navigate focused panels
 - `Enter` opens files, edits newlines, or submits shell input depending on focus
+- `Ctrl-P` opens the quick file picker
+- `Ctrl-Shift-F` and `Ctrl-G` open workspace text search
 - `Ctrl-S`, `Ctrl-F`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/history/tab-close actions
 - `Esc` clears transient mode or exits when appropriate
 - `q` exits outside terminal focus; `Ctrl-q` exits globally

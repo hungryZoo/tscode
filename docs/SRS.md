@@ -106,6 +106,14 @@ Paste events shall insert pasted text into the active editor buffer or send past
 
 Saving an edited file shall preserve an existing trailing newline unless the buffer content already encodes its own final newline.
 
+### R-215 Quick Open
+
+`Ctrl-p` outside terminal focus shall open a quick-open overlay that fuzzy matches workspace file paths. Pressing `Enter` on a selected result shall open that file.
+
+### R-216 Workspace Text Search
+
+`Ctrl-shift-f` or `Ctrl-g` outside terminal focus shall open a workspace search overlay. The overlay shall scan real workspace files, show file/line previews, and open the selected result at its matching line.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
@@ -204,6 +212,8 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Hover rows/tabs and confirm highlight changes.
 - Edit text, use `Ctrl-z`/`Ctrl-y`, save with `Ctrl-s`, and confirm file contents on disk.
 - Use `Ctrl-f` and `F3` to move through search matches.
+- Use `Ctrl-p` to quick-open a file by path fragment.
+- Use workspace search to find text in a different file and jump to the matching line.
 - Use the mouse wheel over explorer/editor/terminal and confirm scroll changes.
 - Type `pwd` in the terminal panel and confirm the output points at the workspace.
 - Build release artifacts through the release workflow.
