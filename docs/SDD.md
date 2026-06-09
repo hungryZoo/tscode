@@ -64,7 +64,7 @@ Each opened file tab stores:
 - trailing-newline state
 - bounded undo and redo stacks
 
-Editor buffers support insertion, deletion, newline, paste, cursor movement, word movement, selection, save, undo, redo, in-file search, go-to-line, and active-line commands. Selection is stored as an anchor plus the current cursor position and normalized when copying, cutting, deleting, rendering, or replacing ranges. Line commands include indent, outdent, duplicate, delete, move up/down, and file-type-aware line-comment toggling. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
+Editor buffers support insertion, deletion, newline, paste, cursor movement, word movement, selection, save, undo, redo, in-file search, go-to-line, and active-line commands. Selection is stored as an anchor plus the current cursor position and normalized when copying, cutting, deleting, rendering, or replacing ranges. Copy and cut update the internal editor clipboard and queue an OSC52 terminal clipboard export when the selection is small enough for terminal-safe transmission. Line commands include indent, outdent, duplicate, delete, move up/down, and file-type-aware line-comment toggling. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
 
 ### Quick Panel
 
@@ -129,11 +129,13 @@ Wheel events route to the hovered panel if known, otherwise to the focused panel
 
 ### Keyboard
 
-Keyboard events map to panel-specific actions. Quick-panel input handles query editing, result movement, and activation before normal panel shortcuts. `F1` opens the command palette because many terminal sessions cannot reliably distinguish `Ctrl-P` from `Ctrl-Shift-P`. Explorer-focused input supports tree filtering and visibility toggles in addition to file operations. Editor-focused input supports save, search, go-to-line, repeated search, undo, redo, selection, word movement, internal clipboard operations, line commands, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
+Keyboard events map to panel-specific actions. Quick-panel input handles query editing, result movement, and activation before normal panel shortcuts. `F1` opens the command palette because many terminal sessions cannot reliably distinguish `Ctrl-P` from `Ctrl-Shift-P`. Explorer-focused input supports tree filtering and visibility toggles in addition to file operations. Editor-focused input supports save, search, go-to-line, repeated search, undo, redo, selection, word movement, internal clipboard operations, terminal clipboard export, line commands, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
 
 ### Editor Clipboard
 
 The editor clipboard is an in-memory application clipboard used by `Ctrl-C`, `Ctrl-X`, and `Ctrl-V` in editor focus. It is deliberately separate from explorer copy/cut state and from terminal `Ctrl-C`, which remains a PTY signal when terminal focus is active. Range deletion and replacement are performed as single undoable edits.
+
+For host/terminal clipboard integration, `App` stores one pending clipboard export string. The main event loop takes that value after rendering, encodes it as an OSC52 payload, and writes it directly to the terminal backend. This avoids GUI clipboard dependencies that would weaken SSH behavior or cross-platform release builds. Editor copy/cut and command-palette path-copy actions share this export path; explorer file copy/cut remains a filesystem operation clipboard.
 
 In-file search state lives on `App::search_needle`. The editor renderer overlays visible search-match highlights on top of plain line text when a match is present, while keeping explicit editor selections higher priority. The status bar computes the active file's match count from the same search string.
 

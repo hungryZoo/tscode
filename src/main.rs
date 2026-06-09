@@ -8,6 +8,7 @@ use std::{env, io, io::Write, path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use app::App;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
@@ -46,10 +47,29 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                 Event::FocusGained | Event::FocusLost => {}
             }
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
+            flush_clipboard_export(terminal, &mut app)?;
         }
     }
 
     Ok(())
+}
+
+fn flush_clipboard_export(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> Result<()> {
+    let Some(text) = app.take_clipboard_export() else {
+        return Ok(());
+    };
+
+    let backend = terminal.backend_mut();
+    write!(backend, "{}", osc52_clipboard_sequence(&text))?;
+    backend.flush()?;
+    Ok(())
+}
+
+fn osc52_clipboard_sequence(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", BASE64.encode(text.as_bytes()))
 }
 
 struct TerminalSession {
@@ -91,5 +111,15 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = self.restore();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osc52_clipboard_sequence_encodes_text_as_base64() {
+        assert_eq!(osc52_clipboard_sequence("hello"), "\x1b]52;c;aGVsbG8=\x07");
     }
 }

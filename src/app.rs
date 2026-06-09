@@ -17,6 +17,7 @@ use crate::{
 
 const MAX_QUICK_ITEMS: usize = 200;
 const MAX_FILE_SCAN_BYTES: u64 = 1_000_000;
+const MAX_OSC52_CLIPBOARD_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPanel {
@@ -724,6 +725,10 @@ pub enum CommandAction {
     RefreshExplorer,
     CollapseExplorer,
     RevealActiveFile,
+    CopyActiveFilePath,
+    CopyActiveFileRelativePath,
+    CopySelectedExplorerPath,
+    CopySelectedExplorerRelativePath,
     FilterExplorer,
     ClearExplorerFilter,
     ToggleHiddenFiles,
@@ -826,6 +831,7 @@ pub struct App {
     pub quick_panel_height: usize,
     pub explorer_clipboard: Option<ExplorerClipboard>,
     pub editor_clipboard: Option<String>,
+    pending_clipboard_export: Option<String>,
 }
 
 impl App {
@@ -862,6 +868,7 @@ impl App {
             quick_panel_height: 0,
             explorer_clipboard: None,
             editor_clipboard: None,
+            pending_clipboard_export: None,
         })
     }
 
@@ -1264,6 +1271,20 @@ impl App {
         Ok(())
     }
 
+    pub fn take_clipboard_export(&mut self) -> Option<String> {
+        self.pending_clipboard_export.take()
+    }
+
+    fn queue_clipboard_export(&mut self, text: &str) -> bool {
+        if text.len() > MAX_OSC52_CLIPBOARD_BYTES {
+            self.pending_clipboard_export = None;
+            return false;
+        }
+
+        self.pending_clipboard_export = Some(text.to_owned());
+        true
+    }
+
     fn move_explorer_selection(&mut self, delta: isize) {
         let len = self.visible_nodes().len();
         if len == 0 {
@@ -1599,6 +1620,30 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::RevealActiveFile,
         },
         CommandSpec {
+            label: "Copy Active File Path",
+            detail: "Copy the active editor file absolute path to the terminal clipboard",
+            shortcut: "",
+            action: CommandAction::CopyActiveFilePath,
+        },
+        CommandSpec {
+            label: "Copy Active File Relative Path",
+            detail: "Copy the active editor file path relative to the workspace",
+            shortcut: "",
+            action: CommandAction::CopyActiveFileRelativePath,
+        },
+        CommandSpec {
+            label: "Copy Selected Explorer Path",
+            detail: "Copy the selected explorer item absolute path to the terminal clipboard",
+            shortcut: "",
+            action: CommandAction::CopySelectedExplorerPath,
+        },
+        CommandSpec {
+            label: "Copy Selected Explorer Relative Path",
+            detail: "Copy the selected explorer item path relative to the workspace",
+            shortcut: "",
+            action: CommandAction::CopySelectedExplorerRelativePath,
+        },
+        CommandSpec {
             label: "Filter Explorer",
             detail: "Filter the visible explorer tree by path text",
             shortcut: "/",
@@ -1696,13 +1741,13 @@ fn command_catalog() -> Vec<CommandSpec> {
         },
         CommandSpec {
             label: "Copy Selection",
-            detail: "Copy the current editor selection to the internal clipboard",
+            detail: "Copy the current editor selection to the internal and terminal clipboard",
             shortcut: "Ctrl-C",
             action: CommandAction::CopySelection,
         },
         CommandSpec {
             label: "Cut Selection",
-            detail: "Cut the current editor selection to the internal clipboard",
+            detail: "Cut the current editor selection to the internal and terminal clipboard",
             shortcut: "Ctrl-X",
             action: CommandAction::CutSelection,
         },
@@ -2066,6 +2111,38 @@ impl App {
         self.focus = FocusPanel::Explorer;
         self.message = Some(format!("revealed {}", path.display()));
         Ok(())
+    }
+
+    fn copy_active_file_path_to_clipboard(&mut self, relative: bool) {
+        let Some(path) = self.active_tab().map(|tab| tab.path.clone()) else {
+            self.message = Some("no active file path to copy".to_owned());
+            return;
+        };
+        self.copy_path_to_clipboard(&path, relative, "active file");
+    }
+
+    fn copy_selected_explorer_path_to_clipboard(&mut self, relative: bool) {
+        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+            self.message = Some("no explorer path to copy".to_owned());
+            return;
+        };
+        self.copy_path_to_clipboard(&node.path, relative, "explorer item");
+    }
+
+    fn copy_path_to_clipboard(&mut self, path: &Path, relative: bool, label: &str) {
+        let text = if relative {
+            relative_path(&self.root, path)
+        } else {
+            path.to_string_lossy().into_owned()
+        };
+        let display_kind = if relative { "relative path" } else { "path" };
+        if self.queue_clipboard_export(&text) {
+            self.message = Some(format!("copied {label} {display_kind}: {text}"));
+        } else {
+            self.message = Some(format!(
+                "{label} {display_kind} too large for terminal clipboard"
+            ));
+        }
     }
 
     fn finish_prompt(&mut self) -> Result<()> {
@@ -2552,8 +2629,14 @@ impl App {
             return;
         };
         let count = text.chars().count();
-        self.editor_clipboard = Some(text);
-        self.message = Some(format!("copied {count} char(s)"));
+        self.editor_clipboard = Some(text.clone());
+        if self.queue_clipboard_export(&text) {
+            self.message = Some(format!("copied {count} char(s) to clipboard"));
+        } else {
+            self.message = Some(format!(
+                "copied {count} char(s) internally; selection too large for terminal clipboard"
+            ));
+        }
     }
 
     fn cut_editor_selection(&mut self) {
@@ -2565,9 +2648,15 @@ impl App {
             return;
         };
         let count = text.chars().count();
-        self.editor_clipboard = Some(text);
+        self.editor_clipboard = Some(text.clone());
         self.ensure_editor_cursor_visible();
-        self.message = Some(format!("cut {count} char(s)"));
+        if self.queue_clipboard_export(&text) {
+            self.message = Some(format!("cut {count} char(s) to clipboard"));
+        } else {
+            self.message = Some(format!(
+                "cut {count} char(s) internally; selection too large for terminal clipboard"
+            ));
+        }
     }
 
     fn paste_editor_clipboard(&mut self) {
@@ -2754,6 +2843,16 @@ impl App {
             CommandAction::RefreshExplorer => self.refresh_explorer()?,
             CommandAction::CollapseExplorer => self.collapse_explorer(),
             CommandAction::RevealActiveFile => self.reveal_active_file()?,
+            CommandAction::CopyActiveFilePath => self.copy_active_file_path_to_clipboard(false),
+            CommandAction::CopyActiveFileRelativePath => {
+                self.copy_active_file_path_to_clipboard(true)
+            }
+            CommandAction::CopySelectedExplorerPath => {
+                self.copy_selected_explorer_path_to_clipboard(false)
+            }
+            CommandAction::CopySelectedExplorerRelativePath => {
+                self.copy_selected_explorer_path_to_clipboard(true)
+            }
             CommandAction::FilterExplorer => self.start_explorer_filter_prompt(),
             CommandAction::ClearExplorerFilter => self.clear_explorer_filter(),
             CommandAction::ToggleHiddenFiles => self.toggle_hidden_files(),
@@ -3741,14 +3840,54 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
             .unwrap();
         assert_eq!(app.editor_clipboard.as_deref(), Some("alpha\nbeta"));
+        assert_eq!(app.take_clipboard_export().as_deref(), Some("alpha\nbeta"));
 
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL))
             .unwrap();
         assert_eq!(app.active_tab().unwrap().lines, vec![""]);
+        assert_eq!(app.take_clipboard_export().as_deref(), Some("alpha\nbeta"));
 
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL))
             .unwrap();
         assert_eq!(app.active_tab().unwrap().lines, vec!["alpha", "beta"]);
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn copy_path_commands_export_absolute_and_relative_paths() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-path-copy-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let file = canonical_root.join("src/main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&file);
+
+        app.copy_active_file_path_to_clipboard(false);
+        assert_eq!(
+            app.take_clipboard_export(),
+            Some(file.to_string_lossy().into_owned())
+        );
+
+        app.copy_active_file_path_to_clipboard(true);
+        assert_eq!(app.take_clipboard_export().as_deref(), Some("src/main.rs"));
+
+        app.reveal_path(&file).unwrap();
+        app.copy_selected_explorer_path_to_clipboard(false);
+        assert_eq!(
+            app.take_clipboard_export(),
+            Some(file.to_string_lossy().into_owned())
+        );
+
+        app.copy_selected_explorer_path_to_clipboard(true);
+        assert_eq!(app.take_clipboard_export().as_deref(), Some("src/main.rs"));
+
+        assert!(app.explorer_clipboard.is_none());
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
@@ -3872,6 +4011,11 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ReplaceAllInFile))
         );
+        let commands = app.command_palette_items("copy relative path");
+        assert!(commands.iter().any(|item| {
+            item.command == Some(CommandAction::CopyActiveFileRelativePath)
+                || item.command == Some(CommandAction::CopySelectedExplorerRelativePath)
+        }));
         let commands = app.command_palette_items("new terminal");
         assert!(
             commands

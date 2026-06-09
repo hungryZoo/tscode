@@ -156,7 +156,7 @@ The editor shall support text selection with `Shift` plus arrow keys and with mo
 
 ### R-222 Editor Clipboard
 
-When editor focus is active, `Ctrl-a` shall select the full buffer, `Ctrl-c` shall copy the selected text to an internal editor clipboard, `Ctrl-x` shall cut the selected text to that clipboard, and `Ctrl-v` shall paste that clipboard at the cursor or replace the active selection.
+When editor focus is active, `Ctrl-a` shall select the full buffer, `Ctrl-c` shall copy the selected text to an internal editor clipboard, `Ctrl-x` shall cut the selected text to that clipboard, and `Ctrl-v` shall paste that clipboard at the cursor or replace the active selection. `Ctrl-c` and `Ctrl-x` shall also queue an OSC52 terminal clipboard export for selections within the configured terminal-safe size limit.
 
 ### R-223 Selection Replacement
 
@@ -177,6 +177,10 @@ The command palette shall include a replace-all-in-file action that prompts for 
 ### R-227 Word Navigation
 
 The editor shall support modified-arrow word movement and word selection for `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` when the terminal reports those keys.
+
+### R-228 Path Clipboard Commands
+
+The command palette shall expose commands to copy the active editor file path and the selected explorer item path as both absolute and workspace-relative strings. These commands shall queue the same OSC52 terminal clipboard export used by editor copy and cut without modifying explorer copy/cut state.
 
 ## 5. Integrated Terminal Requirements
 
