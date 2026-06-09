@@ -15,6 +15,9 @@ use crate::{
     syntax::SyntaxHighlighter,
 };
 
+const MAX_QUICK_ITEMS: usize = 200;
+const MAX_FILE_SCAN_BYTES: u64 = 1_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPanel {
     Explorer,
@@ -31,6 +34,7 @@ pub enum HoverTarget {
     Editor,
     Tab(usize),
     TabClose(usize),
+    QuickRow(usize),
     Terminal,
     TerminalInput,
 }
@@ -46,6 +50,7 @@ pub struct HitRegions {
     pub explorer_rows: Vec<(Rect, usize)>,
     pub tabs: Vec<(Rect, usize)>,
     pub tab_closes: Vec<(Rect, usize)>,
+    pub quick_rows: Vec<(Rect, usize)>,
     pub last_mouse_x: u16,
     pub last_mouse_y: u16,
 }
@@ -56,6 +61,12 @@ impl HitRegions {
     }
 
     pub fn target_at(&self, x: u16, y: u16) -> HoverTarget {
+        for (rect, index) in &self.quick_rows {
+            if contains(*rect, x, y) {
+                return HoverTarget::QuickRow(*index);
+            }
+        }
+
         for (rect, index) in &self.tab_closes {
             if contains(*rect, x, y) {
                 return HoverTarget::TabClose(*index);
@@ -339,6 +350,31 @@ pub struct PromptState {
     pub input: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuickPanelKind {
+    OpenFile,
+    WorkspaceSearch,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuickItem {
+    pub label: String,
+    pub detail: String,
+    pub path: PathBuf,
+    pub line: Option<usize>,
+    pub col: Option<usize>,
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuickPanel {
+    pub kind: QuickPanelKind,
+    pub query: String,
+    pub items: Vec<QuickItem>,
+    pub selected: usize,
+    pub scroll: usize,
+}
+
 pub struct App {
     pub root: PathBuf,
     pub explorer: FsTree,
@@ -357,6 +393,8 @@ pub struct App {
     pub prompt: Option<PromptState>,
     pub message: Option<String>,
     pub search_needle: Option<String>,
+    pub quick_panel: Option<QuickPanel>,
+    pub quick_panel_height: usize,
 }
 
 impl App {
@@ -381,6 +419,8 @@ impl App {
             prompt: None,
             message: Some("Tab focus | Explorer: n file, N dir, e rename, D delete | Editor: Ctrl-S save, Ctrl-Z/Y undo/redo | Terminal: Ctrl-Q quit".to_owned()),
             search_needle: None,
+            quick_panel: None,
+            quick_panel_height: 0,
         })
     }
 
@@ -393,8 +433,32 @@ impl App {
             return Ok(());
         }
 
+        if self.quick_panel.is_some() {
+            return self.handle_quick_panel_key(key);
+        }
+
         if self.prompt.is_some() {
             return self.handle_prompt_key(key);
+        }
+
+        if !matches!(self.focus, FocusPanel::Terminal)
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            match key.code {
+                KeyCode::Char('p') => {
+                    self.open_quick_panel(QuickPanelKind::OpenFile)?;
+                    return Ok(());
+                }
+                KeyCode::Char('F') | KeyCode::Char('g') => {
+                    self.open_quick_panel(QuickPanelKind::WorkspaceSearch)?;
+                    return Ok(());
+                }
+                KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.open_quick_panel(QuickPanelKind::WorkspaceSearch)?;
+                    return Ok(());
+                }
+                _ => {}
+            }
         }
 
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
@@ -450,6 +514,7 @@ impl App {
             HoverTarget::Tab(_) | HoverTarget::TabClose(_) | HoverTarget::Editor => {
                 self.focus = FocusPanel::Editor;
             }
+            HoverTarget::QuickRow(_) => {}
             HoverTarget::Terminal | HoverTarget::TerminalInput => {
                 self.focus = FocusPanel::Terminal;
             }
@@ -465,6 +530,7 @@ impl App {
                 self.active_tab = Some(index);
             }
             HoverTarget::TabClose(index) => self.close_tab(index),
+            HoverTarget::QuickRow(index) => self.activate_quick_row(index),
             HoverTarget::Editor => {
                 self.set_editor_cursor_from_mouse();
             }
@@ -560,6 +626,37 @@ impl App {
         Ok(())
     }
 
+    fn handle_quick_panel_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => self.quick_panel = None,
+            KeyCode::Enter => self.activate_selected_quick_item(),
+            KeyCode::Up => self.move_quick_selection(-1),
+            KeyCode::Down => self.move_quick_selection(1),
+            KeyCode::PageUp => self.move_quick_selection(-(self.quick_panel_height as isize)),
+            KeyCode::PageDown => self.move_quick_selection(self.quick_panel_height as isize),
+            KeyCode::Home => self.set_quick_selection(0),
+            KeyCode::End => {
+                if let Some(panel) = &self.quick_panel {
+                    self.set_quick_selection(panel.items.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(panel) = &mut self.quick_panel {
+                    panel.query.pop();
+                }
+                self.refresh_quick_panel()?;
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(panel) = &mut self.quick_panel {
+                    panel.query.push(c);
+                }
+                self.refresh_quick_panel()?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn cycle_focus(&mut self) {
         self.focus = match self.focus {
             FocusPanel::Explorer => FocusPanel::Editor,
@@ -569,6 +666,11 @@ impl App {
     }
 
     pub fn handle_paste(&mut self, text: String) -> Result<()> {
+        if let Some(panel) = &mut self.quick_panel {
+            panel.query.push_str(&text.replace(['\r', '\n'], " "));
+            return self.refresh_quick_panel();
+        }
+
         if let Some(prompt) = &mut self.prompt {
             prompt.input.push_str(&text.replace(['\r', '\n'], " "));
             return Ok(());
@@ -669,6 +771,7 @@ impl App {
             HoverTarget::Editor | HoverTarget::Tab(_) | HoverTarget::TabClose(_) => {
                 self.scroll_editor(amount)
             }
+            HoverTarget::QuickRow(_) => self.scroll_quick_panel(amount),
             HoverTarget::Terminal | HoverTarget::TerminalInput => self.scroll_terminal(amount),
             HoverTarget::None => match self.focus {
                 FocusPanel::Explorer => self.scroll_explorer(amount),
@@ -695,6 +798,21 @@ impl App {
     fn scroll_terminal(&mut self, amount: isize) {
         self.terminal.scroll(amount);
     }
+
+    fn scroll_quick_panel(&mut self, amount: isize) {
+        let height = self.quick_panel_height.max(1);
+        if let Some(panel) = &mut self.quick_panel {
+            let max_scroll = panel.items.len().saturating_sub(height);
+            panel.scroll = add_signed(panel.scroll, amount).min(max_scroll);
+            panel.selected = panel.selected.clamp(
+                panel.scroll,
+                panel
+                    .scroll
+                    .saturating_add(height.saturating_sub(1))
+                    .min(panel.items.len().saturating_sub(1)),
+            );
+        }
+    }
 }
 
 fn add_signed(value: usize, amount: isize) -> usize {
@@ -711,6 +829,120 @@ impl App {
             kind,
             input: initial.to_owned(),
         });
+    }
+
+    fn open_quick_panel(&mut self, kind: QuickPanelKind) -> Result<()> {
+        self.quick_panel = Some(QuickPanel {
+            kind,
+            query: String::new(),
+            items: Vec::new(),
+            selected: 0,
+            scroll: 0,
+        });
+        self.refresh_quick_panel()
+    }
+
+    fn refresh_quick_panel(&mut self) -> Result<()> {
+        let Some(panel) = &self.quick_panel else {
+            return Ok(());
+        };
+        let kind = panel.kind.clone();
+        let query = panel.query.clone();
+        let items = match kind {
+            QuickPanelKind::OpenFile => self.quick_open_items(&query)?,
+            QuickPanelKind::WorkspaceSearch => self.workspace_search_items(&query)?,
+        };
+
+        if let Some(panel) = &mut self.quick_panel {
+            panel.items = items;
+            panel.selected = panel.selected.min(panel.items.len().saturating_sub(1));
+            panel.scroll = panel.scroll.min(panel.items.len().saturating_sub(1));
+            self.ensure_quick_selection_visible();
+        }
+        Ok(())
+    }
+
+    fn quick_open_items(&self, query: &str) -> Result<Vec<QuickItem>> {
+        let mut scored = Vec::new();
+        for path in collect_workspace_files(&self.root)? {
+            let relative = relative_path(&self.root, &path);
+            if let Some(score) = fuzzy_score(&relative, query) {
+                let label = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("[file]")
+                    .to_owned();
+                scored.push((
+                    score,
+                    relative.len(),
+                    QuickItem {
+                        label,
+                        detail: relative,
+                        path,
+                        line: None,
+                        col: None,
+                        preview: None,
+                    },
+                ));
+            }
+        }
+
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        Ok(scored
+            .into_iter()
+            .take(MAX_QUICK_ITEMS)
+            .map(|(_, _, item)| item)
+            .collect())
+    }
+
+    fn workspace_search_items(&self, query: &str) -> Result<Vec<QuickItem>> {
+        let needle = query.trim();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let needle_lower = needle.to_lowercase();
+        let mut items = Vec::new();
+        for path in collect_workspace_files(&self.root)? {
+            if items.len() >= MAX_QUICK_ITEMS {
+                break;
+            }
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.len() > MAX_FILE_SCAN_BYTES {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            if bytes.contains(&0) {
+                continue;
+            }
+
+            let text = String::from_utf8_lossy(&bytes);
+            for (line_index, line) in text.lines().enumerate() {
+                let line_lower = line.to_lowercase();
+                let Some(byte_col) = line_lower.find(&needle_lower) else {
+                    continue;
+                };
+                let relative = relative_path(&self.root, &path);
+                let col = line[..byte_col].chars().count();
+                items.push(QuickItem {
+                    label: format!("{}:{}", relative, line_index + 1),
+                    detail: relative,
+                    path: path.clone(),
+                    line: Some(line_index),
+                    col: Some(col),
+                    preview: Some(line.trim().to_owned()),
+                });
+                if items.len() >= MAX_QUICK_ITEMS {
+                    break;
+                }
+            }
+        }
+
+        Ok(items)
     }
 
     fn prompt_rename(&mut self) {
@@ -987,6 +1219,74 @@ impl App {
         }
     }
 
+    fn move_quick_selection(&mut self, delta: isize) {
+        let Some(panel) = &mut self.quick_panel else {
+            return;
+        };
+        if panel.items.is_empty() {
+            return;
+        }
+        panel.selected = add_signed(panel.selected, delta).min(panel.items.len() - 1);
+        self.ensure_quick_selection_visible();
+    }
+
+    fn set_quick_selection(&mut self, index: usize) {
+        let Some(panel) = &mut self.quick_panel else {
+            return;
+        };
+        if panel.items.is_empty() {
+            return;
+        }
+        panel.selected = index.min(panel.items.len() - 1);
+        self.ensure_quick_selection_visible();
+    }
+
+    fn ensure_quick_selection_visible(&mut self) {
+        let height = self.quick_panel_height.max(1);
+        let Some(panel) = &mut self.quick_panel else {
+            return;
+        };
+        if panel.selected < panel.scroll {
+            panel.scroll = panel.selected;
+        } else if panel.selected >= panel.scroll + height {
+            panel.scroll = panel.selected.saturating_sub(height - 1);
+        }
+    }
+
+    fn activate_quick_row(&mut self, index: usize) {
+        if let Some(panel) = &mut self.quick_panel {
+            panel.selected = index.min(panel.items.len().saturating_sub(1));
+        }
+        self.activate_selected_quick_item();
+    }
+
+    fn activate_selected_quick_item(&mut self) {
+        let Some(item) = self
+            .quick_panel
+            .as_ref()
+            .and_then(|panel| panel.items.get(panel.selected))
+            .cloned()
+        else {
+            return;
+        };
+
+        let search_query = self.quick_panel.as_ref().and_then(|panel| {
+            (panel.kind == QuickPanelKind::WorkspaceSearch).then(|| panel.query.clone())
+        });
+        self.quick_panel = None;
+        self.open_file(&item.path);
+        if let Some(line) = item.line
+            && let Some(tab) = self.active_tab_mut()
+        {
+            tab.set_cursor(line, item.col.unwrap_or(0));
+            self.ensure_editor_cursor_visible();
+        }
+        if let Some(query) = search_query {
+            self.search_needle = Some(query);
+        }
+        self.message = Some(format!("opened {}", item.path.display()));
+    }
+
     fn send_terminal_mouse_click(&mut self) {
         let Some(body) = self.hit_regions.terminal_body else {
             return;
@@ -1141,6 +1441,87 @@ fn line_rfind_before(line: &str, needle: &str, char_col: usize) -> Option<usize>
         .map(|found| line[..found].chars().count())
 }
 
+fn collect_workspace_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_workspace_files_into(root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_workspace_files_into(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        entries.push(entry);
+    }
+    entries.sort_by_key(|a| a.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            if should_skip_dir(&path) {
+                continue;
+            }
+            let _ = collect_workspace_files_into(&path, files);
+        } else if file_type.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn should_skip_dir(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(
+        name,
+        ".git"
+            | ".hg"
+            | ".svn"
+            | "target"
+            | "node_modules"
+            | "dist"
+            | "build"
+            | ".next"
+            | ".nuxt"
+            | ".cache"
+            | "__pycache__"
+    )
+}
+
+fn relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn fuzzy_score(candidate: &str, query: &str) -> Option<usize> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Some(candidate.len());
+    }
+
+    let candidate_lower = candidate.to_lowercase();
+    let mut last_match = 0usize;
+    let mut score = 0usize;
+    for query_char in query.chars() {
+        let haystack = &candidate_lower[last_match..];
+        let found = haystack.find(query_char)?;
+        score = score.saturating_add(found);
+        last_match = last_match.saturating_add(found + query_char.len_utf8());
+    }
+
+    let starts_bonus = match candidate_lower.find(&query) {
+        Some(0) => 0,
+        Some(_) => 10,
+        None => 25,
+    };
+    Some(score.saturating_add(starts_bonus))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1185,5 +1566,39 @@ mod tests {
         assert_eq!(find_backward(&tab, "alpha"), Some((0, 0)));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn fuzzy_score_matches_path_fragments_in_order() {
+        assert!(fuzzy_score("src/main.rs", "smr").is_some());
+        assert!(fuzzy_score("src/main.rs", "zzz").is_none());
+    }
+
+    #[test]
+    fn workspace_file_search_reads_real_files() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-workspace-{}", std::process::id()));
+        let nested = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(
+            nested.join("main.rs"),
+            "fn main() {\n    println!(\"needle\");\n}\n",
+        )
+        .unwrap();
+        fs::write(root.join("README.md"), "other\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        let open_items = app.quick_open_items("main").unwrap();
+        assert!(open_items.iter().any(|item| item.detail == "src/main.rs"));
+
+        let search_items = app.workspace_search_items("needle").unwrap();
+        assert_eq!(search_items.len(), 1);
+        assert_eq!(search_items[0].detail, "src/main.rs");
+        assert_eq!(search_items[0].line, Some(1));
+
+        app.open_file(&search_items[0].path);
+        assert!(app.active_tab().is_some());
+        let _ = fs::remove_dir_all(root);
     }
 }

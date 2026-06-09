@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -47,6 +47,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     draw_editor(frame, app, main[0]);
     draw_terminal(frame, app, main[1]);
+    draw_quick_panel(frame, app, root_chunks[1]);
     draw_status(frame, app, root_chunks[2]);
 }
 
@@ -312,6 +313,68 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
+    let Some(panel) = &mut app.quick_panel else {
+        return;
+    };
+    let width = area.width.saturating_sub(4).clamp(24, 82).min(area.width);
+    let height = area.height.saturating_sub(2).clamp(6, 18).min(area.height);
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + 1;
+    let panel_area = Rect::new(x, y, width, height);
+    let title = match panel.kind {
+        crate::app::QuickPanelKind::OpenFile => " Quick Open  Ctrl-P ",
+        crate::app::QuickPanelKind::WorkspaceSearch => " Search Workspace  Ctrl-Shift-F ",
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!("{title}  {} ", panel.query))
+        .border_style(Style::default().fg(ACCENT));
+    let inner = block.inner(panel_area);
+    app.quick_panel_height = inner.height as usize;
+    let max_scroll = panel
+        .items
+        .len()
+        .saturating_sub(app.quick_panel_height.max(1));
+    panel.scroll = panel.scroll.min(max_scroll);
+
+    frame.render_widget(Clear, panel_area);
+    frame.render_widget(block.style(Style::default().bg(PANEL_BG)), panel_area);
+
+    if panel.items.is_empty() {
+        let empty = match panel.kind {
+            crate::app::QuickPanelKind::OpenFile => "Type a file name or path fragment.",
+            crate::app::QuickPanelKind::WorkspaceSearch => {
+                "Type text to search across workspace files."
+            }
+        };
+        frame.render_widget(
+            Paragraph::new(empty).style(Style::default().fg(MUTED).bg(PANEL_BG)),
+            inner,
+        );
+        return;
+    }
+
+    for (offset, item_index) in
+        (panel.scroll..(panel.scroll + inner.height as usize).min(panel.items.len())).enumerate()
+    {
+        let y = inner.y + offset as u16;
+        let row_area = Rect::new(inner.x, y, inner.width, 1);
+        app.hit_regions.quick_rows.push((row_area, item_index));
+        let selected = panel.selected == item_index;
+        let hovered = app.hover == HoverTarget::QuickRow(item_index);
+        let style = row_style(selected, hovered);
+        let item = &panel.items[item_index];
+        let preview = item
+            .preview
+            .as_ref()
+            .map(|preview| format!("  {preview}"))
+            .unwrap_or_default();
+        let text = format!("{}  {}{}", item.label, item.detail, preview);
+        frame.render_widget(Paragraph::new(text).style(style), row_area);
+    }
+}
+
 fn border_style(focused: bool) -> Style {
     if focused {
         Style::default().fg(ACCENT)
@@ -346,6 +409,7 @@ fn hover_name(hover: &HoverTarget) -> String {
         HoverTarget::Editor => "editor".to_owned(),
         HoverTarget::Tab(index) => format!("tab {index}"),
         HoverTarget::TabClose(index) => format!("tab close {index}"),
+        HoverTarget::QuickRow(index) => format!("quick row {index}"),
         HoverTarget::Terminal => "terminal".to_owned(),
         HoverTarget::TerminalInput => "terminal input".to_owned(),
     }
