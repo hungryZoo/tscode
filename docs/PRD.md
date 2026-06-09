@@ -56,6 +56,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can see Git working tree status badges in the explorer when the workspace is inside a Git repository.
 - As a developer, I can open a Source Control panel, inspect changed Git files and diff hunks, filter that list, and jump directly from a hunk to the changed source line.
 - As a developer, I can undo and redo edits, paste text, repeat search matches, and close saved tabs without losing unsaved changes.
+- As a developer, I can save the active editor buffer as a new relative or absolute path, have missing parent folders created, and keep editing the newly saved file.
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
 - As a developer, I can select text with the keyboard or mouse, copy or cut it to both the editor clipboard and a terminal clipboard export where supported, then paste it back into the editor.
@@ -129,6 +130,7 @@ Keyboard fallback:
 - `Ctrl-Shift-B` or the command palette opens Run Task for detected workspace tasks
 - `F2` or the command palette renames the identifier under the editor cursor across visible workspace text files
 - `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
+- The command palette provides Save As for writing the active editor buffer to a new path and retargeting the tab
 - `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor
 - `Shift` with arrow keys and mouse drag select editor text

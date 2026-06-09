@@ -108,6 +108,10 @@ Tabs shall visually highlight on mouse hover.
 
 `Ctrl-s` in editor focus shall write the active buffer to its file path and clear dirty state.
 
+### R-208A Save As
+
+The command palette shall include a Save As action for the active editor tab. The action shall accept a relative path resolved under the workspace root or an absolute path, create missing parent directories, write the current in-memory editor buffer to the target path, retarget the active tab's path and title to the saved file, clear dirty state, refresh explorer and Git status markers, and reveal the saved path when it is inside the workspace. The action shall refuse to overwrite a target that is already open in another dirty editor tab.
+
 ### R-209 Search
 
 `Ctrl-f` in editor focus shall prompt for text and move the cursor to the next match when found.
@@ -413,6 +417,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Copy, paste, duplicate, and cut/move explorer items and confirm filesystem results.
 - Open a file, reveal it in the explorer, and confirm its row is selected.
 - Edit text, use `Ctrl-z`/`Ctrl-y`, save with `Ctrl-s`, and confirm file contents on disk.
+- Use Save As from the command palette to write the active buffer to a nested new path, confirm parent folders are created, confirm the active tab retargets to the new file, confirm the original source file is unchanged, and confirm a dirty open target is refused.
 - Use `Ctrl-f` and `F3` to move through search matches.
 - Use `Ctrl-f` and confirm visible search highlights and match count.
 - Use `Ctrl-h` to replace one match, save, and confirm file contents on disk.

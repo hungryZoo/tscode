@@ -24,6 +24,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Run Workspace Check from the command palette detects Cargo, Go, or Python projects, runs the project checker, collects parseable diagnostics into a Problems panel, filters those problems, and jumps directly to the source location.
 - Run Selection in Terminal with `Ctrl-Enter` or the command palette sends selected editor text, or the current editor line when there is no selection, to the active PTY shell and focuses the integrated terminal.
 - Editable tabbed code buffers with line numbers, syntax highlighting, dirty markers, cursor movement, paste, save, repeated search, undo, and redo.
+- Save As from the command palette writes the active editor buffer to a new relative or absolute path, creates parent folders, retargets the tab, refreshes explorer and Git status, and refuses dirty open target tabs.
 - Long editor lines now support horizontal scrolling with cursor tracking, mouse-click coordinate mapping, and horizontal wheel panning.
 - In-file search now highlights visible matches and shows a match count in the status bar.
 - `Ctrl-H` and the command palette can replace the current/next active-file match, while replace-all changes every match as one undoable edit.

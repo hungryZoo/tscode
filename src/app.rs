@@ -1280,6 +1280,7 @@ pub enum PromptKind {
     WorkspaceReplaceFind,
     WorkspaceReplaceWith { needle: String },
     RenameSymbol { old: String },
+    SaveAs,
     GotoLine,
     QuitDirty,
 }
@@ -1339,6 +1340,7 @@ pub enum CommandAction {
     ShowSourceControl,
     RunTask,
     SaveFile,
+    SaveAs,
     SaveAll,
     RevertFile,
     FormatDocument,
@@ -2691,6 +2693,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::SaveFile,
         },
         CommandSpec {
+            label: "Save As",
+            detail: "Write the active editor buffer to a new path and retarget the tab",
+            shortcut: "",
+            action: CommandAction::SaveAs,
+        },
+        CommandSpec {
             label: "Save All",
             detail: "Write all dirty editor tabs to disk",
             shortcut: "",
@@ -3039,6 +3047,15 @@ impl App {
     fn start_workspace_replace_prompt(&mut self) {
         let initial = self.search_needle.clone().unwrap_or_default();
         self.start_prompt(PromptKind::WorkspaceReplaceFind, &initial);
+    }
+
+    fn start_save_as_prompt(&mut self) {
+        let Some(tab) = self.active_tab() else {
+            self.message = Some("no active file to save as".to_owned());
+            return;
+        };
+        let initial = relative_path(&self.root, &tab.path);
+        self.start_prompt(PromptKind::SaveAs, &initial);
     }
 
     fn open_quick_panel(&mut self, kind: QuickPanelKind) -> Result<()> {
@@ -3681,6 +3698,7 @@ impl App {
             PromptKind::RenameSymbol { old } => {
                 self.rename_symbol_from_prompt(old, prompt.input)?;
             }
+            PromptKind::SaveAs => self.save_as_from_prompt(prompt.input)?,
             PromptKind::GotoLine => self.goto_line_from_prompt(prompt.input),
             PromptKind::QuitDirty => {
                 if prompt.input == "quit" {
@@ -3979,6 +3997,86 @@ impl App {
             }
             Err(error) => self.last_error = Some(error.to_string()),
         }
+    }
+
+    fn save_as_from_prompt(&mut self, input: String) -> Result<()> {
+        let Some(index) = self.active_tab else {
+            self.message = Some("no active file to save as".to_owned());
+            return Ok(());
+        };
+        let Some(target) = resolve_prompt_path(&self.root, &input) else {
+            self.message = Some("save as cancelled".to_owned());
+            return Ok(());
+        };
+        if target.is_dir() {
+            self.message = Some(format!(
+                "save as target is a directory: {}",
+                target.display()
+            ));
+            return Ok(());
+        }
+
+        let canonical_target = target.canonicalize().unwrap_or_else(|_| target.clone());
+        if let Some(existing_index) = self
+            .tabs
+            .iter()
+            .enumerate()
+            .find(|(other_index, tab)| {
+                *other_index != index
+                    && tab.dirty
+                    && tab.path.canonicalize().unwrap_or_else(|_| tab.path.clone())
+                        == canonical_target
+            })
+            .map(|(other_index, _)| other_index)
+        {
+            self.message = Some(format!(
+                "save as target is already open with unsaved edits: {}",
+                self.tabs[existing_index].path.display()
+            ));
+            return Ok(());
+        }
+
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let text = self.tabs[index].text();
+        fs::write(&target, text)?;
+        let saved_path = target.canonicalize().unwrap_or(target);
+
+        if let Some(existing_index) = self
+            .tabs
+            .iter()
+            .enumerate()
+            .find(|(other_index, tab)| *other_index != index && tab.path == saved_path)
+            .map(|(other_index, _)| other_index)
+        {
+            self.tabs.remove(existing_index);
+            if existing_index < index {
+                self.active_tab = Some(index - 1);
+            }
+        }
+
+        let Some(active_index) = self.active_tab else {
+            return Ok(());
+        };
+        let title = saved_path
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .unwrap_or("[file]")
+            .to_owned();
+        self.tabs[active_index].path = saved_path.clone();
+        self.tabs[active_index].title = title;
+        self.tabs[active_index].dirty = false;
+
+        self.refresh_explorer()?;
+        if saved_path.starts_with(&self.root) {
+            self.reveal_path(&saved_path)?;
+        }
+        self.focus = FocusPanel::Editor;
+        self.refresh_git_status();
+        self.message = Some(format!("saved as {}", saved_path.display()));
+        Ok(())
     }
 
     fn revert_active_tab(&mut self) -> Result<()> {
@@ -4956,6 +5054,7 @@ impl App {
             }
             CommandAction::RunTask => self.open_quick_panel(QuickPanelKind::Tasks)?,
             CommandAction::SaveFile => self.save_active_tab(),
+            CommandAction::SaveAs => self.start_save_as_prompt(),
             CommandAction::SaveAll => self.save_all_tabs(),
             CommandAction::RevertFile => self.revert_active_tab()?,
             CommandAction::FormatDocument => self.format_active_document()?,
@@ -5879,6 +5978,19 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+fn resolve_prompt_path(root: &Path, input: &str) -> Option<PathBuf> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(input);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    })
 }
 
 fn load_git_status(root: &Path) -> (HashMap<PathBuf, GitStatusKind>, HashSet<PathBuf>) {
@@ -8252,6 +8364,72 @@ mod tests {
     }
 
     #[test]
+    fn save_as_writes_new_file_and_retargets_active_tab() {
+        let root = std::env::temp_dir().join(format!("tscode-test-save-as-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("main.rs");
+        fs::write(&source, "fn main() {}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&source);
+        app.active_tab_mut().unwrap().insert_text("// saved as\n");
+        app.save_as_from_prompt("nested/copy.rs".to_owned())
+            .unwrap();
+
+        let target = root.join("nested/copy.rs").canonicalize().unwrap();
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "// saved as\nfn main() {}\n"
+        );
+        assert_eq!(fs::read_to_string(&source).unwrap(), "fn main() {}\n");
+        assert_eq!(app.active_tab().unwrap().path, target);
+        assert_eq!(app.active_tab().unwrap().title, "copy.rs");
+        assert!(!app.active_tab().unwrap().dirty);
+        assert!(app.visible_nodes().iter().any(|node| node.path == target));
+        assert_eq!(app.message, Some(format!("saved as {}", target.display())));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_as_refuses_dirty_open_target() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-save-as-dirty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.rs");
+        let target = root.join("target.rs");
+        fs::write(&source, "source\n").unwrap();
+        fs::write(&target, "target\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&source);
+        app.open_file(&target);
+        app.active_tab_mut().unwrap().insert_text("dirty ");
+        app.active_tab = Some(0);
+        app.active_tab_mut().unwrap().insert_text("copy ");
+
+        app.save_as_from_prompt("target.rs".to_owned()).unwrap();
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "target\n");
+        assert_eq!(
+            app.active_tab().unwrap().path,
+            source.canonicalize().unwrap()
+        );
+        assert!(app.active_tab().unwrap().dirty);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("already open with unsaved edits"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn format_document_runs_rustfmt_and_marks_buffer_dirty() {
         if Command::new("rustfmt").arg("--version").output().is_err() {
             return;
@@ -8426,6 +8604,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::RevertFile))
+        );
+        let commands = app.command_palette_items("save as");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::SaveAs))
         );
         let commands = app.command_palette_items("format document");
         assert!(
