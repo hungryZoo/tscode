@@ -198,6 +198,10 @@ The command palette shall expose commands to copy the active editor file path an
 
 `Ctrl-enter` or the command palette shall send the active editor selection, or the current non-blank line when no selection exists, to the active PTY shell as submitted command text and then focus the integrated terminal. Blank editor selections and blank current lines shall not send PTY input.
 
+### R-231 Trim Trailing Whitespace
+
+The command palette shall include a trim-trailing-whitespace action for the active editor tab. The action shall remove trailing spaces and tabs from all editor lines, mark the buffer dirty only when a change occurs, preserve the file's trailing newline state, and be undoable as one edit.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input

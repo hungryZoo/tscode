@@ -566,6 +566,29 @@ impl EditorTab {
         true
     }
 
+    fn trim_trailing_whitespace(&mut self) -> usize {
+        let changed_lines = self
+            .lines
+            .iter()
+            .filter(|line| line.ends_with(' ') || line.ends_with('\t'))
+            .count();
+        if changed_lines == 0 {
+            return 0;
+        }
+
+        self.push_undo();
+        for line in &mut self.lines {
+            let trimmed_len = line.trim_end_matches([' ', '\t']).len();
+            if trimmed_len != line.len() {
+                line.truncate(trimmed_len);
+            }
+        }
+        self.clamp_cursor_col();
+        self.clear_selection();
+        self.dirty = true;
+        changed_lines
+    }
+
     fn move_cursor_with_selection(&mut self, line_delta: isize, col_delta: isize, selecting: bool) {
         let previous = self.cursor_position();
         if selecting && self.selection_anchor.is_none() {
@@ -945,6 +968,7 @@ pub enum CommandAction {
     MoveLineUp,
     MoveLineDown,
     ToggleLineComment,
+    TrimTrailingWhitespace,
     IndentLine,
     OutdentLine,
     SelectAll,
@@ -2051,6 +2075,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::ToggleLineComment,
         },
         CommandSpec {
+            label: "Trim Trailing Whitespace",
+            detail: "Remove spaces and tabs at line ends in the active editor tab",
+            shortcut: "",
+            action: CommandAction::TrimTrailingWhitespace,
+        },
+        CommandSpec {
             label: "Indent Line",
             detail: "Indent the current editor line",
             shortcut: "Tab",
@@ -3088,6 +3118,22 @@ impl App {
         }
     }
 
+    fn trim_active_trailing_whitespace(&mut self) {
+        let Some(tab) = self.active_tab_mut() else {
+            self.message = Some("no active editor tab".to_owned());
+            return;
+        };
+        let changed_lines = tab.trim_trailing_whitespace();
+        self.ensure_editor_cursor_visible();
+        self.message = if changed_lines == 0 {
+            Some("no trailing whitespace".to_owned())
+        } else {
+            Some(format!(
+                "trimmed trailing whitespace on {changed_lines} line(s)"
+            ))
+        };
+    }
+
     fn select_all_active_tab(&mut self) {
         if let Some(tab) = self.active_tab_mut() {
             tab.select_all();
@@ -3387,6 +3433,7 @@ impl App {
             CommandAction::MoveLineUp => self.move_active_line_up(),
             CommandAction::MoveLineDown => self.move_active_line_down(),
             CommandAction::ToggleLineComment => self.toggle_active_line_comment(),
+            CommandAction::TrimTrailingWhitespace => self.trim_active_trailing_whitespace(),
             CommandAction::IndentLine => self.indent_active_line(),
             CommandAction::OutdentLine => self.outdent_active_line(),
             CommandAction::SelectAll => self.select_all_active_tab(),
@@ -4513,6 +4560,29 @@ mod tests {
     }
 
     #[test]
+    fn editor_trim_trailing_whitespace_is_undoable() {
+        let path = temp_file("trim-whitespace.rs");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "fn main() {  \n\tlet x = 1;\t\n}\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.set_cursor(0, 20);
+        tab.set_cursor_selecting(1, 3);
+
+        assert_eq!(tab.trim_trailing_whitespace(), 2);
+        assert_eq!(tab.lines, vec!["fn main() {", "\tlet x = 1;", "}"]);
+        assert_eq!(tab.cursor_position(), (1, 3));
+        assert!(tab.selection_range().is_none());
+        assert!(tab.dirty);
+
+        assert!(tab.undo());
+        assert_eq!(tab.lines, vec!["fn main() {  ", "\tlet x = 1;\t", "}"]);
+        assert_eq!(tab.text(), "fn main() {  \n\tlet x = 1;\t\n}\n");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn editor_line_commands_apply_to_selected_line_ranges() {
         let path = temp_file("line-range-commands.rs");
         let _ = fs::remove_file(&path);
@@ -4796,6 +4866,38 @@ mod tests {
     }
 
     #[test]
+    fn trim_trailing_whitespace_command_saves_real_file() {
+        let root = std::env::temp_dir().join(format!("tscode-test-trim-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "fn main() {  \n    println!(\"hi\"); \n}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.run_command(CommandAction::TrimTrailingWhitespace)
+            .unwrap();
+
+        assert_eq!(
+            app.active_tab().unwrap().lines,
+            vec!["fn main() {", "    println!(\"hi\");", "}"]
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some("trimmed trailing whitespace on 2 line(s)")
+        );
+
+        app.run_command(CommandAction::SaveFile).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "fn main() {\n    println!(\"hi\");\n}\n"
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn search_wraps_forward_and_backward() {
         let path = temp_file("search.txt");
         let _ = fs::remove_file(&path);
@@ -4877,6 +4979,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ReplaceAllInFile))
+        );
+        let commands = app.command_palette_items("trim whitespace");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::TrimTrailingWhitespace))
         );
         let commands = app.command_palette_items("replace files");
         assert!(

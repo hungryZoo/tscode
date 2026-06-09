@@ -64,6 +64,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can search text across the workspace, see file/line previews, and jump to a matching location.
 - As a developer, I can replace text across real workspace files while clean open tabs stay synchronized and dirty open buffers are not overwritten.
 - As a developer, I can send the current editor selection, or the current line when nothing is selected, directly into the integrated terminal shell.
+- As a developer, I can clean up trailing spaces and tabs in the active file through the command palette, save the cleaned file, and undo the cleanup if needed.
 - As a developer, I can clear the integrated terminal viewport or restart the PTY shell without restarting the whole application.
 - As a developer, I can focus the integrated terminal quickly, maximize it when command output needs more space, and resize its normal panel height.
 - As a developer, I can create multiple integrated terminal sessions, switch between them, close them, and keep each shell's state independent.
@@ -112,6 +113,7 @@ Keyboard fallback:
 - bracket, quote, apostrophe, and backtick entry provides editor auto-pair insertion, selection wrapping, closing-pair skip-over, and paired Backspace deletion
 - `Ctrl-A`, `Ctrl-C`, `Ctrl-X`, and `Ctrl-V` provide editor select-all, copy, cut, and paste when editor focus is active; copy and cut also export text through OSC52-compatible terminal clipboards
 - `Ctrl-Enter` sends the editor selection or current line to the active integrated terminal shell and moves focus to the terminal
+- The command palette provides trim-trailing-whitespace for the active editor buffer
 - `Ctrl-L`, `Ctrl-/`, `Ctrl-D`, `Alt-Up`, `Alt-Down`, `Tab`, and `Shift-Tab` provide editor go-to-line and selection-aware line editing actions
 - `Esc` clears transient mode or exits when appropriate
 - `q` exits outside terminal focus; `Ctrl-q` exits globally

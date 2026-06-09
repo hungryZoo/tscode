@@ -9,7 +9,7 @@ on:
       tag:
         description: "Release tag to build"
         required: true
-        default: "v0.1.0-pre.22"
+        default: "v0.1.0-pre.23"
 
 permissions:
   contents: write
