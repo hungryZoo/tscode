@@ -1370,6 +1370,8 @@ pub enum CommandAction {
     CutSelection,
     PasteClipboard,
     RunSelectionInTerminal,
+    CopyTerminalSelection,
+    PasteClipboardToTerminal,
     FocusExplorer,
     FocusEditor,
     FocusTerminal,
@@ -1405,6 +1407,13 @@ pub enum ClipboardAction {
 pub struct ExplorerClipboard {
     pub action: ClipboardAction,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalSelection {
+    pub terminal_id: usize,
+    pub anchor: (u16, u16),
+    pub head: (u16, u16),
 }
 
 pub struct TerminalSession {
@@ -1509,6 +1518,7 @@ pub struct App {
     pub git_dirty_dirs: HashSet<PathBuf>,
     pub navigation_back: Vec<EditorLocation>,
     pub navigation_forward: Vec<EditorLocation>,
+    pub terminal_selection: Option<TerminalSelection>,
     pending_clipboard_export: Option<String>,
 }
 
@@ -1552,6 +1562,7 @@ impl App {
             git_dirty_dirs,
             navigation_back: Vec::new(),
             navigation_forward: Vec::new(),
+            terminal_selection: None,
             pending_clipboard_export: None,
         })
     }
@@ -1698,10 +1709,27 @@ impl App {
         let target = self.hit_regions.target_at(mouse.column, mouse.row);
         self.hover = target.clone();
 
+        if self.terminal_selection.is_some()
+            && matches!(
+                mouse.kind,
+                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+            )
+            && self.handle_terminal_selection_mouse(mouse)?
+        {
+            return Ok(());
+        }
+
         if matches!(target, HoverTarget::Terminal | HoverTarget::TerminalInput)
             && self.forward_terminal_mouse_event(mouse.kind, mouse.modifiers)?
         {
             self.focus = FocusPanel::Terminal;
+            return Ok(());
+        }
+
+        if matches!(target, HoverTarget::Terminal | HoverTarget::TerminalInput)
+            && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && self.start_terminal_selection_from_mouse(mouse)
+        {
             return Ok(());
         }
 
@@ -1921,6 +1949,22 @@ impl App {
     }
 
     fn handle_terminal_key(&mut self, key: KeyEvent) -> Result<()> {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.modifiers.contains(KeyModifiers::SHIFT)
+        {
+            match key.code {
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    self.copy_terminal_selection();
+                    return Ok(());
+                }
+                KeyCode::Char('v') | KeyCode::Char('V') => {
+                    self.paste_clipboard_to_terminal()?;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         if key.modifiers.contains(KeyModifiers::SHIFT) {
             match key.code {
                 KeyCode::PageUp => {
@@ -1935,6 +1979,7 @@ impl App {
             }
         }
 
+        self.terminal_selection = None;
         self.active_terminal_mut().shell.send_key(key)
     }
 
@@ -2814,6 +2859,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Send the editor selection or current line to the active PTY shell",
             shortcut: "Ctrl-Enter",
             action: CommandAction::RunSelectionInTerminal,
+        },
+        CommandSpec {
+            label: "Copy Terminal Selection",
+            detail: "Copy the active terminal text selection to the internal and terminal clipboard",
+            shortcut: "Ctrl-Shift-C",
+            action: CommandAction::CopyTerminalSelection,
+        },
+        CommandSpec {
+            label: "Paste Clipboard to Terminal",
+            detail: "Paste the internal clipboard into the active PTY shell",
+            shortcut: "Ctrl-Shift-V",
+            action: CommandAction::PasteClipboardToTerminal,
         },
         CommandSpec {
             label: "Focus Explorer",
@@ -4619,6 +4676,8 @@ impl App {
             CommandAction::CutSelection => self.cut_editor_selection(),
             CommandAction::PasteClipboard => self.paste_editor_clipboard(),
             CommandAction::RunSelectionInTerminal => self.run_selection_in_terminal()?,
+            CommandAction::CopyTerminalSelection => self.copy_terminal_selection(),
+            CommandAction::PasteClipboardToTerminal => self.paste_clipboard_to_terminal()?,
             CommandAction::FocusExplorer => self.focus = FocusPanel::Explorer,
             CommandAction::FocusEditor => self.focus = FocusPanel::Editor,
             CommandAction::FocusTerminal => self.focus = FocusPanel::Terminal,
@@ -4679,6 +4738,120 @@ impl App {
         self.active_terminal_mut()
             .shell
             .send_mouse_event(kind, row, col, modifiers)
+    }
+
+    fn start_terminal_selection_from_mouse(&mut self, mouse: MouseEvent) -> bool {
+        let Some(cell) = self.terminal_mouse_cell(mouse) else {
+            return false;
+        };
+        self.focus = FocusPanel::Terminal;
+        self.terminal_selection = Some(TerminalSelection {
+            terminal_id: self.active_terminal().id,
+            anchor: cell,
+            head: cell,
+        });
+        true
+    }
+
+    fn handle_terminal_selection_mouse(&mut self, mouse: MouseEvent) -> Result<bool> {
+        let Some(cell) = self.terminal_mouse_cell(mouse) else {
+            return Ok(false);
+        };
+        let active_terminal_id = self.active_terminal().id;
+        let Some(selection) = &mut self.terminal_selection else {
+            return Ok(false);
+        };
+        if selection.terminal_id != active_terminal_id {
+            self.terminal_selection = None;
+            return Ok(false);
+        }
+
+        selection.head = cell;
+        self.focus = FocusPanel::Terminal;
+
+        match mouse.kind {
+            MouseEventKind::Drag(MouseButton::Left) => Ok(true),
+            MouseEventKind::Up(MouseButton::Left) => {
+                if self
+                    .terminal_selection
+                    .as_ref()
+                    .is_some_and(|selection| selection.anchor == selection.head)
+                {
+                    self.terminal_selection = None;
+                    let _ = self.open_terminal_reference(cell.0, cell.1);
+                } else {
+                    self.copy_terminal_selection();
+                }
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn terminal_mouse_cell(&self, mouse: MouseEvent) -> Option<(u16, u16)> {
+        let body = self.hit_regions.terminal_body?;
+        if body.width == 0 || body.height == 0 {
+            return None;
+        }
+        let row = mouse
+            .row
+            .saturating_sub(body.y)
+            .min(body.height.saturating_sub(1));
+        let col = mouse
+            .column
+            .saturating_sub(body.x)
+            .min(body.width.saturating_sub(1));
+        Some((row, col))
+    }
+
+    pub fn terminal_selection_for_active(&self) -> Option<&TerminalSelection> {
+        let selection = self.terminal_selection.as_ref()?;
+        (selection.terminal_id == self.active_terminal().id).then_some(selection)
+    }
+
+    pub fn terminal_selection_columns_for_row(&self, row: u16) -> Option<(usize, usize)> {
+        let selection = self.terminal_selection_for_active()?;
+        let (_, cols) = self.active_terminal().shell.size();
+        terminal_selection_columns(selection.anchor, selection.head, row, cols)
+    }
+
+    fn terminal_selected_text(&self) -> Option<String> {
+        let selection = self.terminal_selection_for_active()?;
+        let (_, cols) = self.active_terminal().shell.size();
+        terminal_selected_text_from_screen(selection.anchor, selection.head, cols, |row| {
+            self.active_terminal().shell.row_text(row)
+        })
+    }
+
+    fn copy_terminal_selection(&mut self) {
+        let Some(text) = self.terminal_selected_text() else {
+            self.message = Some("no terminal selection to copy".to_owned());
+            return;
+        };
+        let count = text.chars().count();
+        self.editor_clipboard = Some(text.clone());
+        if self.queue_clipboard_export(&text) {
+            self.message = Some(format!("copied {count} terminal char(s)"));
+        } else {
+            self.message = Some(format!(
+                "copied {count} terminal char(s) internally; selection too large for terminal clipboard"
+            ));
+        }
+    }
+
+    fn paste_clipboard_to_terminal(&mut self) -> Result<()> {
+        let Some(text) = self.editor_clipboard.clone() else {
+            self.message = Some("clipboard empty".to_owned());
+            return Ok(());
+        };
+        self.active_terminal_mut().shell.send_paste(&text)?;
+        self.terminal_selection = None;
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(format!(
+            "pasted {} char(s) to terminal",
+            text.chars().count()
+        ));
+        Ok(())
     }
 
     fn open_terminal_reference(&mut self, row: u16, col: u16) -> bool {
@@ -4815,6 +4988,7 @@ impl App {
         let id = self.active_terminal().id;
         let cwd = self.active_terminal().cwd.clone();
         let _ = self.active_terminal_mut().shell.kill();
+        self.terminal_selection = None;
         self.terminals[self.active_terminal] = TerminalSession {
             id,
             title: title.clone(),
@@ -4834,6 +5008,7 @@ impl App {
         let title = terminal.title.clone();
         self.terminals.push(terminal);
         self.active_terminal = self.terminals.len() - 1;
+        self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("new terminal: {title}"));
         Ok(())
@@ -4850,6 +5025,7 @@ impl App {
         let title = terminal.title.clone();
         self.terminals.push(terminal);
         self.active_terminal = self.terminals.len() - 1;
+        self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("new terminal in {}: {title}", cwd.display()));
         Ok(())
@@ -4860,6 +5036,7 @@ impl App {
             return;
         }
         self.active_terminal = index;
+        self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("terminal: {}", self.active_terminal().title));
     }
@@ -4887,6 +5064,7 @@ impl App {
             self.active_terminal
                 .min(self.terminals.len().saturating_sub(1))
         };
+        self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("closed terminal: {title}"));
         Ok(())
@@ -4897,6 +5075,7 @@ impl App {
             return;
         }
         self.active_terminal = (self.active_terminal + 1) % self.terminals.len();
+        self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("terminal: {}", self.active_terminal().title));
     }
@@ -4907,6 +5086,7 @@ impl App {
         }
         self.active_terminal =
             (self.active_terminal + self.terminals.len() - 1) % self.terminals.len();
+        self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("terminal: {}", self.active_terminal().title));
     }
@@ -6281,6 +6461,73 @@ fn parse_line_col(input: &str) -> Option<(usize, usize)> {
     Some((line - 1, col.saturating_sub(1)))
 }
 
+fn terminal_selection_bounds(anchor: (u16, u16), head: (u16, u16)) -> ((u16, u16), (u16, u16)) {
+    if anchor <= head {
+        (anchor, head)
+    } else {
+        (head, anchor)
+    }
+}
+
+fn terminal_selection_columns(
+    anchor: (u16, u16),
+    head: (u16, u16),
+    row: u16,
+    cols: u16,
+) -> Option<(usize, usize)> {
+    if cols == 0 {
+        return None;
+    }
+
+    let ((start_row, start_col), (end_row, end_col)) = terminal_selection_bounds(anchor, head);
+    if row < start_row || row > end_row {
+        return None;
+    }
+
+    let start = if row == start_row { start_col } else { 0 }.min(cols);
+    let end = if row == end_row {
+        end_col.saturating_add(1)
+    } else {
+        cols
+    }
+    .min(cols);
+
+    (start < end).then_some((start as usize, end as usize))
+}
+
+fn terminal_selected_text_from_screen<F>(
+    anchor: (u16, u16),
+    head: (u16, u16),
+    cols: u16,
+    mut row_text: F,
+) -> Option<String>
+where
+    F: FnMut(u16) -> Option<String>,
+{
+    let ((start_row, _), (end_row, _)) = terminal_selection_bounds(anchor, head);
+    let mut lines = Vec::new();
+
+    for row in start_row..=end_row {
+        let Some((start, end)) = terminal_selection_columns(anchor, head, row, cols) else {
+            continue;
+        };
+        let line = row_text(row).unwrap_or_default();
+        let char_len = line.chars().count();
+        let start = start.min(char_len);
+        let end = end.min(char_len);
+        let mut selected = if start < end {
+            slice_chars(&line, start, end)
+        } else {
+            String::new()
+        };
+        selected = selected.trim_end_matches(' ').to_owned();
+        lines.push(selected);
+    }
+
+    let text = lines.join("\n");
+    (!text.is_empty()).then_some(text)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileReference {
     path: PathBuf,
@@ -6515,6 +6762,44 @@ mod tests {
         assert_eq!(tab.text(), "fn main(){println!(\"hi\");}\n");
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn terminal_selection_columns_follow_stream_selection() {
+        assert_eq!(
+            terminal_selection_columns((1, 3), (1, 7), 1, 20),
+            Some((3, 8))
+        );
+        assert_eq!(
+            terminal_selection_columns((3, 4), (1, 2), 1, 10),
+            Some((2, 10))
+        );
+        assert_eq!(
+            terminal_selection_columns((3, 4), (1, 2), 2, 10),
+            Some((0, 10))
+        );
+        assert_eq!(
+            terminal_selection_columns((3, 4), (1, 2), 3, 10),
+            Some((0, 5))
+        );
+        assert_eq!(terminal_selection_columns((1, 2), (3, 4), 4, 10), None);
+    }
+
+    #[test]
+    fn terminal_selection_text_copies_visible_rows() {
+        let rows = [
+            "zero".to_owned(),
+            "alpha beta   ".to_owned(),
+            "middle row   ".to_owned(),
+            "omega tail".to_owned(),
+        ];
+
+        let text = terminal_selected_text_from_screen((1, 6), (3, 4), 12, |row| {
+            rows.get(row as usize).cloned()
+        })
+        .unwrap();
+
+        assert_eq!(text, "beta\nmiddle row\nomega");
     }
 
     #[test]
@@ -7186,6 +7471,18 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::RunSelectionInTerminal))
+        );
+        let commands = app.command_palette_items("copy terminal selection");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::CopyTerminalSelection))
+        );
+        let commands = app.command_palette_items("paste clipboard terminal");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::PasteClipboardToTerminal))
         );
         let commands = app.command_palette_items("new terminal");
         assert!(

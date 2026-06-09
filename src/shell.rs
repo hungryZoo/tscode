@@ -242,6 +242,10 @@ impl ShellPanel {
         self.parser.screen().scrollback()
     }
 
+    pub fn size(&self) -> (u16, u16) {
+        self.parser.screen().size()
+    }
+
     pub fn alternate_screen(&self) -> bool {
         self.parser.screen().alternate_screen()
     }

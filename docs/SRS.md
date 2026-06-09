@@ -310,19 +310,27 @@ Clicking a visible shell output token that resolves to an existing workspace fil
 
 When the child terminal application requests xterm mouse events, terminal mouse down, release, drag, move, and wheel events shall be forwarded to the PTY instead of being interpreted as source-reference clicks or scrollback movement. The forwarded encoding shall follow the requested xterm mouse mode where the parser exposes it.
 
-### R-316 Terminal Layout Controls
+### R-316 Terminal Text Selection
+
+When the child terminal application has not requested xterm mouse events, dragging across the terminal body shall select visible terminal cells and render a visual highlight over the selected range. Releasing a non-empty terminal selection shall copy the selected visible text to the internal clipboard and queue an OSC52 terminal clipboard export when it is within the configured terminal-safe size limit. Clicking without dragging shall continue to resolve visible terminal file references.
+
+### R-317 Terminal Clipboard Shortcuts
+
+When terminal focus is active, `Ctrl-Shift-C` shall copy the active terminal text selection without sending `Ctrl-C` to the PTY, and `Ctrl-Shift-V` shall paste the internal clipboard into the active PTY shell using bracketed paste when the child application has enabled it. Plain terminal `Ctrl-C` shall remain a PTY signal.
+
+### R-318 Terminal Layout Controls
 
 The application shall support moving focus in and out of the terminal, maximizing/restoring the terminal panel, and increasing/decreasing the normal terminal panel height through shortcuts such as `F6`/``Ctrl-` `` and `F12`/`Ctrl-J` or command palette actions. The terminal focus and maximize shortcuts shall work even when the terminal panel is currently focused.
 
-### R-317 Multiple Terminal Sessions
+### R-319 Multiple Terminal Sessions
 
 The integrated terminal shall support multiple PTY shell sessions. The user shall be able to create a new terminal, switch the active terminal, close a terminal, and preserve each terminal's independent shell state while it remains open.
 
-### R-318 Terminal Tab Mouse Controls
+### R-320 Terminal Tab Mouse Controls
 
 The terminal panel shall render terminal session tabs with mouse hover highlighting. Clicking a terminal tab shall activate that session, clicking a close target shall close that session, and clicking the new-terminal target shall create a new PTY session.
 
-### R-319 New Terminal Here
+### R-321 New Terminal Here
 
 Explorer `t` and the command palette shall create a new integrated PTY terminal whose current working directory is the selected explorer folder, or the selected file's parent folder. Restarting that terminal shall preserve its current working directory instead of resetting it to the workspace root.
 

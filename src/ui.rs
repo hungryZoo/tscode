@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     app::{App, ClipboardAction, FocusPanel, HoverTarget},
     fs_tree::VisibleNode,
-    shell::TerminalStyle,
+    shell::{TerminalSpan, TerminalStyle},
 };
 
 const TITLE_BG: Color = Color::Rgb(32, 40, 54);
@@ -406,12 +406,10 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
         .shell
         .styled_rows()
         .into_iter()
-        .map(|row| {
-            Line::from(
-                row.into_iter()
-                    .map(|span| Span::styled(span.text, terminal_style(span.style)))
-                    .collect::<Vec<_>>(),
-            )
+        .enumerate()
+        .map(|(row_index, row)| {
+            let selection = app.terminal_selection_columns_for_row(row_index as u16);
+            Line::from(terminal_row_spans(row, selection))
         })
         .collect::<Vec<_>>();
 
@@ -725,6 +723,72 @@ fn row_style(selected: bool, hovered: bool) -> Style {
     } else {
         Style::default().fg(TEXT).bg(PANEL_BG)
     }
+}
+
+fn terminal_row_spans(
+    row: Vec<TerminalSpan>,
+    selection: Option<(usize, usize)>,
+) -> Vec<Span<'static>> {
+    let Some((selection_start, selection_end)) = selection else {
+        return row
+            .into_iter()
+            .map(|span| Span::styled(span.text, terminal_style(span.style)))
+            .collect();
+    };
+
+    let mut spans = Vec::new();
+    let mut col = 0usize;
+    for span in row {
+        let chars = span.text.chars().collect::<Vec<_>>();
+        let len = chars.len();
+        let span_start = col;
+        let span_end = col + len;
+        let base_style = terminal_style(span.style);
+
+        if selection_end <= span_start || selection_start >= span_end {
+            spans.push(Span::styled(span.text, base_style));
+            col = span_end;
+            continue;
+        }
+
+        let selected_from = selection_start.max(span_start) - span_start;
+        let selected_to = selection_end.min(span_end) - span_start;
+        if selected_from > 0 {
+            spans.push(Span::styled(
+                chars[..selected_from].iter().collect::<String>(),
+                base_style,
+            ));
+        }
+        if selected_to > selected_from {
+            spans.push(Span::styled(
+                chars[selected_from..selected_to].iter().collect::<String>(),
+                terminal_selection_style(base_style),
+            ));
+        }
+        if selected_to < len {
+            spans.push(Span::styled(
+                chars[selected_to..].iter().collect::<String>(),
+                base_style,
+            ));
+        }
+        col = span_end;
+    }
+
+    if selection_end > col {
+        let start = selection_start.max(col);
+        if selection_end > start {
+            spans.push(Span::styled(
+                " ".repeat(selection_end - start),
+                terminal_selection_style(Style::default().fg(TEXT).bg(PANEL_BG)),
+            ));
+        }
+    }
+
+    spans
+}
+
+fn terminal_selection_style(style: Style) -> Style {
+    style.fg(Color::Black).bg(ACCENT)
 }
 
 fn terminal_style(style: TerminalStyle) -> Style {

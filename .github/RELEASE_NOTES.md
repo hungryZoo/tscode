@@ -48,6 +48,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Terminal focus and maximize shortcuts now work from inside terminal focus too, so `F6`/``Ctrl-` `` and `F12`/`Ctrl-J` can move in and out of the integrated terminal without trapping the user in the PTY.
 - Terminal ANSI rendering preserves parsed foreground/background colors plus bold, dim, italic, underline, and inverse styles.
 - Terminal paste now honors bracketed paste mode when the child application requests it.
+- Terminal output selection now works inside the TUI: drag visible shell output to highlight cells and copy on release, use `Ctrl-Shift-C` to copy the active terminal selection again, and use `Ctrl-Shift-V` to paste the internal clipboard into the active PTY shell.
 - Terminal modified navigation keys, function keys, Shift-Tab, null, and application-cursor arrows use xterm-compatible sequences for better shell/editor behavior inside the PTY.
 - Terminal clicks on visible existing `path:line:column` references open the file in the editor when the shell is not using terminal mouse mode.
 - Terminal apps that request mouse events now receive xterm-compatible mouse down, release, drag, move, and wheel events through the PTY instead of only basic click/wheel forwarding.
