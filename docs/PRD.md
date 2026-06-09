@@ -37,6 +37,8 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 ## 5. Core User Stories
 
 - As a developer, I can run `tscode ~/project` and immediately see the directory tree.
+- As a developer, I can run `tscode path/to/file.rs` and start in that file while the explorer and terminal use its parent folder.
+- As a developer, I can run `tscode --help` or `tscode --version` from scripts or installers without requiring an interactive terminal.
 - As a developer, I can click folders to expand or collapse them.
 - As a developer, I can click files to open them in editor tabs.
 - As a developer, I can click editor tabs to switch files.
@@ -45,6 +47,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can see hover highlights for clickable rows, tabs, and panel controls.
 - As a developer, I can run shell commands from the bottom terminal panel and see real output.
 - As a developer, I can type into a real shell session, use `Ctrl-c`, and keep session state between commands.
+- As a developer, I can use full-screen terminal applications such as pagers and editors without tscode stealing their normal terminal keys.
 - As a developer, I can see ANSI-colored command output such as compiler errors, `git status`, and `ls --color` without losing terminal styling.
 - As a developer, I can click a `path:line:column` reference printed by the shell and jump to that source location in the editor.
 - As a developer, I can drag across visible terminal output, see the selected cells highlighted, copy that text, and paste it back into the active shell with terminal-safe shortcuts.

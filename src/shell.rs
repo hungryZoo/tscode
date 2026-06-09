@@ -145,6 +145,11 @@ impl ShellPanel {
         changed
     }
 
+    #[cfg(test)]
+    pub fn process_output_for_test(&mut self, bytes: &[u8]) {
+        self.parser.process(bytes);
+    }
+
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let rows = rows.max(1);
         let cols = cols.max(2);

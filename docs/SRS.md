@@ -12,7 +12,11 @@ The application shall start from `tscode [path]`.
 
 ### R-002 Workspace Path
 
-If a path is provided, the application shall use that path as the workspace root. If omitted, it shall use the current working directory.
+If a directory path is provided, the application shall use that directory as the workspace root. If a file path is provided, the application shall use the file's parent directory as the workspace root, open the file in an editor tab, reveal it in the explorer, and start the integrated terminal in that parent directory. If omitted, it shall use the current working directory.
+
+### R-002a CLI Metadata
+
+`tscode --help`, `tscode -h`, `tscode --version`, and `tscode -V` shall print metadata without entering raw mode or the alternate-screen TUI. `tscode -- <path>` shall allow a path that begins with `-`.
 
 ### R-003 Terminal Safety
 
@@ -357,6 +361,10 @@ Explorer `t` and the command palette shall create a new integrated PTY terminal 
 ### R-322 Terminal Search
 
 When terminal focus is active, `Ctrl-f` or the command palette shall prompt for a literal search string for the active terminal session. The search shall scan the active terminal's current visible screen and scrollback retained by the terminal parser, highlight all visible matches, show the selected match count in the terminal header, and scroll the terminal viewport to the selected match. `F3` shall move to the next terminal match and `Shift-F3` shall move to the previous terminal match without sending those keys to the PTY while terminal search is active.
+
+### R-323 Terminal Child Keyboard Ownership
+
+When the active terminal child has entered alternate-screen mode or requested terminal mouse reporting, terminal-focused app conveniences that would otherwise intercept shell input, including terminal search, terminal search navigation, terminal tab management shortcuts, terminal maximize shortcuts, and terminal scrollback shortcuts, shall be forwarded to the PTY instead. `F6` and ``Ctrl-` `` shall remain available to move focus out of the terminal, and `Ctrl-Shift-C`/`Ctrl-Shift-V` shall remain terminal selection copy and clipboard paste shortcuts.
 
 ## 6. Mouse Requirements
 

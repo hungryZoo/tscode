@@ -1658,11 +1658,20 @@ pub struct App {
 
 impl App {
     pub fn new(root: PathBuf) -> Result<Self> {
-        let root = root.canonicalize().unwrap_or(root);
+        let requested_path = root.canonicalize().unwrap_or(root);
+        let (root, initial_file) = if requested_path.is_file() {
+            let parent = requested_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or(env::current_dir()?);
+            (parent, Some(requested_path))
+        } else {
+            (requested_path, None)
+        };
         let explorer = FsTree::new(root.clone())?;
         let terminal = TerminalSession::new(1, root.clone())?;
         let (git_statuses, git_dirty_dirs) = load_git_status(&root);
-        Ok(Self {
+        let mut app = Self {
             root: root.clone(),
             explorer,
             tabs: Vec::new(),
@@ -1701,7 +1710,15 @@ impl App {
             terminal_search: None,
             problems: Vec::new(),
             pending_clipboard_export: None,
-        })
+        };
+
+        if let Some(file) = initial_file {
+            app.open_file(&file);
+            let _ = app.explorer.reveal(&file);
+            app.message = Some(format!("opened {}", file.display()));
+        }
+
+        Ok(app)
     }
 
     pub fn visible_nodes(&self) -> Vec<VisibleNode> {
@@ -1731,9 +1748,18 @@ impl App {
             self.open_quick_panel(QuickPanelKind::CommandPalette)?;
             return Ok(());
         }
+        let terminal_child_owns_keyboard = self.terminal_child_owns_keyboard();
         if key.code == KeyCode::F(6) {
             self.toggle_terminal_focus();
             return Ok(());
+        }
+        if terminal_child_owns_keyboard
+            && matches!(
+                key.code,
+                KeyCode::F(7) | KeyCode::F(8) | KeyCode::F(9) | KeyCode::F(12)
+            )
+        {
+            return self.handle_terminal_key(key);
         }
         if key.code == KeyCode::F(12) {
             self.toggle_terminal_maximized();
@@ -1758,7 +1784,7 @@ impl App {
                     self.toggle_terminal_focus();
                     return Ok(());
                 }
-                KeyCode::Char('j') => {
+                KeyCode::Char('j') if !terminal_child_owns_keyboard => {
                     self.toggle_terminal_maximized();
                     return Ok(());
                 }
@@ -2099,6 +2125,27 @@ impl App {
 
     fn handle_terminal_key(&mut self, key: KeyEvent) -> Result<()> {
         if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.modifiers.contains(KeyModifiers::SHIFT)
+        {
+            match key.code {
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    self.copy_terminal_selection();
+                    return Ok(());
+                }
+                KeyCode::Char('v') | KeyCode::Char('V') => {
+                    self.paste_clipboard_to_terminal()?;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
+        if self.terminal_child_owns_keyboard() {
+            self.terminal_selection = None;
+            return self.active_terminal_mut().shell.send_key(key);
+        }
+
+        if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F'))
         {
             self.start_terminal_search_prompt();
@@ -2117,22 +2164,6 @@ impl App {
             _ => {}
         }
 
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.modifiers.contains(KeyModifiers::SHIFT)
-        {
-            match key.code {
-                KeyCode::Char('c') | KeyCode::Char('C') => {
-                    self.copy_terminal_selection();
-                    return Ok(());
-                }
-                KeyCode::Char('v') | KeyCode::Char('V') => {
-                    self.paste_clipboard_to_terminal()?;
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-
         if key.modifiers.contains(KeyModifiers::SHIFT) {
             match key.code {
                 KeyCode::PageUp => {
@@ -2149,6 +2180,15 @@ impl App {
 
         self.terminal_selection = None;
         self.active_terminal_mut().shell.send_key(key)
+    }
+
+    fn terminal_child_owns_keyboard(&self) -> bool {
+        if self.focus != FocusPanel::Terminal {
+            return false;
+        }
+        let terminal = self.active_terminal();
+        terminal.shell.alternate_screen()
+            || terminal.shell.mouse_protocol_mode() != vt100::MouseProtocolMode::None
     }
 
     fn handle_prompt_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -8484,6 +8524,37 @@ mod tests {
     }
 
     #[test]
+    fn app_new_with_file_path_uses_parent_workspace_and_opens_file() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-file-start-{}", std::process::id()));
+        let nested = root.join("src");
+        let file = nested.join("main.rs");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        let mut app = App::new(file.clone()).unwrap();
+        let canonical_root = nested.canonicalize().unwrap();
+        let canonical_file = file.canonicalize().unwrap();
+
+        assert_eq!(app.root, canonical_root);
+        assert_eq!(app.active_terminal().cwd, canonical_root);
+        assert_eq!(
+            app.active_tab().map(|tab| tab.path.clone()),
+            Some(canonical_file.clone())
+        );
+        assert_eq!(app.focus, FocusPanel::Editor);
+        assert!(
+            app.visible_nodes()
+                .get(app.explorer.selected)
+                .is_some_and(|node| node.path == canonical_file)
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn editor_undo_redo_and_save_preserves_trailing_newline() {
         let path = temp_file("undo-redo.txt");
         let _ = fs::remove_file(&path);
@@ -9971,6 +10042,49 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
             .unwrap();
         assert!(!app.terminal_maximized);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_full_screen_child_receives_app_keys_before_tscode_shortcuts() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-terminal-passthrough-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.focus = FocusPanel::Terminal;
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(b"\x1b[?1049h");
+        assert!(app.terminal_child_owns_keyboard());
+
+        let terminal_count = app.terminals.len();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(app.prompt.is_none());
+        assert!(app.terminal_search.is_none());
+
+        app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.terminals.len(), terminal_count);
+
+        app.handle_key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE))
+            .unwrap();
+        assert!(!app.terminal_maximized);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(!app.terminal_maximized);
+
+        app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE))
+            .unwrap();
+        assert_ne!(app.focus, FocusPanel::Terminal);
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
