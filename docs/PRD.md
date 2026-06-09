@@ -54,6 +54,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can search the integrated terminal's visible output and scrollback, see matches highlighted, and jump between matches without losing the PTY session.
 - As a developer, I can edit text, save files, create files/folders, rename, delete, and refresh the explorer.
 - As a developer, I can copy, cut, paste, and duplicate files or folders from the explorer.
+- As a developer, I can right-click explorer rows and run common file actions from a mouse-selectable context menu instead of memorizing every shortcut.
 - As a developer, I can reveal the active editor file in the explorer.
 - As a developer, I can filter the explorer tree, hide or show dot-prefixed entries, hide or show generated folders, and see basic file metadata while browsing.
 - As a developer, explorer filtering finds nested files inside collapsed folders and expands the matching path enough for me to click it.
@@ -127,6 +128,7 @@ Keyboard fallback:
 - Terminal `Ctrl-Shift-C` copies the active terminal text selection; terminal `Ctrl-Shift-V` pastes the internal clipboard to the PTY shell
 - Terminal `Ctrl-F` searches terminal scrollback; terminal `F3` and `Shift-F3` move to next and previous terminal search matches
 - Explorer `c`, `x`, `p`, `y`, and `o` perform copy, cut, paste, duplicate, and reveal-active-file actions
+- Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
 - Explorer `t` opens a new integrated terminal in the selected folder or selected file's parent folder
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the terminal clipboard
 - Explorer `/`, `.`, and `i` perform visible-tree filtering, dotfile visibility toggling, and generated-folder visibility toggling

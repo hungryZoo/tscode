@@ -1385,6 +1385,7 @@ pub struct PromptState {
 pub enum QuickPanelKind {
     OpenFile,
     Completions,
+    ExplorerContextMenu,
     WorkspaceSearch,
     DocumentSymbols,
     WorkspaceSymbols,
@@ -1487,10 +1488,15 @@ pub enum CommandAction {
     FormatDocument,
     CloseActiveTab,
     CloseSavedTabs,
+    OpenSelectedExplorerItem,
     NewFile,
     NewFolder,
     RenameSelected,
     DeleteSelected,
+    CopySelectedExplorerItem,
+    CutSelectedExplorerItem,
+    PasteIntoSelectedExplorerItem,
+    DuplicateSelectedExplorerItem,
     RefreshExplorer,
     CollapseExplorer,
     RevealActiveFile,
@@ -1984,6 +1990,9 @@ impl App {
                 self.toggle_editor_cursor_from_mouse();
             }
             MouseEventKind::Down(MouseButton::Left) => self.activate_target(target)?,
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.open_context_menu_for_target(target)?
+            }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if target == HoverTarget::Editor {
                     self.focus = FocusPanel::Editor;
@@ -2005,7 +2014,23 @@ impl App {
             MouseEventKind::ScrollLeft => self.scroll_target_horizontal(target, -8),
             MouseEventKind::ScrollRight => self.scroll_target_horizontal(target, 8),
             MouseEventKind::Drag(_) | MouseEventKind::Up(_) => {}
-            MouseEventKind::Down(_) => {}
+        }
+
+        Ok(())
+    }
+
+    fn open_context_menu_for_target(&mut self, target: HoverTarget) -> Result<()> {
+        match target {
+            HoverTarget::ExplorerRow(index) => {
+                self.focus = FocusPanel::Explorer;
+                self.explorer.selected = index;
+                self.open_quick_panel(QuickPanelKind::ExplorerContextMenu)?;
+            }
+            HoverTarget::Explorer => {
+                self.focus = FocusPanel::Explorer;
+                self.open_quick_panel(QuickPanelKind::ExplorerContextMenu)?;
+            }
+            _ => {}
         }
 
         Ok(())
@@ -2964,6 +2989,14 @@ struct CommandSpec {
     action: CommandAction,
 }
 
+#[derive(Debug, Clone)]
+struct ExplorerContextAction {
+    label: &'static str,
+    detail: String,
+    shortcut: &'static str,
+    action: CommandAction,
+}
+
 fn command_catalog() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
@@ -3490,6 +3523,7 @@ impl App {
         let items = match kind {
             QuickPanelKind::OpenFile => self.quick_open_items(&query)?,
             QuickPanelKind::Completions => self.completion_items(&query)?,
+            QuickPanelKind::ExplorerContextMenu => self.explorer_context_menu_items(&query),
             QuickPanelKind::WorkspaceSearch => self.workspace_search_items(&query)?,
             QuickPanelKind::DocumentSymbols => self.document_symbol_items(&query),
             QuickPanelKind::WorkspaceSymbols => self.workspace_symbol_items(&query)?,
@@ -3542,6 +3576,198 @@ impl App {
             .take(MAX_QUICK_ITEMS)
             .map(|(_, _, item)| item)
             .collect())
+    }
+
+    fn explorer_context_menu_items(&self, query: &str) -> Vec<QuickItem> {
+        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+            return Vec::new();
+        };
+        let relative = relative_path(&self.root, &node.path);
+        let target_kind = if node.is_dir { "folder" } else { "file" };
+        let base = if node.is_dir {
+            relative.clone()
+        } else {
+            node.path
+                .parent()
+                .map(|parent| relative_path(&self.root, parent))
+                .unwrap_or_else(|| ".".to_owned())
+        };
+        let open_label = if node.is_dir {
+            if node.expanded {
+                "Collapse Folder"
+            } else {
+                "Expand Folder"
+            }
+        } else {
+            "Open File"
+        };
+        let paste_detail = self
+            .explorer_clipboard
+            .as_ref()
+            .map(|clipboard| {
+                let action = match clipboard.action {
+                    ClipboardAction::Copy => "Copy",
+                    ClipboardAction::Cut => "Move",
+                };
+                format!(
+                    "{action} {} into {base}",
+                    relative_path(&self.root, &clipboard.path)
+                )
+            })
+            .unwrap_or_else(|| "Paste the explorer clipboard into the selected folder".to_owned());
+
+        let mut specs = vec![
+            ExplorerContextAction {
+                label: open_label,
+                detail: format!("{} {}", open_label.to_lowercase(), relative),
+                shortcut: "Enter",
+                action: CommandAction::OpenSelectedExplorerItem,
+            },
+            ExplorerContextAction {
+                label: "New File",
+                detail: format!("Create a file under {base}"),
+                shortcut: "n",
+                action: CommandAction::NewFile,
+            },
+            ExplorerContextAction {
+                label: "New Folder",
+                detail: format!("Create a folder under {base}"),
+                shortcut: "N",
+                action: CommandAction::NewFolder,
+            },
+            ExplorerContextAction {
+                label: "New Terminal Here",
+                detail: format!("Open a PTY shell in this {target_kind}'s directory"),
+                shortcut: "t",
+                action: CommandAction::NewTerminalHere,
+            },
+            ExplorerContextAction {
+                label: "Copy Path",
+                detail: "Copy the absolute path to the terminal clipboard".to_owned(),
+                shortcut: "",
+                action: CommandAction::CopySelectedExplorerPath,
+            },
+            ExplorerContextAction {
+                label: "Copy Relative Path",
+                detail: "Copy the workspace-relative path to the terminal clipboard".to_owned(),
+                shortcut: "",
+                action: CommandAction::CopySelectedExplorerRelativePath,
+            },
+            ExplorerContextAction {
+                label: "Copy",
+                detail: format!("Copy {relative} to the explorer clipboard"),
+                shortcut: "c",
+                action: CommandAction::CopySelectedExplorerItem,
+            },
+            ExplorerContextAction {
+                label: "Paste",
+                detail: paste_detail,
+                shortcut: "p",
+                action: CommandAction::PasteIntoSelectedExplorerItem,
+            },
+            ExplorerContextAction {
+                label: "Refresh Explorer",
+                detail: "Reload the workspace file tree from disk".to_owned(),
+                shortcut: "r",
+                action: CommandAction::RefreshExplorer,
+            },
+            ExplorerContextAction {
+                label: "Collapse Explorer Folders",
+                detail: "Collapse all expanded explorer folders".to_owned(),
+                shortcut: "",
+                action: CommandAction::CollapseExplorer,
+            },
+            ExplorerContextAction {
+                label: "Toggle Hidden Files",
+                detail: "Show or hide dot-prefixed files and folders".to_owned(),
+                shortcut: ".",
+                action: CommandAction::ToggleHiddenFiles,
+            },
+            ExplorerContextAction {
+                label: "Toggle Generated Folders",
+                detail: "Show or hide target, dist, build, node_modules, and similar folders"
+                    .to_owned(),
+                shortcut: "i",
+                action: CommandAction::ToggleIgnoredFiles,
+            },
+        ];
+
+        if node.path != self.root {
+            specs.splice(
+                8..8,
+                [
+                    ExplorerContextAction {
+                        label: "Cut",
+                        detail: format!("Move {relative} through the explorer clipboard"),
+                        shortcut: "x",
+                        action: CommandAction::CutSelectedExplorerItem,
+                    },
+                    ExplorerContextAction {
+                        label: "Duplicate",
+                        detail: format!("Create a copy next to {relative}"),
+                        shortcut: "y",
+                        action: CommandAction::DuplicateSelectedExplorerItem,
+                    },
+                    ExplorerContextAction {
+                        label: "Rename",
+                        detail: format!("Rename {relative}"),
+                        shortcut: "e",
+                        action: CommandAction::RenameSelected,
+                    },
+                    ExplorerContextAction {
+                        label: "Delete",
+                        detail: format!("Delete {relative} after confirmation"),
+                        shortcut: "D",
+                        action: CommandAction::DeleteSelected,
+                    },
+                ],
+            );
+        }
+
+        let query = query.trim();
+        if query.is_empty() {
+            return specs
+                .into_iter()
+                .take(MAX_QUICK_ITEMS)
+                .map(|spec| QuickItem {
+                    label: spec.label.to_owned(),
+                    detail: spec.detail,
+                    path: node.path.clone(),
+                    line: None,
+                    col: None,
+                    preview: (!spec.shortcut.is_empty()).then(|| spec.shortcut.to_owned()),
+                    command: Some(spec.action),
+                })
+                .collect();
+        }
+
+        let mut scored = specs
+            .into_iter()
+            .filter_map(|spec| {
+                let haystack = format!("{} {}", spec.label, spec.detail);
+                fuzzy_score(&haystack, query).map(|score| {
+                    (
+                        score,
+                        QuickItem {
+                            label: spec.label.to_owned(),
+                            detail: spec.detail,
+                            path: node.path.clone(),
+                            line: None,
+                            col: None,
+                            preview: (!spec.shortcut.is_empty()).then(|| spec.shortcut.to_owned()),
+                            command: Some(spec.action),
+                        },
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.label.cmp(&b.1.label)));
+        scored
+            .into_iter()
+            .take(MAX_QUICK_ITEMS)
+            .map(|(_, item)| item)
+            .collect()
     }
 
     fn completion_items(&self, query: &str) -> Result<Vec<QuickItem>> {
@@ -5688,10 +5914,15 @@ impl App {
             CommandAction::FormatDocument => self.format_active_document()?,
             CommandAction::CloseActiveTab => self.close_active_tab(),
             CommandAction::CloseSavedTabs => self.close_saved_tabs(),
+            CommandAction::OpenSelectedExplorerItem => self.open_or_toggle_selected()?,
             CommandAction::NewFile => self.start_prompt(PromptKind::NewFile, ""),
             CommandAction::NewFolder => self.start_prompt(PromptKind::NewDir, ""),
             CommandAction::RenameSelected => self.prompt_rename(),
             CommandAction::DeleteSelected => self.prompt_delete(),
+            CommandAction::CopySelectedExplorerItem => self.copy_selected_path(),
+            CommandAction::CutSelectedExplorerItem => self.cut_selected_path(),
+            CommandAction::PasteIntoSelectedExplorerItem => self.paste_into_selected()?,
+            CommandAction::DuplicateSelectedExplorerItem => self.duplicate_selected()?,
             CommandAction::RefreshExplorer => self.refresh_explorer()?,
             CommandAction::CollapseExplorer => self.collapse_explorer(),
             CommandAction::RevealActiveFile => self.reveal_active_file()?,
@@ -8861,6 +9092,90 @@ mod tests {
                 .get(app.explorer.selected)
                 .is_some_and(|node| node.path == canonical_file)
         );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_right_click_opens_context_menu_for_row() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-context-menu-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let file = src.join("main.rs");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        let canonical_file = file.canonicalize().unwrap();
+        app.explorer.reveal(&canonical_file).unwrap();
+        let file_index = app.explorer.selected;
+        app.hit_regions
+            .explorer_rows
+            .push((Rect::new(0, 0, 40, 1), file_index));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 1,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        assert_eq!(app.focus, FocusPanel::Explorer);
+        assert_eq!(app.explorer.selected, file_index);
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.kind, QuickPanelKind::ExplorerContextMenu);
+        assert!(panel.items.iter().any(|item| item.label == "Open File"
+            && item.command == Some(CommandAction::OpenSelectedExplorerItem)));
+        assert!(
+            panel.items.iter().any(|item| item.label == "Rename"
+                && item.command == Some(CommandAction::RenameSelected))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_context_menu_actions_run_real_file_operations() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-context-file-ops-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let file = src.join("main.rs");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        let canonical_root = app.root.clone();
+        let canonical_file = file.canonicalize().unwrap();
+        app.explorer.reveal(&canonical_file).unwrap();
+        app.run_command(CommandAction::CopySelectedExplorerItem)
+            .unwrap();
+        assert!(app.explorer_clipboard.is_some());
+
+        app.explorer.reveal(&canonical_root).unwrap();
+        app.run_command(CommandAction::PasteIntoSelectedExplorerItem)
+            .unwrap();
+        let pasted = canonical_root.join("main.rs");
+        assert!(pasted.is_file());
+        assert_eq!(fs::read_to_string(&pasted).unwrap(), "fn main() {}\n");
+        assert!(
+            app.visible_nodes()
+                .iter()
+                .any(|node| node.path == pasted && !node.is_dir)
+        );
+
+        app.explorer.reveal(&pasted).unwrap();
+        app.run_command(CommandAction::DuplicateSelectedExplorerItem)
+            .unwrap();
+        assert!(canonical_root.join("main copy.rs").is_file());
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

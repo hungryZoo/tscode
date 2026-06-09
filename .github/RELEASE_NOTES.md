@@ -8,6 +8,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - `tscode path/to/file` now opens the file immediately, uses its parent directory as the workspace root, reveals it in the explorer, and starts the integrated terminal in that parent directory.
 - `tscode --help`/`--version` now print CLI metadata before entering raw mode, making installer and package verification work without an interactive terminal.
 - Explorer copy, cut, paste, duplicate, and reveal-active-file actions backed by real filesystem operations.
+- Explorer rows now support a right-click context menu whose mouse-selectable actions call the same real open/toggle, create, copy/cut/paste/duplicate, rename, delete, path-copy, New Terminal Here, refresh, collapse, and visibility operations as shortcuts and the command palette.
 - File moves keep open editor tab paths in sync and reveal pasted/duplicated targets in the tree.
 - Explorer filtering with `/` scans the real workspace tree, auto-expands collapsed parent folders for nested matches, preserves dotfile/generated-folder visibility rules, and keeps file metadata/read-only markers in tree rows.
 - Explorer now auto-refreshes when visible workspace files or folders are created, deleted, renamed, or have metadata changed by the integrated terminal, Git, build tools, or other external processes; expanded folders, selection, active filters, newly matching filtered paths, and Git badges are preserved/refreshed without a manual `r`.

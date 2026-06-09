@@ -82,6 +82,10 @@ When the workspace is inside a Git repository, the explorer shall show compact G
 
 The explorer shall detect externally-created, externally-deleted, renamed, and metadata-changed visible workspace entries while the app is running. When such a change is detected, the explorer shall refresh from the real filesystem without requiring a manual refresh command, preserve expanded folders and the current selection when possible, keep active explorer filters applied, expand newly matching filtered paths, and refresh Git status markers without overwriting unrelated status messages.
 
+### R-115 Explorer Context Menu
+
+Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, rename, delete, New Terminal Here, refresh, collapse folders, toggle hidden files, and toggle generated folders. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
+
 ## 4. Editor Requirements
 
 ### R-201 Tabs
