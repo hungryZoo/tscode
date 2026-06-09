@@ -942,6 +942,7 @@ pub enum CommandAction {
     WorkspaceReplace,
     SaveFile,
     SaveAll,
+    RevertFile,
     CloseActiveTab,
     CloseSavedTabs,
     NewFile,
@@ -1919,6 +1920,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::SaveAll,
         },
         CommandSpec {
+            label: "Revert File",
+            detail: "Discard editor changes and reload the active file from disk",
+            shortcut: "",
+            action: CommandAction::RevertFile,
+        },
+        CommandSpec {
             label: "Close Active Tab",
             detail: "Close the active tab when it has no unsaved edits",
             shortcut: "Ctrl-W",
@@ -2799,6 +2806,30 @@ impl App {
         }
     }
 
+    fn revert_active_tab(&mut self) -> Result<()> {
+        let Some(index) = self.active_tab else {
+            self.message = Some("no active file to revert".to_owned());
+            return Ok(());
+        };
+
+        let path = self.tabs[index].path.clone();
+        let title = self.tabs[index].title.clone();
+        let previous_text = self.tabs[index].text();
+        let bytes = fs::read(&path)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let changed = previous_text != text;
+
+        self.tabs[index].set_clean_text(&text);
+        self.ensure_editor_cursor_visible();
+        self.refresh_git_status();
+        self.message = if changed {
+            Some(format!("reverted {title} from disk"))
+        } else {
+            Some(format!("{title} already matches disk"))
+        };
+        Ok(())
+    }
+
     fn save_all_tabs(&mut self) {
         let mut saved = 0usize;
         for tab in &mut self.tabs {
@@ -3398,6 +3429,7 @@ impl App {
             CommandAction::WorkspaceReplace => self.start_workspace_replace_prompt(),
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAll => self.save_all_tabs(),
+            CommandAction::RevertFile => self.revert_active_tab()?,
             CommandAction::CloseActiveTab => self.close_active_tab(),
             CommandAction::CloseSavedTabs => self.close_saved_tabs(),
             CommandAction::NewFile => self.start_prompt(PromptKind::NewFile, ""),
@@ -4898,6 +4930,35 @@ mod tests {
     }
 
     #[test]
+    fn revert_file_discards_dirty_buffer_and_reloads_disk() {
+        let root = std::env::temp_dir().join(format!("tscode-test-revert-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "disk one\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.active_tab_mut().unwrap().insert_text("dirty ");
+        assert_eq!(app.active_tab().unwrap().lines, vec!["dirty disk one"]);
+        assert!(app.active_tab().unwrap().dirty);
+
+        fs::write(&path, "disk two\n").unwrap();
+        app.run_command(CommandAction::RevertFile).unwrap();
+
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.lines, vec!["disk two"]);
+        assert!(!tab.dirty);
+        assert_eq!(tab.text(), "disk two\n");
+        assert!(tab.selection_range().is_none());
+        assert_eq!(app.message.as_deref(), Some("reverted main.rs from disk"));
+        assert!(!app.active_tab_mut().unwrap().undo());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn search_wraps_forward_and_backward() {
         let path = temp_file("search.txt");
         let _ = fs::remove_file(&path);
@@ -4985,6 +5046,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::TrimTrailingWhitespace))
+        );
+        let commands = app.command_palette_items("revert file");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RevertFile))
         );
         let commands = app.command_palette_items("replace files");
         assert!(

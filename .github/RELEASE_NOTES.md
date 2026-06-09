@@ -27,6 +27,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the same terminal clipboard export without disturbing explorer file copy/cut state.
 - Editor line commands for indent/outdent, duplicate, delete, move up/down, and toggle comments now work on selected line ranges as one undoable edit, while still supporting the current line when no selection is active.
 - Command palette Trim Trailing Whitespace removes spaces and tabs at line ends in the active editor buffer as one undoable edit, then saves cleanly to the real file when `Ctrl-S` or Save File is used.
+- Command palette Revert File reloads the active editor tab from disk, discards unsaved buffer edits, clears per-tab edit history, resets the dirty marker, and refreshes Git status markers.
 - File explorer actions for refresh, new file, new folder, rename, and delete with confirmation; folder rename/delete keeps open tabs in sync.
 - Explorer collapse-all is available through the command palette.
 - Tab close support through the tab `x`, middle click, or `Ctrl-W`, with unsaved-buffer protection.

@@ -202,6 +202,10 @@ The command palette shall expose commands to copy the active editor file path an
 
 The command palette shall include a trim-trailing-whitespace action for the active editor tab. The action shall remove trailing spaces and tabs from all editor lines, mark the buffer dirty only when a change occurs, preserve the file's trailing newline state, and be undoable as one edit.
 
+### R-232 Revert File
+
+The command palette shall include a revert-file action for the active editor tab. The action shall reload the active file's current contents from disk, discard unsaved editor-buffer changes, clear selection and undo/redo history for that tab, reset the dirty marker, preserve cursor visibility within the reloaded content, and refresh Git status markers.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
