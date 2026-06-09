@@ -1,11 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs,
+    env, fs,
+    io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -209,6 +210,24 @@ impl EditorTab {
         self.dirty = false;
         self.undo_stack.clear();
         self.redo_stack.clear();
+    }
+
+    fn replace_entire_text_as_edit(&mut self, text: &str) -> bool {
+        if self.text() == text {
+            return false;
+        }
+
+        self.push_undo();
+        let (lines, trailing_newline) = split_editor_text(text);
+        self.lines = lines;
+        self.trailing_newline = trailing_newline;
+        self.cursor_line = self.cursor_line.min(self.lines.len().saturating_sub(1));
+        self.clamp_cursor_col();
+        self.scroll = self.scroll.min(self.lines.len().saturating_sub(1));
+        self.horizontal_scroll = 0;
+        self.selection_anchor = None;
+        self.dirty = true;
+        true
     }
 
     fn save(&mut self) -> Result<()> {
@@ -951,6 +970,7 @@ pub enum CommandAction {
     SaveFile,
     SaveAll,
     RevertFile,
+    FormatDocument,
     CloseActiveTab,
     CloseSavedTabs,
     NewFile,
@@ -1437,6 +1457,11 @@ impl App {
             match key.code {
                 KeyCode::Up => self.move_active_line_up(),
                 KeyCode::Down => self.move_active_line_down(),
+                KeyCode::Char('f') | KeyCode::Char('F')
+                    if key.modifiers.contains(KeyModifiers::SHIFT) =>
+                {
+                    self.format_active_document()?
+                }
                 _ => {}
             }
             return Ok(());
@@ -1979,6 +2004,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Discard editor changes and reload the active file from disk",
             shortcut: "",
             action: CommandAction::RevertFile,
+        },
+        CommandSpec {
+            label: "Format Document",
+            detail: "Format the active editor buffer with an installed language formatter",
+            shortcut: "Shift-Alt-F",
+            action: CommandAction::FormatDocument,
         },
         CommandSpec {
             label: "Close Active Tab",
@@ -3368,6 +3399,35 @@ impl App {
         };
     }
 
+    fn format_active_document(&mut self) -> Result<()> {
+        let Some(index) = self.active_tab else {
+            self.message = Some("no active editor tab".to_owned());
+            return Ok(());
+        };
+
+        let path = self.tabs[index].path.clone();
+        let Some(formatter) = formatter_command_for_path(&path, &self.root) else {
+            self.message = Some(format!(
+                "no formatter configured for {}",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("[file]")
+            ));
+            return Ok(());
+        };
+
+        let original = self.tabs[index].text();
+        let formatted = run_formatter_command(&formatter, &original)?;
+        let title = self.tabs[index].title.clone();
+        if self.tabs[index].replace_entire_text_as_edit(&formatted) {
+            self.ensure_editor_cursor_visible();
+            self.message = Some(format!("formatted {title} with {}", formatter.label));
+        } else {
+            self.message = Some(format!("already formatted with {}", formatter.label));
+        }
+        Ok(())
+    }
+
     fn select_all_active_tab(&mut self) {
         if let Some(tab) = self.active_tab_mut() {
             tab.select_all();
@@ -3698,6 +3758,7 @@ impl App {
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAll => self.save_all_tabs(),
             CommandAction::RevertFile => self.revert_active_tab()?,
+            CommandAction::FormatDocument => self.format_active_document()?,
             CommandAction::CloseActiveTab => self.close_active_tab(),
             CommandAction::CloseSavedTabs => self.close_saved_tabs(),
             CommandAction::NewFile => self.start_prompt(PromptKind::NewFile, ""),
@@ -4505,6 +4566,13 @@ struct WorkspaceTextFile {
     text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FormatterCommand {
+    label: &'static str,
+    program: &'static str,
+    args: Vec<String>,
+}
+
 fn symbols_to_quick_items(
     path: &Path,
     text: &str,
@@ -4829,6 +4897,182 @@ fn is_control_symbol_name(name: &str) -> bool {
             | "try"
             | "await"
     )
+}
+
+fn formatter_command_for_path(path: &Path, root: &Path) -> Option<FormatterCommand> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let path_string = path.to_string_lossy().into_owned();
+
+    match extension.as_deref() {
+        Some("rs") => Some(FormatterCommand {
+            label: "rustfmt",
+            program: "rustfmt",
+            args: vec![
+                "--edition".to_owned(),
+                detect_rust_edition(path, root),
+                "--emit".to_owned(),
+                "stdout".to_owned(),
+            ],
+        }),
+        Some("go") => Some(FormatterCommand {
+            label: "gofmt",
+            program: "gofmt",
+            args: Vec::new(),
+        }),
+        Some("js" | "jsx" | "ts" | "tsx" | "json" | "css" | "scss" | "html" | "md")
+        | Some("markdown" | "yaml" | "yml") => Some(FormatterCommand {
+            label: "prettier",
+            program: "prettier",
+            args: vec!["--stdin-filepath".to_owned(), path_string],
+        }),
+        Some("py" | "pyw") => Some(FormatterCommand {
+            label: "black",
+            program: "black",
+            args: vec![
+                "-q".to_owned(),
+                "--stdin-filename".to_owned(),
+                path_string,
+                "-".to_owned(),
+            ],
+        }),
+        Some("sh" | "bash" | "zsh") => Some(FormatterCommand {
+            label: "shfmt",
+            program: "shfmt",
+            args: Vec::new(),
+        }),
+        Some("c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" | "m" | "mm" | "java")
+        | Some("kt" | "kts" | "cs" | "proto") => Some(FormatterCommand {
+            label: "clang-format",
+            program: "clang-format",
+            args: vec![format!("--assume-filename={path_string}")],
+        }),
+        _ if matches!(filename.as_str(), ".bashrc" | ".zshrc" | ".profile") => {
+            Some(FormatterCommand {
+                label: "shfmt",
+                program: "shfmt",
+                args: Vec::new(),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn run_formatter_command(formatter: &FormatterCommand, text: &str) -> Result<String> {
+    let mut child = spawn_formatter_process(formatter)?;
+
+    {
+        let mut stdin = child.stdin.take().context("formatter stdin unavailable")?;
+        stdin
+            .write_all(text.as_bytes())
+            .context("failed to write formatter input")?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for formatter")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "{} failed: {}",
+            formatter.label,
+            stderr
+                .trim()
+                .lines()
+                .next()
+                .unwrap_or("no formatter output")
+        ));
+    }
+
+    String::from_utf8(output.stdout).context("formatter produced invalid UTF-8")
+}
+
+fn spawn_formatter_process(formatter: &FormatterCommand) -> Result<std::process::Child> {
+    match formatter_process_command(formatter.program, &formatter.args).spawn() {
+        Ok(child) => Ok(child),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound && formatter.program == "rustfmt" =>
+        {
+            let Some(rustfmt) = rustup_tool_path("rustfmt") else {
+                return Err(error)
+                    .with_context(|| format!("formatter not found: {}", formatter.program));
+            };
+            formatter_process_command(&rustfmt, &formatter.args)
+                .spawn()
+                .with_context(|| format!("formatter not found: {rustfmt}"))
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("formatter not found: {}", formatter.program))
+        }
+    }
+}
+
+fn formatter_process_command(program: &str, args: &[String]) -> Command {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn rustup_tool_path(tool: &str) -> Option<String> {
+    rustup_candidates().into_iter().find_map(|rustup| {
+        let output = Command::new(rustup).args(["which", tool]).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+        (!path.is_empty()).then_some(path)
+    })
+}
+
+fn rustup_candidates() -> Vec<String> {
+    let mut candidates = vec!["rustup".to_owned()];
+    if let Some(home) = env::var_os("HOME") {
+        candidates.push(
+            PathBuf::from(home)
+                .join(".cargo/bin/rustup")
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    candidates.push("/opt/homebrew/bin/rustup".to_owned());
+    candidates.push("/usr/local/bin/rustup".to_owned());
+    candidates
+}
+
+fn detect_rust_edition(path: &Path, root: &Path) -> String {
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        let manifest = dir.join("Cargo.toml");
+        if let Ok(text) = fs::read_to_string(&manifest)
+            && let Some(edition) = parse_cargo_edition(&text)
+        {
+            return edition;
+        }
+        if dir == root {
+            break;
+        }
+        current = dir.parent();
+    }
+    "2024".to_owned()
+}
+
+fn parse_cargo_edition(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let line = line.split('#').next()?.trim();
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "edition").then(|| value.trim().trim_matches('"').to_owned())
+    })
 }
 
 fn identifier_at_char(line: &str, char_col: usize) -> Option<String> {
@@ -5293,6 +5537,23 @@ mod tests {
     }
 
     #[test]
+    fn editor_replace_entire_text_as_edit_is_undoable() {
+        let path = temp_file("format-replace.rs");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "fn main(){println!(\"hi\");}\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        assert!(tab.replace_entire_text_as_edit("fn main() {\n    println!(\"hi\");\n}\n"));
+        assert_eq!(tab.lines, vec!["fn main() {", "    println!(\"hi\");", "}"]);
+        assert!(tab.dirty);
+
+        assert!(tab.undo());
+        assert_eq!(tab.text(), "fn main(){println!(\"hi\");}\n");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn editor_line_commands_apply_to_selected_line_ranges() {
         let path = temp_file("line-range-commands.rs");
         let _ = fs::remove_file(&path);
@@ -5608,6 +5869,46 @@ mod tests {
     }
 
     #[test]
+    fn format_document_runs_rustfmt_and_marks_buffer_dirty() {
+        if Command::new("rustfmt").arg("--version").output().is_err() {
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!("tscode-test-format-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nedition = \"2024\"\n").unwrap();
+        let path = src.join("main.rs");
+        fs::write(&path, "fn main(){println!(\"hi\");}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.run_command(CommandAction::FormatDocument).unwrap();
+
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.lines, vec!["fn main() {", "    println!(\"hi\");", "}"]);
+        assert!(tab.dirty);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("formatted main.rs with rustfmt")
+        );
+
+        app.undo_active_tab();
+        assert_eq!(
+            app.active_tab().unwrap().text(),
+            "fn main(){println!(\"hi\");}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "fn main(){println!(\"hi\");}\n"
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn revert_file_discards_dirty_buffer_and_reloads_disk() {
         let root = std::env::temp_dir().join(format!("tscode-test-revert-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -5730,6 +6031,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::RevertFile))
+        );
+        let commands = app.command_palette_items("format document");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::FormatDocument))
         );
         let commands = app.command_palette_items("replace files");
         assert!(

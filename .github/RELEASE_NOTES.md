@@ -30,6 +30,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Editor copy/cut now also exports selected text through OSC52 terminal clipboard integration where the host terminal allows it.
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the same terminal clipboard export without disturbing explorer file copy/cut state.
 - Editor line commands for indent/outdent, duplicate, delete, move up/down, and toggle comments now work on selected line ranges as one undoable edit, while still supporting the current line when no selection is active.
+- Format Document with `Shift-Alt-F` or the command palette pipes the active buffer through installed formatters such as `rustfmt`, `prettier`, `gofmt`, `black`, `shfmt`, or `clang-format`, then applies the result as one undoable dirty-buffer edit.
 - Command palette Trim Trailing Whitespace removes spaces and tabs at line ends in the active editor buffer as one undoable edit, then saves cleanly to the real file when `Ctrl-S` or Save File is used.
 - Command palette Revert File reloads the active editor tab from disk, discards unsaved buffer edits, clears per-tab edit history, resets the dirty marker, and refreshes Git status markers.
 - Opening files now canonicalizes paths before tab lookup, avoiding duplicate tabs and broken relative-path behavior when the OS exposes aliases such as `/tmp` and `/private/tmp`.
