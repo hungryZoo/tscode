@@ -16,6 +16,8 @@ const TITLE_BG: Color = Color::Rgb(32, 40, 54);
 const PANEL_BG: Color = Color::Rgb(13, 17, 23);
 const HOVER_BG: Color = Color::Rgb(42, 54, 71);
 const ACTIVE_BG: Color = Color::Rgb(24, 64, 92);
+const SEARCH_BG: Color = Color::Rgb(104, 76, 28);
+const SEARCH_ACTIVE_BG: Color = Color::Rgb(222, 184, 75);
 const BORDER: Color = Color::Rgb(75, 89, 110);
 const ACCENT: Color = Color::Rgb(89, 169, 255);
 const TEXT: Color = Color::Rgb(205, 213, 224);
@@ -84,13 +86,18 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 .selected_text()
                 .map(|text| format!("  Sel {}", text.chars().count()))
                 .unwrap_or_default();
+            let search = app
+                .active_search_match_count()
+                .map(|count| format!("  Find {count}"))
+                .unwrap_or_default();
             format!(
-                "{}{}  Ln {}, Col {}{}",
+                "{}{}  Ln {}, Col {}{}{}",
                 tab.path.display(),
                 dirty,
                 tab.cursor_line + 1,
                 tab.cursor_col + 1,
-                selection
+                selection,
+                search
             )
         })
         .unwrap_or_else(|| "no file open".to_owned());
@@ -187,7 +194,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Editor;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Editor  Ctrl-S save  Ctrl-F find  Ctrl-A/C/X/V select/copy/cut/paste ")
+        .title(" Editor  Ctrl-S save  Ctrl-F find  Ctrl-H replace  Ctrl-A/C/X/V clipboard ")
         .border_style(border_style(focused));
     let inner = block.inner(chunks[1]);
     app.hit_regions.editor_body = Some(inner);
@@ -203,6 +210,10 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
+    let search_needle = app
+        .search_needle
+        .clone()
+        .filter(|needle| !needle.is_empty());
     let Some(tab) = app.tabs.get_mut(active_index) else {
         return;
     };
@@ -234,6 +245,10 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(Color::White).bg(ACTIVE_BG),
             ));
             spans.push(Span::raw(skip_chars(source, selection_end)));
+        } else if let Some(needle) = &search_needle
+            && let Some(search_spans) = search_line_spans(tab, line_index, needle, focused)
+        {
+            spans.extend(search_spans);
         } else if focused && line_index == tab.cursor_line {
             let cursor_col = tab.cursor_col;
             let source = &tab.lines[line_index];
@@ -513,6 +528,20 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::Rename(_) => "rename",
         crate::app::PromptKind::Delete(_) => "delete: type yes",
         crate::app::PromptKind::Search => "find",
+        crate::app::PromptKind::ReplaceFind { all } => {
+            if *all {
+                "replace all: find"
+            } else {
+                "replace: find"
+            }
+        }
+        crate::app::PromptKind::ReplaceWith { all, .. } => {
+            if *all {
+                "replace all: with"
+            } else {
+                "replace: with"
+            }
+        }
         crate::app::PromptKind::GotoLine => "go to line",
         crate::app::PromptKind::QuitDirty => "unsaved: type quit",
     }
@@ -554,6 +583,108 @@ fn line_selection_range(tab: &crate::app::EditorTab, line_index: usize) -> Optio
     };
 
     (selection_start != selection_end).then_some((selection_start, selection_end))
+}
+
+fn search_line_spans(
+    tab: &crate::app::EditorTab,
+    line_index: usize,
+    needle: &str,
+    focused: bool,
+) -> Option<Vec<Span<'static>>> {
+    if needle.is_empty() {
+        return None;
+    }
+
+    let source = &tab.lines[line_index];
+    let ranges = line_match_ranges(source, needle);
+    if ranges.is_empty() {
+        return None;
+    }
+
+    let cursor_col = (focused && line_index == tab.cursor_line).then_some(tab.cursor_col);
+    let chars = source.chars().collect::<Vec<_>>();
+    let mut spans = Vec::new();
+    let mut buffer = String::new();
+    let mut current_style = None::<Style>;
+
+    for (index, c) in chars.iter().enumerate() {
+        let style = search_char_style(index, &ranges, cursor_col);
+        if current_style == style {
+            buffer.push(*c);
+            continue;
+        }
+
+        flush_owned_span(&mut spans, &mut buffer, current_style);
+        current_style = style;
+        buffer.push(*c);
+    }
+    flush_owned_span(&mut spans, &mut buffer, current_style);
+
+    if cursor_col == Some(chars.len()) {
+        spans.push(Span::styled(
+            " ",
+            Style::default().fg(Color::Black).bg(ACCENT),
+        ));
+    }
+
+    Some(spans)
+}
+
+fn search_char_style(
+    char_index: usize,
+    ranges: &[(usize, usize)],
+    cursor_col: Option<usize>,
+) -> Option<Style> {
+    for (start, end) in ranges {
+        if char_index >= *start && char_index < *end {
+            let active = cursor_col == Some(*start);
+            return Some(if active {
+                Style::default().fg(Color::Black).bg(SEARCH_ACTIVE_BG)
+            } else {
+                Style::default().fg(Color::White).bg(SEARCH_BG)
+            });
+        }
+    }
+
+    if cursor_col == Some(char_index) {
+        Some(Style::default().fg(Color::Black).bg(ACCENT))
+    } else {
+        None
+    }
+}
+
+fn flush_owned_span(spans: &mut Vec<Span<'static>>, buffer: &mut String, style: Option<Style>) {
+    if buffer.is_empty() {
+        return;
+    }
+
+    let text = std::mem::take(buffer);
+    if let Some(style) = style {
+        spans.push(Span::styled(text, style));
+    } else {
+        spans.push(Span::raw(text));
+    }
+}
+
+fn line_match_ranges(line: &str, needle: &str) -> Vec<(usize, usize)> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ranges = Vec::new();
+    let mut byte_start = 0usize;
+    while byte_start <= line.len() {
+        let Some(found) = line[byte_start..].find(needle) else {
+            break;
+        };
+        let start_byte = byte_start + found;
+        let end_byte = start_byte + needle.len();
+        let start_col = line[..start_byte].chars().count();
+        let end_col = line[..end_byte].chars().count();
+        ranges.push((start_col, end_col));
+        byte_start = end_byte;
+    }
+    ranges
 }
 
 fn display_name(path: &std::path::Path) -> String {

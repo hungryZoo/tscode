@@ -492,6 +492,56 @@ impl EditorTab {
         self.dirty = true;
     }
 
+    fn replace_match_at(
+        &mut self,
+        line_index: usize,
+        col: usize,
+        needle: &str,
+        replacement: &str,
+    ) -> bool {
+        if needle.is_empty() || line_index >= self.lines.len() {
+            return false;
+        }
+
+        let line = &self.lines[line_index];
+        let start_byte = byte_index_for_char(line, col);
+        if !line[start_byte..].starts_with(needle) {
+            return false;
+        }
+
+        let end_col = col + needle.chars().count();
+        self.push_undo();
+        self.set_cursor_raw(line_index, col);
+        self.delete_range_raw((line_index, col), (line_index, end_col));
+        self.insert_text_raw(replacement);
+        self.dirty = true;
+        true
+    }
+
+    fn replace_all_matches(&mut self, needle: &str, replacement: &str) -> usize {
+        if needle.is_empty() {
+            return 0;
+        }
+
+        let count = self
+            .lines
+            .iter()
+            .map(|line| line.matches(needle).count())
+            .sum::<usize>();
+        if count == 0 {
+            return 0;
+        }
+
+        self.push_undo();
+        for line in &mut self.lines {
+            *line = line.replace(needle, replacement);
+        }
+        self.clear_selection();
+        self.clamp_cursor_col();
+        self.dirty = true;
+        count
+    }
+
     fn text_in_range(&self, start: (usize, usize), end: (usize, usize)) -> String {
         let (start_line, start_col) = start;
         let (end_line, end_col) = end;
@@ -589,6 +639,8 @@ pub enum PromptKind {
     Rename(PathBuf),
     Delete(PathBuf),
     Search,
+    ReplaceFind { all: bool },
+    ReplaceWith { needle: String, all: bool },
     GotoLine,
     QuitDirty,
 }
@@ -633,6 +685,8 @@ pub enum CommandAction {
     CollapseExplorer,
     RevealActiveFile,
     FindInFile,
+    ReplaceInFile,
+    ReplaceAllInFile,
     GotoLine,
     DuplicateLine,
     DeleteLine,
@@ -920,6 +974,7 @@ impl App {
                     let initial = self.search_needle.clone().unwrap_or_default();
                     self.start_prompt(PromptKind::Search, &initial);
                 }
+                KeyCode::Char('h') => self.start_replace_prompt(false),
                 KeyCode::Char('l') => self.start_prompt(PromptKind::GotoLine, ""),
                 KeyCode::Char('/') => self.toggle_active_line_comment(),
                 KeyCode::Char('d') => self.duplicate_active_line(),
@@ -1294,6 +1349,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::FindInFile,
         },
         CommandSpec {
+            label: "Replace in File",
+            detail: "Replace the next/current match inside the active editor tab",
+            shortcut: "Ctrl-H",
+            action: CommandAction::ReplaceInFile,
+        },
+        CommandSpec {
+            label: "Replace All in File",
+            detail: "Replace every match inside the active editor tab",
+            shortcut: "",
+            action: CommandAction::ReplaceAllInFile,
+        },
+        CommandSpec {
             label: "Go to Line",
             detail: "Jump to a line or line:column in the active editor tab",
             shortcut: "Ctrl-L",
@@ -1404,6 +1471,11 @@ impl App {
             kind,
             input: initial.to_owned(),
         });
+    }
+
+    fn start_replace_prompt(&mut self, all: bool) {
+        let initial = self.search_needle.clone().unwrap_or_default();
+        self.start_prompt(PromptKind::ReplaceFind { all }, &initial);
     }
 
     fn open_quick_panel(&mut self, kind: QuickPanelKind) -> Result<()> {
@@ -1684,6 +1756,14 @@ impl App {
                 }
             }
             PromptKind::Search => self.search_active(prompt.input),
+            PromptKind::ReplaceFind { all } => self.replace_find_from_prompt(prompt.input, all),
+            PromptKind::ReplaceWith { needle, all } => {
+                if all {
+                    self.replace_all_active_matches(needle, prompt.input);
+                } else {
+                    self.replace_next_active_match(needle, prompt.input);
+                }
+            }
             PromptKind::GotoLine => self.goto_line_from_prompt(prompt.input),
             PromptKind::QuitDirty => {
                 if prompt.input == "quit" {
@@ -1864,6 +1944,72 @@ impl App {
         }
         self.search_needle = Some(needle);
         self.find_next(true);
+    }
+
+    fn replace_find_from_prompt(&mut self, needle: String, all: bool) {
+        let needle = needle.trim().to_owned();
+        if needle.is_empty() {
+            self.message = Some("replace requires a search string".to_owned());
+            return;
+        }
+
+        self.search_needle = Some(needle.clone());
+        self.start_prompt(PromptKind::ReplaceWith { needle, all }, "");
+    }
+
+    fn replace_next_active_match(&mut self, needle: String, replacement: String) {
+        if needle.is_empty() {
+            self.message = Some("replace requires a search string".to_owned());
+            return;
+        }
+
+        let Some(tab) = self.active_tab_mut() else {
+            return;
+        };
+        let found = if match_at_cursor(tab, &needle) {
+            Some((tab.cursor_line, tab.cursor_col))
+        } else {
+            find_forward_including(tab, &needle)
+        };
+
+        if let Some((line, col)) = found {
+            if tab.replace_match_at(line, col, &needle, &replacement) {
+                self.search_needle = Some(needle.clone());
+                self.ensure_editor_cursor_visible();
+                self.message = Some(format!("replaced next '{needle}'"));
+            }
+        } else {
+            self.message = Some(format!("not found: {needle}"));
+        }
+    }
+
+    fn replace_all_active_matches(&mut self, needle: String, replacement: String) {
+        if needle.is_empty() {
+            self.message = Some("replace all requires a search string".to_owned());
+            return;
+        }
+
+        let Some(tab) = self.active_tab_mut() else {
+            return;
+        };
+        let count = tab.replace_all_matches(&needle, &replacement);
+        self.search_needle = Some(needle.clone());
+        if count == 0 {
+            self.message = Some(format!("not found: {needle}"));
+        } else {
+            self.ensure_editor_cursor_visible();
+            self.message = Some(format!("replaced {count} match(es) for '{needle}'"));
+        }
+    }
+
+    pub fn active_search_match_count(&self) -> Option<usize> {
+        let needle = self.search_needle.as_ref()?.trim();
+        if needle.is_empty() {
+            return None;
+        }
+        self.active_tab()
+            .map(|tab| count_tab_matches(tab, needle))
+            .filter(|count| *count > 0)
     }
 
     fn find_next(&mut self, forward: bool) {
@@ -2197,6 +2343,8 @@ impl App {
                 let initial = self.search_needle.clone().unwrap_or_default();
                 self.start_prompt(PromptKind::Search, &initial);
             }
+            CommandAction::ReplaceInFile => self.start_replace_prompt(false),
+            CommandAction::ReplaceAllInFile => self.start_replace_prompt(true),
             CommandAction::GotoLine => self.start_prompt(PromptKind::GotoLine, ""),
             CommandAction::DuplicateLine => self.duplicate_active_line(),
             CommandAction::DeleteLine => self.delete_active_line(),
@@ -2423,6 +2571,29 @@ fn find_forward(tab: &EditorTab, needle: &str) -> Option<(usize, usize)> {
     None
 }
 
+fn find_forward_including(tab: &EditorTab, needle: &str) -> Option<(usize, usize)> {
+    let start_line = tab.cursor_line;
+    let start_col = tab.cursor_col;
+    for line_index in start_line..tab.lines.len() {
+        let col = if line_index == start_line {
+            start_col
+        } else {
+            0
+        };
+        if let Some(found) = line_find_from(&tab.lines[line_index], needle, col) {
+            return Some((line_index, found));
+        }
+    }
+
+    for line_index in 0..=start_line.min(tab.lines.len().saturating_sub(1)) {
+        if let Some(found) = line_find_from(&tab.lines[line_index], needle, 0) {
+            return Some((line_index, found));
+        }
+    }
+
+    None
+}
+
 fn find_backward(tab: &EditorTab, needle: &str) -> Option<(usize, usize)> {
     let start_line = tab.cursor_line;
     for line_index in (0..=start_line).rev() {
@@ -2444,6 +2615,27 @@ fn find_backward(tab: &EditorTab, needle: &str) -> Option<(usize, usize)> {
     }
 
     None
+}
+
+fn match_at_cursor(tab: &EditorTab, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let Some(line) = tab.lines.get(tab.cursor_line) else {
+        return false;
+    };
+    let byte = byte_index_for_char(line, tab.cursor_col);
+    line[byte..].starts_with(needle)
+}
+
+fn count_tab_matches(tab: &EditorTab, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    tab.lines
+        .iter()
+        .map(|line| line.matches(needle).count())
+        .sum()
 }
 
 fn line_find_from(line: &str, needle: &str, char_col: usize) -> Option<usize> {
@@ -2907,6 +3099,42 @@ mod tests {
     }
 
     #[test]
+    fn editor_replace_current_and_all_are_undoable() {
+        let root = std::env::temp_dir().join(format!("tscode-test-replace-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "alpha beta alpha\nbeta\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.focus = FocusPanel::Editor;
+        app.search_needle = Some("alpha".to_owned());
+        assert_eq!(app.active_search_match_count(), Some(2));
+
+        app.replace_next_active_match("alpha".to_owned(), "gamma".to_owned());
+        assert_eq!(
+            app.active_tab().unwrap().lines,
+            vec!["gamma beta alpha", "beta"]
+        );
+        assert_eq!(app.active_search_match_count(), Some(1));
+
+        app.replace_all_active_matches("beta".to_owned(), "delta".to_owned());
+        assert_eq!(
+            app.active_tab().unwrap().lines,
+            vec!["gamma delta alpha", "delta"]
+        );
+
+        app.undo_active_tab();
+        assert_eq!(
+            app.active_tab().unwrap().lines,
+            vec!["gamma beta alpha", "beta"]
+        );
+        let _ = app.terminal.kill();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn search_wraps_forward_and_backward() {
         let path = temp_file("search.txt");
         let _ = fs::remove_file(&path);
@@ -2955,6 +3183,13 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::GotoLine))
+        );
+
+        let commands = app.command_palette_items("replace all");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ReplaceAllInFile))
         );
         let _ = app.terminal.kill();
         let _ = fs::remove_dir_all(root);
