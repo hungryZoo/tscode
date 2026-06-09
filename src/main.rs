@@ -31,11 +31,17 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
     terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
     while !app.should_quit {
+        if app.drain_terminal() {
+            terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        }
+
         if event::poll(Duration::from_millis(250))? {
             match event::read()? {
                 Event::Key(key) => app.handle_key(key)?,
                 Event::Mouse(mouse) => app.handle_mouse(mouse)?,
-                Event::Resize(_, _) => {}
+                Event::Resize(_, _) => {
+                    terminal.autoresize()?;
+                }
                 Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
             }
             terminal.draw(|frame| ui::draw(frame, &mut app))?;

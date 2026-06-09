@@ -61,6 +61,14 @@ impl FsTree {
         visible
     }
 
+    pub fn refresh(&mut self) -> Result<()> {
+        let mut expanded = Vec::new();
+        collect_expanded(&self.root, &mut expanded);
+        reload_with_expanded(&mut self.root, &expanded)?;
+        self.clamp_selection();
+        Ok(())
+    }
+
     pub fn toggle(&mut self, path: &Path) -> Result<()> {
         if let Some(node) = find_mut(&mut self.root, path)
             && node.is_dir
@@ -145,6 +153,38 @@ fn load_children(node: &mut FsNode) -> Result<()> {
 
     children.sort_by(compare_nodes);
     node.children = Some(children);
+    Ok(())
+}
+
+fn collect_expanded(node: &FsNode, expanded: &mut Vec<PathBuf>) {
+    if node.is_dir && node.expanded {
+        expanded.push(node.path.clone());
+        if let Some(children) = &node.children {
+            for child in children {
+                collect_expanded(child, expanded);
+            }
+        }
+    }
+}
+
+fn reload_with_expanded(node: &mut FsNode, expanded: &[PathBuf]) -> Result<()> {
+    if !node.is_dir {
+        return Ok(());
+    }
+
+    load_children(node)?;
+    node.expanded = expanded.iter().any(|path| path == &node.path);
+
+    if node.expanded
+        && let Some(children) = &mut node.children
+    {
+        for child in children {
+            if child.is_dir && expanded.iter().any(|path| path == &child.path) {
+                reload_with_expanded(child, expanded)?;
+            }
+        }
+    }
+
     Ok(())
 }
 

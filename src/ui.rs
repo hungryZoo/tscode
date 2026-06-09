@@ -63,20 +63,44 @@ fn draw_title(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    if let Some(prompt) = &app.prompt {
+        let text = format!(" {}: {} ", prompt_title(&prompt.kind), prompt.input);
+        frame.render_widget(
+            Paragraph::new(text).style(Style::default().fg(Color::White).bg(ACTIVE_BG)),
+            area,
+        );
+        return;
+    }
+
     let active = app
         .active_tab()
-        .map(|tab| tab.path.display().to_string())
+        .map(|tab| {
+            let dirty = if tab.dirty { " *" } else { "" };
+            format!(
+                "{}{}  Ln {}, Col {}",
+                tab.path.display(),
+                dirty,
+                tab.cursor_line + 1,
+                tab.cursor_col + 1
+            )
+        })
         .unwrap_or_else(|| "no file open".to_owned());
     let error = app
         .last_error
         .as_ref()
         .map(|error| format!("  error: {error}"))
         .unwrap_or_default();
+    let message = app
+        .message
+        .as_ref()
+        .map(|message| format!("  {message}"))
+        .unwrap_or_default();
     let text = format!(
-        " {} tabs:{}  hover:{}{} ",
+        " {} tabs:{}  hover:{}{}{} ",
         active,
         app.tabs.len(),
         hover_name(&app.hover),
+        message,
         error
     );
     frame.render_widget(
@@ -90,7 +114,7 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Explorer;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Explorer ")
+        .title(" Explorer  n file  N dir  e rename  D delete  r refresh ")
         .border_style(border_style(focused));
     let inner = block.inner(area);
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), area);
@@ -136,9 +160,10 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Editor;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Editor ")
+        .title(" Editor  Ctrl-S save  Ctrl-F find ")
         .border_style(border_style(focused));
     let inner = block.inner(chunks[1]);
+    app.hit_regions.editor_body = Some(inner);
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), chunks[1]);
 
     app.editor_height = inner.height as usize;
@@ -174,7 +199,19 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             Span::raw(" "),
         ];
-        if let Some(parts) = highlighted.get(offset) {
+        if focused && line_index == tab.cursor_line {
+            let cursor_col = tab.cursor_col;
+            let source = &tab.lines[line_index];
+            let before = take_chars(source, cursor_col);
+            let cursor = source.chars().nth(cursor_col).unwrap_or(' ');
+            let after = skip_chars(source, cursor_col.saturating_add(1));
+            spans.push(Span::raw(before));
+            spans.push(Span::styled(
+                cursor.to_string(),
+                Style::default().fg(Color::Black).bg(ACCENT),
+            ));
+            spans.push(Span::raw(after));
+        } else if let Some(parts) = highlighted.get(offset) {
             spans.extend(parts.clone());
         }
         rendered.push(Line::from(spans));
@@ -198,7 +235,8 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
             break;
         }
 
-        let label = format!(" {} x ", tab.title);
+        let dirty = if tab.dirty { "*" } else { "" };
+        let label = format!(" {}{} x ", tab.title, dirty);
         let width = label.width().clamp(8, 24) as u16;
         let remaining = area.x.saturating_add(area.width).saturating_sub(x);
         let width = width.min(remaining);
@@ -227,7 +265,7 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Terminal;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Terminal ")
+        .title(" Terminal  real pty shell  Ctrl-Q quit app ")
         .border_style(border_style(focused));
     let inner = block.inner(area);
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), area);
@@ -236,42 +274,35 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(inner);
-    let output_area = chunks[0];
-    let input_area = chunks[1];
-    app.hit_regions.terminal_input = Some(input_area);
-    app.terminal_height = output_area.height as usize;
+    app.hit_regions.terminal_body = Some(inner);
+    app.hit_regions.terminal_input = Some(inner);
+    app.terminal_height = inner.height as usize;
+    app.terminal.resize(inner.height, inner.width);
 
-    let max_scroll = app.terminal.max_scroll(app.terminal_height.max(1));
-    app.terminal.scroll = app.terminal.scroll.min(max_scroll);
-    let start = app.terminal.scroll;
-    let end = (start + output_area.height as usize).min(app.terminal.lines.len());
-    let lines = app.terminal.lines[start..end]
-        .iter()
+    let lines = app
+        .terminal
+        .rows()
+        .into_iter()
         .map(|line| Line::from(Span::raw(line.clone())))
         .collect::<Vec<_>>();
 
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().fg(TEXT).bg(PANEL_BG)),
-        output_area,
+        inner,
     );
 
-    let hovered = matches!(
-        app.hover,
-        HoverTarget::TerminalInput | HoverTarget::Terminal
-    );
-    let input_style = if focused {
-        Style::default().fg(Color::White).bg(ACTIVE_BG)
-    } else if hovered {
-        Style::default().fg(Color::White).bg(HOVER_BG)
-    } else {
-        Style::default().fg(TEXT).bg(Color::Rgb(18, 24, 33))
-    };
-    let prompt = format!("> {}", app.terminal.input);
-    frame.render_widget(Paragraph::new(prompt).style(input_style), input_area);
+    if focused {
+        let (row, col) = app.terminal.cursor();
+        let x = inner
+            .x
+            .saturating_add(col)
+            .min(inner.right().saturating_sub(1));
+        let y = inner
+            .y
+            .saturating_add(row)
+            .min(inner.bottom().saturating_sub(1));
+        frame.set_cursor_position((x, y));
+    }
 }
 
 fn border_style(focused: bool) -> Style {
@@ -310,4 +341,22 @@ fn hover_name(hover: &HoverTarget) -> String {
         HoverTarget::Terminal => "terminal".to_owned(),
         HoverTarget::TerminalInput => "terminal input".to_owned(),
     }
+}
+
+fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
+    match kind {
+        crate::app::PromptKind::NewFile => "new file",
+        crate::app::PromptKind::NewDir => "new folder",
+        crate::app::PromptKind::Rename(_) => "rename",
+        crate::app::PromptKind::Delete(_) => "delete confirm",
+        crate::app::PromptKind::Search => "find",
+    }
+}
+
+fn take_chars(s: &str, count: usize) -> String {
+    s.chars().take(count).collect()
+}
+
+fn skip_chars(s: &str, count: usize) -> String {
+    s.chars().skip(count).collect()
 }
