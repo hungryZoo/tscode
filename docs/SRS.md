@@ -138,6 +138,10 @@ Saving an edited file shall preserve an existing trailing newline unless the buf
 
 `Ctrl-shift-f` or `Ctrl-g` outside terminal focus shall open a workspace search overlay. The overlay shall scan real workspace files, show file/line previews, and open the selected result at its matching line.
 
+### R-216A Replace in Files
+
+`Ctrl-shift-h` or the command palette shall prompt for a search string and replacement string, then replace literal matches across real workspace text files. The operation shall skip generated folders according to the current explorer visibility policy, skip binary or oversized files, update clean open tabs with the saved replacement content, and skip dirty open tabs so unsaved work is not overwritten.
+
 ### R-217 Command Palette
 
 `F1` or `Ctrl-shift-p` outside terminal focus shall open a command palette overlay. The command palette shall fuzzy-match available commands and execute the selected command with `Enter`.

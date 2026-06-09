@@ -743,6 +743,8 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
                 "replace: with"
             }
         }
+        crate::app::PromptKind::WorkspaceReplaceFind => "replace files: find",
+        crate::app::PromptKind::WorkspaceReplaceWith { .. } => "replace files: with",
         crate::app::PromptKind::GotoLine => "go to line",
         crate::app::PromptKind::QuitDirty => "unsaved: type quit",
     }

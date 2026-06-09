@@ -165,11 +165,7 @@ impl EditorTab {
     fn open(path: PathBuf) -> Result<Self> {
         let bytes = std::fs::read(&path)?;
         let text = String::from_utf8_lossy(&bytes);
-        let trailing_newline = text.ends_with('\n');
-        let mut lines = text.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
+        let (lines, trailing_newline) = split_editor_text(&text);
 
         let title = path
             .file_name()
@@ -193,12 +189,30 @@ impl EditorTab {
         })
     }
 
-    fn save(&mut self) -> Result<()> {
+    fn text(&self) -> String {
         let mut text = self.lines.join("\n");
         if self.trailing_newline && !text.ends_with('\n') {
             text.push('\n');
         }
-        fs::write(&self.path, text)?;
+        text
+    }
+
+    fn set_clean_text(&mut self, text: &str) {
+        let (lines, trailing_newline) = split_editor_text(text);
+        self.lines = lines;
+        self.trailing_newline = trailing_newline;
+        self.cursor_line = self.cursor_line.min(self.lines.len().saturating_sub(1));
+        self.clamp_cursor_col();
+        self.scroll = self.scroll.min(self.lines.len().saturating_sub(1));
+        self.horizontal_scroll = 0;
+        self.selection_anchor = None;
+        self.dirty = false;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
+    fn save(&mut self) -> Result<()> {
+        fs::write(&self.path, self.text())?;
         self.dirty = false;
         Ok(())
     }
@@ -868,6 +882,8 @@ pub enum PromptKind {
     Search,
     ReplaceFind { all: bool },
     ReplaceWith { needle: String, all: bool },
+    WorkspaceReplaceFind,
+    WorkspaceReplaceWith { needle: String },
     GotoLine,
     QuitDirty,
 }
@@ -900,6 +916,7 @@ pub struct QuickItem {
 pub enum CommandAction {
     QuickOpen,
     WorkspaceSearch,
+    WorkspaceReplace,
     SaveFile,
     SaveAll,
     CloseActiveTab,
@@ -1177,6 +1194,14 @@ impl App {
                 }
                 KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.open_quick_panel(QuickPanelKind::WorkspaceSearch)?;
+                    return Ok(());
+                }
+                KeyCode::Char('H') => {
+                    self.start_workspace_replace_prompt();
+                    return Ok(());
+                }
+                KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.start_workspace_replace_prompt();
                     return Ok(());
                 }
                 _ => {}
@@ -1829,6 +1854,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::WorkspaceSearch,
         },
         CommandSpec {
+            label: "Replace in Files",
+            detail: "Replace text across real workspace files, skipping dirty open buffers",
+            shortcut: "Ctrl-Shift-H",
+            action: CommandAction::WorkspaceReplace,
+        },
+        CommandSpec {
             label: "Save File",
             detail: "Write the active editor tab to disk",
             shortcut: "Ctrl-S",
@@ -2124,6 +2155,11 @@ impl App {
     fn start_replace_prompt(&mut self, all: bool) {
         let initial = self.search_needle.clone().unwrap_or_default();
         self.start_prompt(PromptKind::ReplaceFind { all }, &initial);
+    }
+
+    fn start_workspace_replace_prompt(&mut self) {
+        let initial = self.search_needle.clone().unwrap_or_default();
+        self.start_prompt(PromptKind::WorkspaceReplaceFind, &initial);
     }
 
     fn open_quick_panel(&mut self, kind: QuickPanelKind) -> Result<()> {
@@ -2444,6 +2480,12 @@ impl App {
                 } else {
                     self.replace_next_active_match(needle, prompt.input);
                 }
+            }
+            PromptKind::WorkspaceReplaceFind => {
+                self.workspace_replace_find_from_prompt(prompt.input)
+            }
+            PromptKind::WorkspaceReplaceWith { needle } => {
+                self.replace_workspace_matches(needle, prompt.input)?;
             }
             PromptKind::GotoLine => self.goto_line_from_prompt(prompt.input),
             PromptKind::QuitDirty => {
@@ -2775,6 +2817,100 @@ impl App {
             self.ensure_editor_cursor_visible();
             self.message = Some(format!("replaced {count} match(es) for '{needle}'"));
         }
+    }
+
+    fn workspace_replace_find_from_prompt(&mut self, needle: String) {
+        let needle = needle.trim().to_owned();
+        if needle.is_empty() {
+            self.message = Some("replace in files requires a search string".to_owned());
+            return;
+        }
+
+        self.search_needle = Some(needle.clone());
+        self.start_prompt(PromptKind::WorkspaceReplaceWith { needle }, "");
+    }
+
+    fn replace_workspace_matches(&mut self, needle: String, replacement: String) -> Result<()> {
+        let needle = needle.trim().to_owned();
+        if needle.is_empty() {
+            self.message = Some("replace in files requires a search string".to_owned());
+            return Ok(());
+        }
+
+        let dirty_paths = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.dirty)
+            .map(|tab| tab.path.clone())
+            .collect::<HashSet<_>>();
+        let mut changed = Vec::new();
+        let mut match_count = 0usize;
+        let mut skipped_dirty = 0usize;
+
+        for path in collect_workspace_files(&self.root, self.show_hidden, self.show_ignored)? {
+            if dirty_paths.contains(&path) {
+                if self
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.path == path && tab.text().contains(&needle))
+                {
+                    skipped_dirty += 1;
+                }
+                continue;
+            }
+
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.len() > MAX_FILE_SCAN_BYTES {
+                continue;
+            }
+
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            if bytes.contains(&0) {
+                continue;
+            }
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let count = text.matches(&needle).count();
+            if count == 0 {
+                continue;
+            }
+
+            let replaced = text.replace(&needle, &replacement);
+            fs::write(&path, replaced.as_bytes())?;
+            match_count += count;
+            changed.push((path, replaced));
+        }
+
+        for (path, text) in &changed {
+            for tab in &mut self.tabs {
+                if tab.path == *path && !tab.dirty {
+                    tab.set_clean_text(text);
+                }
+            }
+        }
+
+        if !changed.is_empty() {
+            self.refresh_git_status();
+        }
+        self.search_needle = Some(needle.clone());
+        let mut message = if changed.is_empty() {
+            format!("replace in files found no writable matches for '{needle}'")
+        } else {
+            format!(
+                "replace in files: {match_count} match(es) in {} file(s)",
+                changed.len()
+            )
+        };
+        if skipped_dirty > 0 {
+            message.push_str(&format!("; skipped {skipped_dirty} dirty open file(s)"));
+        }
+        self.message = Some(message);
+        Ok(())
     }
 
     pub fn active_search_match_count(&self) -> Option<usize> {
@@ -3150,6 +3286,7 @@ impl App {
             CommandAction::WorkspaceSearch => {
                 self.open_quick_panel(QuickPanelKind::WorkspaceSearch)?
             }
+            CommandAction::WorkspaceReplace => self.start_workspace_replace_prompt(),
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAll => self.save_all_tabs(),
             CommandAction::CloseActiveTab => self.close_active_tab(),
@@ -3506,6 +3643,15 @@ fn byte_index_for_char(s: &str, char_index: usize) -> usize {
         .nth(char_index)
         .map(|(index, _)| index)
         .unwrap_or(s.len())
+}
+
+fn split_editor_text(text: &str) -> (Vec<String>, bool) {
+    let trailing_newline = text.ends_with('\n');
+    let mut lines = text.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    (lines, trailing_newline)
 }
 
 fn take_chars_owned(s: &str, count: usize) -> String {
@@ -4640,6 +4786,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ReplaceAllInFile))
         );
+        let commands = app.command_palette_items("replace files");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::WorkspaceReplace))
+        );
         let commands = app.command_palette_items("copy relative path");
         assert!(commands.iter().any(|item| {
             item.command == Some(CommandAction::CopyActiveFileRelativePath)
@@ -4657,6 +4809,63 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::NextTerminal))
         );
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_replace_writes_files_updates_tabs_and_skips_dirty_buffers() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-workspace-replace-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let target = root.join("target");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(src.join("main.rs"), "needle one\nneedle two\n").unwrap();
+        fs::write(root.join("README.md"), "docs needle\n").unwrap();
+        fs::write(root.join("dirty.txt"), "dirty needle\n").unwrap();
+        fs::write(target.join("generated.txt"), "needle generated\n").unwrap();
+        fs::write(root.join("binary.bin"), b"needle\0skip").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let main = canonical_root.join("src/main.rs");
+        let readme = canonical_root.join("README.md");
+        let dirty = canonical_root.join("dirty.txt");
+        let generated = canonical_root.join("target/generated.txt");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&main);
+        app.open_file(&dirty);
+        {
+            let tab = app.active_tab_mut().unwrap();
+            tab.set_cursor(0, tab.lines[0].chars().count());
+            tab.insert_text(" unsaved needle");
+        }
+
+        app.replace_workspace_matches("needle".to_owned(), "value".to_owned())
+            .unwrap();
+
+        assert_eq!(fs::read_to_string(&main).unwrap(), "value one\nvalue two\n");
+        assert_eq!(fs::read_to_string(&readme).unwrap(), "docs value\n");
+        assert_eq!(fs::read_to_string(&dirty).unwrap(), "dirty needle\n");
+        assert_eq!(
+            fs::read_to_string(&generated).unwrap(),
+            "needle generated\n"
+        );
+        let main_tab = app.tabs.iter().find(|tab| tab.path == main).unwrap();
+        assert_eq!(main_tab.lines, vec!["value one", "value two"]);
+        assert!(!main_tab.dirty);
+        let dirty_tab = app.tabs.iter().find(|tab| tab.path == dirty).unwrap();
+        assert!(dirty_tab.dirty);
+        assert!(dirty_tab.text().contains("unsaved needle"));
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("skipped 1 dirty open file"))
+        );
+
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
