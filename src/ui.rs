@@ -173,7 +173,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Editor;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Editor  Ctrl-S save  Ctrl-F find  F3 next  Ctrl-Z/Y undo/redo ")
+        .title(" Editor  Ctrl-S save  Ctrl-F find  Ctrl-L goto  Ctrl-/ comment  Tab indent ")
         .border_style(border_style(focused));
     let inner = block.inner(chunks[1]);
     app.hit_regions.editor_body = Some(inner);
@@ -285,7 +285,7 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Terminal;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Terminal  real pty shell  Ctrl-Q quit app ")
+        .title(" Terminal  real pty shell  F1 commands  Ctrl-Q quit app ")
         .border_style(border_style(focused));
     let inner = block.inner(area);
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), area);
@@ -337,6 +337,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = match panel.kind {
         crate::app::QuickPanelKind::OpenFile => " Quick Open  Ctrl-P ",
         crate::app::QuickPanelKind::WorkspaceSearch => " Search Workspace  Ctrl-Shift-F ",
+        crate::app::QuickPanelKind::CommandPalette => " Command Palette  F1 / Ctrl-Shift-P ",
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -359,6 +360,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             crate::app::QuickPanelKind::WorkspaceSearch => {
                 "Type text to search across workspace files."
             }
+            crate::app::QuickPanelKind::CommandPalette => "Type a command name.",
         };
         frame.render_widget(
             Paragraph::new(empty).style(Style::default().fg(MUTED).bg(PANEL_BG)),
@@ -434,6 +436,7 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::Rename(_) => "rename",
         crate::app::PromptKind::Delete(_) => "delete: type yes",
         crate::app::PromptKind::Search => "find",
+        crate::app::PromptKind::GotoLine => "go to line",
         crate::app::PromptKind::QuitDirty => "unsaved: type quit",
     }
 }

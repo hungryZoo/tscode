@@ -262,6 +262,108 @@ impl EditorTab {
         self.dirty = true;
     }
 
+    fn indent_line(&mut self) {
+        self.push_undo();
+        self.lines[self.cursor_line].insert_str(0, "    ");
+        self.cursor_col = self.cursor_col.saturating_add(4);
+        self.dirty = true;
+    }
+
+    fn outdent_line(&mut self) -> bool {
+        let remove_count = leading_indent_width(&self.lines[self.cursor_line]);
+        if remove_count == 0 {
+            return false;
+        }
+
+        self.push_undo();
+        let end = byte_index_for_char(&self.lines[self.cursor_line], remove_count);
+        self.lines[self.cursor_line].replace_range(0..end, "");
+        self.cursor_col = self.cursor_col.saturating_sub(remove_count);
+        self.dirty = true;
+        true
+    }
+
+    fn duplicate_line(&mut self) {
+        self.push_undo();
+        let duplicate = self.lines[self.cursor_line].clone();
+        self.cursor_line += 1;
+        self.lines.insert(self.cursor_line, duplicate);
+        self.clamp_cursor_col();
+        self.dirty = true;
+    }
+
+    fn delete_line(&mut self) {
+        self.push_undo();
+        if self.lines.len() == 1 {
+            self.lines[0].clear();
+            self.cursor_col = 0;
+        } else {
+            self.lines.remove(self.cursor_line);
+            self.cursor_line = self.cursor_line.min(self.lines.len().saturating_sub(1));
+            self.clamp_cursor_col();
+        }
+        self.dirty = true;
+    }
+
+    fn move_line_up(&mut self) -> bool {
+        if self.cursor_line == 0 {
+            return false;
+        }
+
+        self.push_undo();
+        self.lines.swap(self.cursor_line, self.cursor_line - 1);
+        self.cursor_line -= 1;
+        self.dirty = true;
+        true
+    }
+
+    fn move_line_down(&mut self) -> bool {
+        if self.cursor_line + 1 >= self.lines.len() {
+            return false;
+        }
+
+        self.push_undo();
+        self.lines.swap(self.cursor_line, self.cursor_line + 1);
+        self.cursor_line += 1;
+        self.dirty = true;
+        true
+    }
+
+    fn toggle_line_comment(&mut self) -> bool {
+        let Some(token) = comment_token_for_path(&self.path) else {
+            return false;
+        };
+
+        self.push_undo();
+        let line = &mut self.lines[self.cursor_line];
+        let indent_chars = line.chars().take_while(|c| c.is_whitespace()).count();
+        let indent_byte = byte_index_for_char(line, indent_chars);
+        let body = &line[indent_byte..];
+        let token_with_space = format!("{token} ");
+
+        if body.starts_with(&token_with_space) {
+            let remove_end = indent_byte + token_with_space.len();
+            line.replace_range(indent_byte..remove_end, "");
+            self.cursor_col = self
+                .cursor_col
+                .saturating_sub(token_with_space.chars().count());
+        } else if body.starts_with(token) {
+            let remove_end = indent_byte + token.len();
+            line.replace_range(indent_byte..remove_end, "");
+            self.cursor_col = self.cursor_col.saturating_sub(token.chars().count());
+        } else {
+            line.insert_str(indent_byte, &token_with_space);
+            if self.cursor_col >= indent_chars {
+                self.cursor_col = self
+                    .cursor_col
+                    .saturating_add(token_with_space.chars().count());
+            }
+        }
+
+        self.dirty = true;
+        true
+    }
+
     fn move_cursor(&mut self, line_delta: isize, col_delta: isize) {
         self.cursor_line =
             add_signed(self.cursor_line, line_delta).min(self.lines.len().saturating_sub(1));
@@ -341,6 +443,7 @@ pub enum PromptKind {
     Rename(PathBuf),
     Delete(PathBuf),
     Search,
+    GotoLine,
     QuitDirty,
 }
 
@@ -354,6 +457,7 @@ pub struct PromptState {
 pub enum QuickPanelKind {
     OpenFile,
     WorkspaceSearch,
+    CommandPalette,
 }
 
 #[derive(Debug, Clone)]
@@ -364,6 +468,38 @@ pub struct QuickItem {
     pub line: Option<usize>,
     pub col: Option<usize>,
     pub preview: Option<String>,
+    pub command: Option<CommandAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandAction {
+    QuickOpen,
+    WorkspaceSearch,
+    SaveFile,
+    SaveAll,
+    CloseActiveTab,
+    CloseSavedTabs,
+    NewFile,
+    NewFolder,
+    RenameSelected,
+    DeleteSelected,
+    RefreshExplorer,
+    CollapseExplorer,
+    RevealActiveFile,
+    FindInFile,
+    GotoLine,
+    DuplicateLine,
+    DeleteLine,
+    MoveLineUp,
+    MoveLineDown,
+    ToggleLineComment,
+    IndentLine,
+    OutdentLine,
+    FocusExplorer,
+    FocusEditor,
+    FocusTerminal,
+    ClearTerminal,
+    RestartTerminal,
 }
 
 #[derive(Debug, Clone)]
@@ -430,7 +566,7 @@ impl App {
             terminal_height: 0,
             last_error: None,
             prompt: None,
-            message: Some("Tab focus | Explorer: n/N new, c/x/p copy-cut-paste, y duplicate, o reveal | Editor: Ctrl-S save | Terminal: Ctrl-Q quit".to_owned()),
+            message: Some("F1/Ctrl-Shift-P commands | Ctrl-P files | Explorer: c/x/p/y/o | Editor: Ctrl-S save | Terminal: Ctrl-Q quit".to_owned()),
             search_needle: None,
             quick_panel: None,
             quick_panel_height: 0,
@@ -455,10 +591,23 @@ impl App {
             return self.handle_prompt_key(key);
         }
 
+        if !matches!(self.focus, FocusPanel::Terminal) && key.code == KeyCode::F(1) {
+            self.open_quick_panel(QuickPanelKind::CommandPalette)?;
+            return Ok(());
+        }
+
         if !matches!(self.focus, FocusPanel::Terminal)
             && key.modifiers.contains(KeyModifiers::CONTROL)
         {
             match key.code {
+                KeyCode::Char('P') => {
+                    self.open_quick_panel(QuickPanelKind::CommandPalette)?;
+                    return Ok(());
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.open_quick_panel(QuickPanelKind::CommandPalette)?;
+                    return Ok(());
+                }
                 KeyCode::Char('p') => {
                     self.open_quick_panel(QuickPanelKind::OpenFile)?;
                     return Ok(());
@@ -482,7 +631,13 @@ impl App {
 
         match key.code {
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::CONTROL) => self.next_tab(),
-            KeyCode::BackTab => self.previous_tab(),
+            KeyCode::BackTab if self.focus == FocusPanel::Editor => {
+                self.handle_editor_key(key)?;
+            }
+            KeyCode::BackTab if !matches!(self.focus, FocusPanel::Terminal) => self.previous_tab(),
+            KeyCode::Tab if self.focus == FocusPanel::Editor => {
+                self.handle_editor_key(key)?;
+            }
             KeyCode::Tab if !matches!(self.focus, FocusPanel::Terminal) => self.cycle_focus(),
             KeyCode::Esc if !matches!(self.focus, FocusPanel::Terminal) => self.request_quit(),
             KeyCode::Char('q') if self.focus != FocusPanel::Terminal => self.request_quit(),
@@ -587,6 +742,15 @@ impl App {
             return Ok(());
         }
 
+        if key.modifiers.contains(KeyModifiers::ALT) {
+            match key.code {
+                KeyCode::Up => self.move_active_line_up(),
+                KeyCode::Down => self.move_active_line_down(),
+                _ => {}
+            }
+            return Ok(());
+        }
+
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('s') => self.save_active_tab(),
@@ -594,6 +758,9 @@ impl App {
                     let initial = self.search_needle.clone().unwrap_or_default();
                     self.start_prompt(PromptKind::Search, &initial);
                 }
+                KeyCode::Char('l') => self.start_prompt(PromptKind::GotoLine, ""),
+                KeyCode::Char('/') => self.toggle_active_line_comment(),
+                KeyCode::Char('d') => self.duplicate_active_line(),
                 KeyCode::Char('w') => self.close_active_tab(),
                 KeyCode::Char('z') => self.undo_active_tab(),
                 KeyCode::Char('y') => self.redo_active_tab(),
@@ -612,6 +779,8 @@ impl App {
             KeyCode::Home => self.set_editor_cursor_col(0),
             KeyCode::End => self.set_editor_cursor_end(),
             KeyCode::F(3) => self.find_next(true),
+            KeyCode::Tab => self.indent_active_line(),
+            KeyCode::BackTab => self.outdent_active_line(),
             KeyCode::Enter => self.edit_newline(),
             KeyCode::Backspace => self.edit_backspace(),
             KeyCode::Delete => self.edit_delete(),
@@ -842,6 +1011,181 @@ fn add_signed(value: usize, amount: isize) -> usize {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CommandSpec {
+    label: &'static str,
+    detail: &'static str,
+    shortcut: &'static str,
+    action: CommandAction,
+}
+
+fn command_catalog() -> Vec<CommandSpec> {
+    vec![
+        CommandSpec {
+            label: "Quick Open",
+            detail: "Open a workspace file by fuzzy path",
+            shortcut: "Ctrl-P",
+            action: CommandAction::QuickOpen,
+        },
+        CommandSpec {
+            label: "Search Workspace",
+            detail: "Search text across workspace files",
+            shortcut: "Ctrl-Shift-F",
+            action: CommandAction::WorkspaceSearch,
+        },
+        CommandSpec {
+            label: "Save File",
+            detail: "Write the active editor tab to disk",
+            shortcut: "Ctrl-S",
+            action: CommandAction::SaveFile,
+        },
+        CommandSpec {
+            label: "Save All",
+            detail: "Write all dirty editor tabs to disk",
+            shortcut: "",
+            action: CommandAction::SaveAll,
+        },
+        CommandSpec {
+            label: "Close Active Tab",
+            detail: "Close the active tab when it has no unsaved edits",
+            shortcut: "Ctrl-W",
+            action: CommandAction::CloseActiveTab,
+        },
+        CommandSpec {
+            label: "Close Saved Tabs",
+            detail: "Close every clean tab and keep dirty tabs open",
+            shortcut: "",
+            action: CommandAction::CloseSavedTabs,
+        },
+        CommandSpec {
+            label: "New File",
+            detail: "Create a file under the selected explorer location",
+            shortcut: "n",
+            action: CommandAction::NewFile,
+        },
+        CommandSpec {
+            label: "New Folder",
+            detail: "Create a folder under the selected explorer location",
+            shortcut: "N",
+            action: CommandAction::NewFolder,
+        },
+        CommandSpec {
+            label: "Rename Selected Explorer Item",
+            detail: "Rename the selected file or folder",
+            shortcut: "e",
+            action: CommandAction::RenameSelected,
+        },
+        CommandSpec {
+            label: "Delete Selected Explorer Item",
+            detail: "Delete the selected file or folder after confirmation",
+            shortcut: "D",
+            action: CommandAction::DeleteSelected,
+        },
+        CommandSpec {
+            label: "Refresh Explorer",
+            detail: "Reload the workspace file tree from disk",
+            shortcut: "r",
+            action: CommandAction::RefreshExplorer,
+        },
+        CommandSpec {
+            label: "Collapse Explorer Folders",
+            detail: "Collapse all expanded explorer folders",
+            shortcut: "",
+            action: CommandAction::CollapseExplorer,
+        },
+        CommandSpec {
+            label: "Reveal Active File in Explorer",
+            detail: "Select the active editor file in the explorer tree",
+            shortcut: "o",
+            action: CommandAction::RevealActiveFile,
+        },
+        CommandSpec {
+            label: "Find in File",
+            detail: "Search inside the active editor tab",
+            shortcut: "Ctrl-F",
+            action: CommandAction::FindInFile,
+        },
+        CommandSpec {
+            label: "Go to Line",
+            detail: "Jump to a line or line:column in the active editor tab",
+            shortcut: "Ctrl-L",
+            action: CommandAction::GotoLine,
+        },
+        CommandSpec {
+            label: "Duplicate Line",
+            detail: "Duplicate the current editor line",
+            shortcut: "Ctrl-D",
+            action: CommandAction::DuplicateLine,
+        },
+        CommandSpec {
+            label: "Delete Line",
+            detail: "Delete the current editor line",
+            shortcut: "",
+            action: CommandAction::DeleteLine,
+        },
+        CommandSpec {
+            label: "Move Line Up",
+            detail: "Move the current editor line upward",
+            shortcut: "Alt-Up",
+            action: CommandAction::MoveLineUp,
+        },
+        CommandSpec {
+            label: "Move Line Down",
+            detail: "Move the current editor line downward",
+            shortcut: "Alt-Down",
+            action: CommandAction::MoveLineDown,
+        },
+        CommandSpec {
+            label: "Toggle Line Comment",
+            detail: "Comment or uncomment the current editor line",
+            shortcut: "Ctrl-/",
+            action: CommandAction::ToggleLineComment,
+        },
+        CommandSpec {
+            label: "Indent Line",
+            detail: "Indent the current editor line",
+            shortcut: "Tab",
+            action: CommandAction::IndentLine,
+        },
+        CommandSpec {
+            label: "Outdent Line",
+            detail: "Outdent the current editor line",
+            shortcut: "Shift-Tab",
+            action: CommandAction::OutdentLine,
+        },
+        CommandSpec {
+            label: "Focus Explorer",
+            detail: "Move focus to the file explorer",
+            shortcut: "",
+            action: CommandAction::FocusExplorer,
+        },
+        CommandSpec {
+            label: "Focus Editor",
+            detail: "Move focus to the editor",
+            shortcut: "",
+            action: CommandAction::FocusEditor,
+        },
+        CommandSpec {
+            label: "Focus Terminal",
+            detail: "Move focus to the integrated terminal",
+            shortcut: "",
+            action: CommandAction::FocusTerminal,
+        },
+        CommandSpec {
+            label: "Clear Terminal",
+            detail: "Clear the terminal viewport and scrollback",
+            shortcut: "",
+            action: CommandAction::ClearTerminal,
+        },
+        CommandSpec {
+            label: "Restart Terminal",
+            detail: "Kill the current shell and start a fresh PTY shell",
+            shortcut: "",
+            action: CommandAction::RestartTerminal,
+        },
+    ]
+}
+
 impl App {
     fn start_prompt(&mut self, kind: PromptKind, initial: &str) {
         self.prompt = Some(PromptState {
@@ -870,6 +1214,7 @@ impl App {
         let items = match kind {
             QuickPanelKind::OpenFile => self.quick_open_items(&query)?,
             QuickPanelKind::WorkspaceSearch => self.workspace_search_items(&query)?,
+            QuickPanelKind::CommandPalette => self.command_palette_items(&query),
         };
 
         if let Some(panel) = &mut self.quick_panel {
@@ -901,6 +1246,7 @@ impl App {
                         line: None,
                         col: None,
                         preview: None,
+                        command: None,
                     },
                 ));
             }
@@ -954,6 +1300,7 @@ impl App {
                     line: Some(line_index),
                     col: Some(col),
                     preview: Some(line.trim().to_owned()),
+                    command: None,
                 });
                 if items.len() >= MAX_QUICK_ITEMS {
                     break;
@@ -962,6 +1309,31 @@ impl App {
         }
 
         Ok(items)
+    }
+
+    fn command_palette_items(&self, query: &str) -> Vec<QuickItem> {
+        let mut scored = command_catalog()
+            .into_iter()
+            .filter_map(|command| {
+                let haystack = format!("{} {}", command.label, command.detail);
+                fuzzy_score(&haystack, query).map(|score| (score, command))
+            })
+            .collect::<Vec<_>>();
+
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.label.cmp(b.1.label)));
+        scored
+            .into_iter()
+            .take(MAX_QUICK_ITEMS)
+            .map(|(_, command)| QuickItem {
+                label: command.label.to_owned(),
+                detail: command.detail.to_owned(),
+                path: self.root.clone(),
+                line: None,
+                col: None,
+                preview: (!command.shortcut.is_empty()).then(|| command.shortcut.to_owned()),
+                command: Some(command.action),
+            })
+            .collect()
     }
 
     fn prompt_rename(&mut self) {
@@ -1100,6 +1472,7 @@ impl App {
                 }
             }
             PromptKind::Search => self.search_active(prompt.input),
+            PromptKind::GotoLine => self.goto_line_from_prompt(prompt.input),
             PromptKind::QuitDirty => {
                 if prompt.input == "quit" {
                     self.should_quit = true;
@@ -1239,6 +1612,13 @@ impl App {
         Ok(())
     }
 
+    fn collapse_explorer(&mut self) {
+        self.explorer.collapse_all();
+        self.explorer.selected = 0;
+        self.explorer.scroll = 0;
+        self.message = Some("explorer collapsed".to_owned());
+    }
+
     fn save_active_tab(&mut self) {
         if let Some(tab) = self.active_tab_mut() {
             match tab.save() {
@@ -1246,6 +1626,23 @@ impl App {
                 Err(error) => self.last_error = Some(error.to_string()),
             }
         }
+    }
+
+    fn save_all_tabs(&mut self) {
+        let mut saved = 0usize;
+        for tab in &mut self.tabs {
+            if !tab.dirty {
+                continue;
+            }
+            match tab.save() {
+                Ok(()) => saved += 1,
+                Err(error) => {
+                    self.last_error = Some(error.to_string());
+                    return;
+                }
+            }
+        }
+        self.message = Some(format!("saved {saved} dirty tab(s)"));
     }
 
     fn search_active(&mut self, needle: String) {
@@ -1304,6 +1701,74 @@ impl App {
         if let Some(tab) = self.active_tab_mut() {
             tab.delete();
             self.ensure_editor_cursor_visible();
+        }
+    }
+
+    fn indent_active_line(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            tab.indent_line();
+            self.ensure_editor_cursor_visible();
+            self.message = Some("indented line".to_owned());
+        }
+    }
+
+    fn outdent_active_line(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            if tab.outdent_line() {
+                self.ensure_editor_cursor_visible();
+                self.message = Some("outdented line".to_owned());
+            } else {
+                self.message = Some("line is not indented".to_owned());
+            }
+        }
+    }
+
+    fn duplicate_active_line(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            tab.duplicate_line();
+            self.ensure_editor_cursor_visible();
+            self.message = Some("duplicated line".to_owned());
+        }
+    }
+
+    fn delete_active_line(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            tab.delete_line();
+            self.ensure_editor_cursor_visible();
+            self.message = Some("deleted line".to_owned());
+        }
+    }
+
+    fn move_active_line_up(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            if tab.move_line_up() {
+                self.ensure_editor_cursor_visible();
+                self.message = Some("moved line up".to_owned());
+            } else {
+                self.message = Some("line already at top".to_owned());
+            }
+        }
+    }
+
+    fn move_active_line_down(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            if tab.move_line_down() {
+                self.ensure_editor_cursor_visible();
+                self.message = Some("moved line down".to_owned());
+            } else {
+                self.message = Some("line already at bottom".to_owned());
+            }
+        }
+    }
+
+    fn toggle_active_line_comment(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            if tab.toggle_line_comment() {
+                self.ensure_editor_cursor_visible();
+                self.message = Some("toggled line comment".to_owned());
+            } else {
+                self.message = Some("no line comment token for file type".to_owned());
+            }
         }
     }
 
@@ -1413,6 +1878,14 @@ impl App {
             return;
         };
 
+        if let Some(command) = item.command {
+            self.quick_panel = None;
+            if let Err(error) = self.run_command(command) {
+                self.last_error = Some(error.to_string());
+            }
+            return;
+        }
+
         let search_query = self.quick_panel.as_ref().and_then(|panel| {
             (panel.kind == QuickPanelKind::WorkspaceSearch).then(|| panel.query.clone())
         });
@@ -1428,6 +1901,47 @@ impl App {
             self.search_needle = Some(query);
         }
         self.message = Some(format!("opened {}", item.path.display()));
+    }
+
+    fn run_command(&mut self, command: CommandAction) -> Result<()> {
+        match command {
+            CommandAction::QuickOpen => self.open_quick_panel(QuickPanelKind::OpenFile)?,
+            CommandAction::WorkspaceSearch => {
+                self.open_quick_panel(QuickPanelKind::WorkspaceSearch)?
+            }
+            CommandAction::SaveFile => self.save_active_tab(),
+            CommandAction::SaveAll => self.save_all_tabs(),
+            CommandAction::CloseActiveTab => self.close_active_tab(),
+            CommandAction::CloseSavedTabs => self.close_saved_tabs(),
+            CommandAction::NewFile => self.start_prompt(PromptKind::NewFile, ""),
+            CommandAction::NewFolder => self.start_prompt(PromptKind::NewDir, ""),
+            CommandAction::RenameSelected => self.prompt_rename(),
+            CommandAction::DeleteSelected => self.prompt_delete(),
+            CommandAction::RefreshExplorer => self.refresh_explorer()?,
+            CommandAction::CollapseExplorer => self.collapse_explorer(),
+            CommandAction::RevealActiveFile => self.reveal_active_file()?,
+            CommandAction::FindInFile => {
+                let initial = self.search_needle.clone().unwrap_or_default();
+                self.start_prompt(PromptKind::Search, &initial);
+            }
+            CommandAction::GotoLine => self.start_prompt(PromptKind::GotoLine, ""),
+            CommandAction::DuplicateLine => self.duplicate_active_line(),
+            CommandAction::DeleteLine => self.delete_active_line(),
+            CommandAction::MoveLineUp => self.move_active_line_up(),
+            CommandAction::MoveLineDown => self.move_active_line_down(),
+            CommandAction::ToggleLineComment => self.toggle_active_line_comment(),
+            CommandAction::IndentLine => self.indent_active_line(),
+            CommandAction::OutdentLine => self.outdent_active_line(),
+            CommandAction::FocusExplorer => self.focus = FocusPanel::Explorer,
+            CommandAction::FocusEditor => self.focus = FocusPanel::Editor,
+            CommandAction::FocusTerminal => self.focus = FocusPanel::Terminal,
+            CommandAction::ClearTerminal => {
+                self.terminal.clear();
+                self.message = Some("terminal cleared".to_owned());
+            }
+            CommandAction::RestartTerminal => self.restart_terminal()?,
+        }
+        Ok(())
     }
 
     fn send_terminal_mouse_click(&mut self) {
@@ -1465,6 +1979,21 @@ impl App {
         if let Some(index) = self.active_tab {
             self.close_tab(index);
         }
+    }
+
+    fn close_saved_tabs(&mut self) {
+        let before = self.tabs.len();
+        self.tabs.retain(|tab| tab.dirty);
+        let closed = before.saturating_sub(self.tabs.len());
+        self.active_tab = if self.tabs.is_empty() { None } else { Some(0) };
+        self.message = if self.tabs.is_empty() {
+            Some(format!("closed {closed} saved tab(s)"))
+        } else {
+            Some(format!(
+                "closed {closed} saved tab(s); {} dirty tab(s) remain",
+                self.tabs.len()
+            ))
+        };
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -1514,6 +2043,27 @@ impl App {
         } else {
             self.should_quit = true;
         }
+    }
+
+    fn goto_line_from_prompt(&mut self, input: String) {
+        let Some((line, col)) = parse_line_col(&input) else {
+            self.message = Some("enter a line number, optionally line:column".to_owned());
+            return;
+        };
+        if let Some(tab) = self.active_tab_mut() {
+            tab.set_cursor(line, col);
+            self.ensure_editor_cursor_visible();
+            self.focus = FocusPanel::Editor;
+            self.message = Some(format!("jumped to line {}", line + 1));
+        }
+    }
+
+    fn restart_terminal(&mut self) -> Result<()> {
+        let _ = self.terminal.kill();
+        self.terminal = ShellPanel::new(self.root.clone())?;
+        self.focus = FocusPanel::Terminal;
+        self.message = Some("terminal restarted".to_owned());
+        Ok(())
     }
 }
 
@@ -1731,6 +2281,59 @@ fn copy_name(name: &str) -> String {
     }
 }
 
+fn leading_indent_width(line: &str) -> usize {
+    if line.starts_with('\t') {
+        return 1;
+    }
+    line.chars().take_while(|c| *c == ' ').take(4).count()
+}
+
+fn comment_token_for_path(path: &Path) -> Option<&'static str> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some(
+            "rs" | "js" | "jsx" | "ts" | "tsx" | "go" | "java" | "kt" | "kts" | "c" | "h" | "cc"
+            | "cpp" | "hpp" | "cs" | "swift" | "scala" | "php" | "dart",
+        ) => Some("//"),
+        Some(
+            "py" | "rb" | "sh" | "bash" | "zsh" | "fish" | "toml" | "yml" | "yaml" | "ini" | "conf"
+            | "dockerfile" | "makefile",
+        ) => Some("#"),
+        Some("sql") => Some("--"),
+        _ => {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_ascii_lowercase);
+            match name.as_deref() {
+                Some("dockerfile" | "makefile") => Some("#"),
+                _ => None,
+            }
+        }
+    }
+}
+
+fn parse_line_col(input: &str) -> Option<(usize, usize)> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut parts = trimmed.split([':', ',']);
+    let line = parts.next()?.trim().parse::<usize>().ok()?;
+    if line == 0 {
+        return None;
+    }
+    let col = parts
+        .next()
+        .and_then(|part| part.trim().parse::<usize>().ok())
+        .unwrap_or(1);
+    Some((line - 1, col.saturating_sub(1)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1761,6 +2364,36 @@ mod tests {
     }
 
     #[test]
+    fn editor_line_commands_modify_real_buffer() {
+        let path = temp_file("line-commands.rs");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "fn main() {\nprintln!(\"hi\");\n}\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.set_cursor(1, 0);
+        tab.indent_line();
+        assert_eq!(tab.lines[1], "    println!(\"hi\");");
+
+        assert!(tab.outdent_line());
+        assert_eq!(tab.lines[1], "println!(\"hi\");");
+
+        assert!(tab.toggle_line_comment());
+        assert_eq!(tab.lines[1], "// println!(\"hi\");");
+        assert!(tab.toggle_line_comment());
+        assert_eq!(tab.lines[1], "println!(\"hi\");");
+
+        tab.duplicate_line();
+        assert_eq!(tab.lines[2], "println!(\"hi\");");
+
+        assert!(tab.move_line_down());
+        assert_eq!(tab.cursor_line, 3);
+
+        tab.delete_line();
+        assert_eq!(tab.lines, vec!["fn main() {", "println!(\"hi\");", "}"]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn search_wraps_forward_and_backward() {
         let path = temp_file("search.txt");
         let _ = fs::remove_file(&path);
@@ -1781,6 +2414,45 @@ mod tests {
     fn fuzzy_score_matches_path_fragments_in_order() {
         assert!(fuzzy_score("src/main.rs", "smr").is_some());
         assert!(fuzzy_score("src/main.rs", "zzz").is_none());
+    }
+
+    #[test]
+    fn command_palette_finds_executable_commands() {
+        let root = std::env::temp_dir().join(format!("tscode-test-command-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE))
+            .unwrap();
+        assert!(
+            app.quick_panel
+                .as_ref()
+                .is_some_and(|panel| panel.kind == QuickPanelKind::CommandPalette)
+        );
+        app.quick_panel = None;
+
+        let commands = app.command_palette_items("restart term");
+        assert!(commands.iter().any(|item| {
+            item.command == Some(CommandAction::RestartTerminal) && item.label == "Restart Terminal"
+        }));
+
+        let commands = app.command_palette_items("go line");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::GotoLine))
+        );
+        let _ = app.terminal.kill();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parse_line_col_uses_one_based_input() {
+        assert_eq!(parse_line_col("12"), Some((11, 0)));
+        assert_eq!(parse_line_col("12:4"), Some((11, 3)));
+        assert_eq!(parse_line_col("0"), None);
+        assert_eq!(parse_line_col(""), None);
     }
 
     #[test]

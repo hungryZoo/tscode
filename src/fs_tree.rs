@@ -93,6 +93,12 @@ impl FsTree {
         self.clamp_selection();
     }
 
+    pub fn collapse_all(&mut self) {
+        collapse_descendants(&mut self.root);
+        self.root.expanded = true;
+        self.clamp_selection();
+    }
+
     pub fn reveal(&mut self, path: &Path) -> Result<()> {
         expand_to_path(&mut self.root, path)?;
         self.clamp_selection();
@@ -146,6 +152,15 @@ fn find_mut<'a>(node: &'a mut FsNode, path: &Path) -> Option<&'a mut FsNode> {
     }
 
     None
+}
+
+fn collapse_descendants(node: &mut FsNode) {
+    if let Some(children) = &mut node.children {
+        for child in children {
+            child.expanded = false;
+            collapse_descendants(child);
+        }
+    }
 }
 
 fn expand_to_path(node: &mut FsNode, path: &Path) -> Result<bool> {

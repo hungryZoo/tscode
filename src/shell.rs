@@ -128,6 +128,16 @@ impl ShellPanel {
         Ok(())
     }
 
+    pub fn clear(&mut self) {
+        self.parser = vt100::Parser::new(self.rows, self.cols, SCROLLBACK);
+        self.user_scrollback = 0;
+    }
+
+    pub fn kill(&mut self) -> Result<()> {
+        self.child.kill()?;
+        Ok(())
+    }
+
     pub fn send_mouse_click(&mut self, row: u16, col: u16) -> Result<()> {
         let seq = format!(
             "\x1b[<0;{};{}M\x1b[<0;{};{}m",
