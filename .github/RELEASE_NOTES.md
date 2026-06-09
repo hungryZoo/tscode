@@ -25,6 +25,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Terminal paste now honors bracketed paste mode when the child application requests it.
 - Terminal modified navigation keys use xterm-compatible CSI sequences for better shell/editor behavior inside the PTY.
 - Terminal clicks on visible existing `path:line:column` references open the file in the editor, while terminal apps that request mouse events receive those clicks and wheel events through the PTY.
+- Installer latest-version resolution now compares semantic prerelease tags so `pre.10` sorts after `pre.9` even when the GitHub API returns prereleases out of lexical order.
 - Keyboard fallback for focus cycling, navigation, scrolling, command entry, and exit.
 
 ## Install

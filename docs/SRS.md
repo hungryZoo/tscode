@@ -282,6 +282,8 @@ The release workflow shall produce `.deb` and `.rpm` packages for supported Linu
 
 `install.sh` shall detect OS and CPU architecture, download the matching GitHub release artifact, and install it into a writable path.
 
+When `TSCODE_VERSION` is unset or set to `latest`, the installer shall choose the highest semantic release tag available from GitHub releases instead of trusting API response order.
+
 ### R-604 CI Release
 
 The GitHub Actions workflow shall build and upload release artifacts when a version tag is pushed.

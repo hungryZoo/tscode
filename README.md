@@ -19,7 +19,7 @@ The installer detects OS and CPU architecture, downloads the newest GitHub Relea
 To install a specific tag:
 
 ```sh
-TSCODE_VERSION=v0.1.0-pre.10 curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | sh
+TSCODE_VERSION=v0.1.0-pre.11 curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | sh
 ```
 
 ## Controls

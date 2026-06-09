@@ -56,9 +56,33 @@ resolve_version() {
     fi
 
     need curl
-    version="$(curl -fsSL "https://api.github.com/repos/$repo/releases" \
+    need awk
+    version="$(curl -fsSL "https://api.github.com/repos/$repo/releases?per_page=100" \
         | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
-        | head -n 1)"
+        | awk '
+            /^v[0-9]+\.[0-9]+\.[0-9]+(-pre\.[0-9]+)?$/ {
+                raw = $0
+                version = raw
+                sub(/^v/, "", version)
+                split(version, parts, /[.-]/)
+                stable = 1
+                pre = 0
+                if (parts[4] == "pre") {
+                    stable = 0
+                    pre = parts[5] + 0
+                }
+                key = sprintf("%09d%09d%09d%09d%09d", parts[1] + 0, parts[2] + 0, parts[3] + 0, stable, pre)
+                if (key > best) {
+                    best = key
+                    tag = raw
+                }
+            }
+            END {
+                if (tag != "") {
+                    print tag
+                }
+            }
+        ')"
 
     if [ -z "$version" ]; then
         echo "tscode installer: could not find a GitHub release for $repo" >&2
