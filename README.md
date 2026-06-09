@@ -19,7 +19,7 @@ The installer detects OS and CPU architecture, downloads the newest GitHub Relea
 To install a specific tag:
 
 ```sh
-TSCODE_VERSION=v0.1.0-pre.11 curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | sh
+TSCODE_VERSION=v0.1.0-pre.12 curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | sh
 ```
 
 ## Controls
@@ -30,10 +30,10 @@ TSCODE_VERSION=v0.1.0-pre.11 curl -fsSL https://raw.githubusercontent.com/hungry
 - Mouse wheel: scroll the panel under the cursor.
 - `F1` or `Ctrl-Shift-P`: command palette for files, editor actions, explorer actions, focus changes, and terminal management. `F1` is the reliable SSH fallback when a terminal cannot distinguish `Ctrl-P` from `Ctrl-Shift-P`.
 - `Tab`: cycle focus from the explorer; indent the current editor line in editor focus; send tab completion to the shell in terminal focus.
-- Explorer: `n` new file, `N` new folder, `e` rename, `D` delete with confirmation, `c` copy, `x` cut, `p` paste, `y` duplicate, `o` reveal active file, `r` refresh.
+- Explorer: `/` filter visible tree rows, `.` show/hide dot-prefixed entries, `i` show/hide generated folders such as `target`, `dist`, `build`, and `node_modules`, `n` new file, `N` new folder, `e` rename, `D` delete with confirmation, `c` copy, `x` cut, `p` paste, `y` duplicate, `o` reveal active file, `r` refresh. File rows show size metadata and read-only markers when available.
 - Workspace: `Ctrl-P` quick-open files by fuzzy path, `Ctrl-Shift-F` or `Ctrl-G` search text across workspace files.
-- Editor: type to edit, paste text, `Enter` newline, `Backspace`/`Delete`, arrows, `Shift`+arrows select text, `Ctrl-A` select all, `Ctrl-C`/`Ctrl-X`/`Ctrl-V` copy/cut/paste through the internal editor clipboard, `Tab`/`Shift-Tab` indent or outdent, `Ctrl-S` save, `Ctrl-F` find in file with visible match highlighting, `Ctrl-H` replace next/current match, command palette replace-all, `Ctrl-L` go to line, `Ctrl-/` toggle line comment, `Ctrl-D` duplicate line, `Alt-Up`/`Alt-Down` move line, `F3` next match, `Shift-F3` previous match, `Ctrl-Z` undo, `Ctrl-Y` redo, `Ctrl-W` close saved tab, `Ctrl-Tab` next tab.
-- Terminal: interactive shell input is sent to the PTY, including `Ctrl-C`, arrows, modified navigation keys, tab completion, and bracketed paste. ANSI colors/styles are rendered in the panel. `Shift-PageUp` and `Shift-PageDown` scroll terminal scrollback. Clicking a visible `path:line:column` shell output reference opens that file in the editor when the shell app has not requested terminal mouse events. The command palette can clear the terminal viewport/scrollback or restart the PTY shell.
+- Editor: type to edit, paste text, `Enter` newline, `Backspace`/`Delete`, arrows, `Shift`+arrows select text, `Ctrl-Left`/`Ctrl-Right` move by word and `Ctrl-Shift-Left`/`Ctrl-Shift-Right` extend selection by word, `Ctrl-A` select all, `Ctrl-C`/`Ctrl-X`/`Ctrl-V` copy/cut/paste through the internal editor clipboard, `Tab`/`Shift-Tab` indent or outdent, `Ctrl-S` save, `Ctrl-F` find in file with visible match highlighting, `Ctrl-H` replace next/current match, command palette replace-all, `Ctrl-L` go to line, `Ctrl-/` toggle line comment, `Ctrl-D` duplicate line, `Alt-Up`/`Alt-Down` move line, `F3` next match, `Shift-F3` previous match, `Ctrl-Z` undo, `Ctrl-Y` redo, `Ctrl-W` close saved tab, `Ctrl-Tab` next tab.
+- Terminal: interactive shell input is sent to the PTY, including `Ctrl-C`, arrows, modified navigation keys, tab completion, and bracketed paste. ANSI colors/styles are rendered in the panel. `F6` or ``Ctrl-` `` moves focus in or out of the terminal, `F12` or `Ctrl-J` toggles a maximized terminal layout outside terminal focus, and command palette actions can increase/decrease terminal height. `Shift-PageUp` and `Shift-PageDown` scroll terminal scrollback. Clicking a visible `path:line:column` shell output reference opens that file in the editor when the shell app has not requested terminal mouse events. The command palette can clear the terminal viewport/scrollback or restart the PTY shell.
 - App exit: `Ctrl-Q`, or `q`/`Esc` outside terminal focus. Unsaved buffers require typing `quit` to confirm.
 
 ## Supported Release Targets

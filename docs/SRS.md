@@ -60,6 +60,14 @@ The explorer shall duplicate the selected file or folder beside the original usi
 
 The explorer shall reveal the active editor file by expanding parent folders and selecting the file row.
 
+### R-111 Explorer Visibility Controls
+
+The explorer shall support a visible-tree text filter, dot-prefixed entry visibility toggling, and generated-folder visibility toggling for common generated directories such as `target`, `dist`, `build`, and `node_modules`.
+
+### R-112 Explorer Metadata
+
+The explorer shall show available file size metadata and read-only markers for filesystem entries.
+
 ## 4. Editor Requirements
 
 ### R-201 Tabs
@@ -166,6 +174,10 @@ When an active in-file search exists, the editor shall visually highlight visibl
 
 The command palette shall include a replace-all-in-file action that prompts for a search string and replacement string, then replaces every active-file match as one undoable edit.
 
+### R-227 Word Navigation
+
+The editor shall support modified-arrow word movement and word selection for `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` when the terminal reports those keys.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
@@ -229,6 +241,10 @@ Clicking a visible shell output token that resolves to an existing workspace fil
 ### R-315 Terminal Mouse Pass-Through
 
 When the child terminal application requests xterm mouse events, terminal clicks and wheel events shall be forwarded to the PTY instead of being interpreted as source-reference clicks or scrollback movement.
+
+### R-316 Terminal Layout Controls
+
+The application shall support moving focus in and out of the terminal, maximizing/restoring the terminal panel, and increasing/decreasing the normal terminal panel height through shortcuts such as `F6`/`F12` or command palette actions.
 
 ## 6. Mouse Requirements
 

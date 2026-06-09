@@ -408,6 +408,23 @@ impl EditorTab {
         self.clear_collapsed_selection();
     }
 
+    fn move_word(&mut self, forward: bool, selecting: bool) {
+        let previous = self.cursor_position();
+        if selecting && self.selection_anchor.is_none() {
+            self.selection_anchor = Some(previous);
+        } else if !selecting {
+            self.selection_anchor = None;
+        }
+
+        let (line, col) = if forward {
+            next_word_position(&self.lines, self.cursor_line, self.cursor_col)
+        } else {
+            previous_word_position(&self.lines, self.cursor_line, self.cursor_col)
+        };
+        self.set_cursor_raw(line, col);
+        self.clear_collapsed_selection();
+    }
+
     fn set_cursor(&mut self, line: usize, col: usize) {
         self.selection_anchor = None;
         self.set_cursor_raw(line, col);
@@ -638,6 +655,7 @@ pub enum PromptKind {
     NewDir,
     Rename(PathBuf),
     Delete(PathBuf),
+    ExplorerFilter,
     Search,
     ReplaceFind { all: bool },
     ReplaceWith { needle: String, all: bool },
@@ -684,6 +702,10 @@ pub enum CommandAction {
     RefreshExplorer,
     CollapseExplorer,
     RevealActiveFile,
+    FilterExplorer,
+    ClearExplorerFilter,
+    ToggleHiddenFiles,
+    ToggleIgnoredFiles,
     FindInFile,
     ReplaceInFile,
     ReplaceAllInFile,
@@ -704,6 +726,10 @@ pub enum CommandAction {
     FocusTerminal,
     ClearTerminal,
     RestartTerminal,
+    ToggleTerminalFocus,
+    ToggleTerminalMaximized,
+    IncreaseTerminalHeight,
+    DecreaseTerminalHeight,
 }
 
 #[derive(Debug, Clone)]
@@ -741,10 +767,15 @@ pub struct App {
     pub explorer_height: usize,
     pub editor_height: usize,
     pub terminal_height: usize,
+    pub terminal_rows: u16,
+    pub terminal_maximized: bool,
     pub last_error: Option<String>,
     pub prompt: Option<PromptState>,
     pub message: Option<String>,
     pub search_needle: Option<String>,
+    pub explorer_filter: Option<String>,
+    pub show_hidden: bool,
+    pub show_ignored: bool,
     pub quick_panel: Option<QuickPanel>,
     pub quick_panel_height: usize,
     pub explorer_clipboard: Option<ExplorerClipboard>,
@@ -769,10 +800,15 @@ impl App {
             explorer_height: 0,
             editor_height: 0,
             terminal_height: 0,
+            terminal_rows: 10,
+            terminal_maximized: false,
             last_error: None,
             prompt: None,
             message: Some("F1/Ctrl-Shift-P commands | Ctrl-P files | Editor: Ctrl-A/C/X/V selection | Terminal: Ctrl-Q quit".to_owned()),
             search_needle: None,
+            explorer_filter: None,
+            show_hidden: true,
+            show_ignored: false,
             quick_panel: None,
             quick_panel_height: 0,
             explorer_clipboard: None,
@@ -781,7 +817,13 @@ impl App {
     }
 
     pub fn visible_nodes(&self) -> Vec<VisibleNode> {
-        self.explorer.visible_nodes()
+        filtered_visible_nodes(
+            self.explorer.visible_nodes(),
+            &self.root,
+            self.show_hidden,
+            self.show_ignored,
+            self.explorer_filter.as_deref(),
+        )
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -801,11 +843,27 @@ impl App {
             self.open_quick_panel(QuickPanelKind::CommandPalette)?;
             return Ok(());
         }
+        if !matches!(self.focus, FocusPanel::Terminal) && key.code == KeyCode::F(6) {
+            self.toggle_terminal_focus();
+            return Ok(());
+        }
+        if !matches!(self.focus, FocusPanel::Terminal) && key.code == KeyCode::F(12) {
+            self.toggle_terminal_maximized();
+            return Ok(());
+        }
 
         if !matches!(self.focus, FocusPanel::Terminal)
             && key.modifiers.contains(KeyModifiers::CONTROL)
         {
             match key.code {
+                KeyCode::Char('`') => {
+                    self.toggle_terminal_focus();
+                    return Ok(());
+                }
+                KeyCode::Char('j') => {
+                    self.toggle_terminal_maximized();
+                    return Ok(());
+                }
                 KeyCode::Char('P') => {
                     self.open_quick_panel(QuickPanelKind::CommandPalette)?;
                     return Ok(());
@@ -845,7 +903,13 @@ impl App {
                 self.handle_editor_key(key)?;
             }
             KeyCode::Tab if !matches!(self.focus, FocusPanel::Terminal) => self.cycle_focus(),
-            KeyCode::Esc if !matches!(self.focus, FocusPanel::Terminal) => self.request_quit(),
+            KeyCode::Esc if !matches!(self.focus, FocusPanel::Terminal) => {
+                if self.explorer_filter.is_some() {
+                    self.clear_explorer_filter();
+                } else {
+                    self.request_quit();
+                }
+            }
             KeyCode::Char('q') if self.focus != FocusPanel::Terminal => self.request_quit(),
             _ => match self.focus {
                 FocusPanel::Explorer => self.handle_explorer_key(key)?,
@@ -933,6 +997,9 @@ impl App {
             KeyCode::Enter | KeyCode::Right => self.open_or_toggle_selected()?,
             KeyCode::Left => self.collapse_selected(),
             KeyCode::Char('r') => self.refresh_explorer()?,
+            KeyCode::Char('/') => self.start_explorer_filter_prompt(),
+            KeyCode::Char('.') => self.toggle_hidden_files(),
+            KeyCode::Char('i') => self.toggle_ignored_files(),
             KeyCode::Char('n') => self.start_prompt(PromptKind::NewFile, ""),
             KeyCode::Char('N') => self.start_prompt(PromptKind::NewDir, ""),
             KeyCode::Char('e') => self.prompt_rename(),
@@ -965,6 +1032,12 @@ impl App {
 
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
+                KeyCode::Left => {
+                    self.move_editor_word(false, key.modifiers.contains(KeyModifiers::SHIFT))
+                }
+                KeyCode::Right => {
+                    self.move_editor_word(true, key.modifiers.contains(KeyModifiers::SHIFT))
+                }
                 KeyCode::Char('a') | KeyCode::Char('A') => self.select_all_active_tab(),
                 KeyCode::Char('c') | KeyCode::Char('C') => self.copy_editor_selection(),
                 KeyCode::Char('x') | KeyCode::Char('X') => self.cut_editor_selection(),
@@ -1254,6 +1327,79 @@ fn add_signed(value: usize, amount: isize) -> usize {
     }
 }
 
+fn focus_label(focus: FocusPanel) -> &'static str {
+    match focus {
+        FocusPanel::Explorer => "explorer",
+        FocusPanel::Editor => "editor",
+        FocusPanel::Terminal => "terminal",
+    }
+}
+
+fn filtered_visible_nodes(
+    nodes: Vec<VisibleNode>,
+    root: &Path,
+    show_hidden: bool,
+    show_ignored: bool,
+    filter: Option<&str>,
+) -> Vec<VisibleNode> {
+    let base_visible = nodes
+        .into_iter()
+        .filter(|node| node_passes_explorer_visibility(node, root, show_hidden, show_ignored))
+        .collect::<Vec<_>>();
+
+    let Some(filter) = filter.map(str::trim).filter(|filter| !filter.is_empty()) else {
+        return base_visible;
+    };
+    let filter = filter.to_lowercase();
+    let matched_paths = base_visible
+        .iter()
+        .filter(|node| explorer_filter_matches(node, root, &filter))
+        .map(|node| node.path.clone())
+        .collect::<Vec<_>>();
+
+    if matched_paths.is_empty() {
+        return base_visible
+            .into_iter()
+            .filter(|node| node.path == root)
+            .collect();
+    }
+
+    base_visible
+        .into_iter()
+        .filter(|node| {
+            node.path == root
+                || matched_paths.iter().any(|matched_path| {
+                    matched_path == &node.path || matched_path.starts_with(&node.path)
+                })
+        })
+        .collect()
+}
+
+fn node_passes_explorer_visibility(
+    node: &VisibleNode,
+    root: &Path,
+    show_hidden: bool,
+    show_ignored: bool,
+) -> bool {
+    if node.path == root {
+        return true;
+    }
+    if !show_hidden && path_has_hidden_component(root, &node.path) {
+        return false;
+    }
+    if !show_ignored && path_has_generated_component(root, &node.path) {
+        return false;
+    }
+    true
+}
+
+fn explorer_filter_matches(node: &VisibleNode, root: &Path, filter: &str) -> bool {
+    node.name.to_lowercase().contains(filter)
+        || relative_path(root, &node.path)
+            .to_lowercase()
+            .contains(filter)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CommandSpec {
     label: &'static str,
@@ -1341,6 +1487,30 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Select the active editor file in the explorer tree",
             shortcut: "o",
             action: CommandAction::RevealActiveFile,
+        },
+        CommandSpec {
+            label: "Filter Explorer",
+            detail: "Filter the visible explorer tree by path text",
+            shortcut: "/",
+            action: CommandAction::FilterExplorer,
+        },
+        CommandSpec {
+            label: "Clear Explorer Filter",
+            detail: "Remove the active explorer tree filter",
+            shortcut: "Esc",
+            action: CommandAction::ClearExplorerFilter,
+        },
+        CommandSpec {
+            label: "Toggle Hidden Files",
+            detail: "Show or hide dot-prefixed files and folders in the explorer",
+            shortcut: ".",
+            action: CommandAction::ToggleHiddenFiles,
+        },
+        CommandSpec {
+            label: "Toggle Generated Folders",
+            detail: "Show or hide generated folders such as target, dist, node_modules, and build",
+            shortcut: "i",
+            action: CommandAction::ToggleIgnoredFiles,
         },
         CommandSpec {
             label: "Find in File",
@@ -1462,6 +1632,30 @@ fn command_catalog() -> Vec<CommandSpec> {
             shortcut: "",
             action: CommandAction::RestartTerminal,
         },
+        CommandSpec {
+            label: "Toggle Terminal Focus",
+            detail: "Move focus in or out of the integrated terminal",
+            shortcut: "F6 / Ctrl-`",
+            action: CommandAction::ToggleTerminalFocus,
+        },
+        CommandSpec {
+            label: "Toggle Terminal Maximize",
+            detail: "Expand the integrated terminal to fill the main workspace area",
+            shortcut: "F12 / Ctrl-J",
+            action: CommandAction::ToggleTerminalMaximized,
+        },
+        CommandSpec {
+            label: "Increase Terminal Height",
+            detail: "Give the integrated terminal more rows",
+            shortcut: "",
+            action: CommandAction::IncreaseTerminalHeight,
+        },
+        CommandSpec {
+            label: "Decrease Terminal Height",
+            detail: "Give the editor more rows by shrinking the terminal",
+            shortcut: "",
+            action: CommandAction::DecreaseTerminalHeight,
+        },
     ]
 }
 
@@ -1512,7 +1706,7 @@ impl App {
 
     fn quick_open_items(&self, query: &str) -> Result<Vec<QuickItem>> {
         let mut scored = Vec::new();
-        for path in collect_workspace_files(&self.root)? {
+        for path in collect_workspace_files(&self.root, self.show_hidden, self.show_ignored)? {
             let relative = relative_path(&self.root, &path);
             if let Some(score) = fuzzy_score(&relative, query) {
                 let label = path
@@ -1552,7 +1746,7 @@ impl App {
 
         let needle_lower = needle.to_lowercase();
         let mut items = Vec::new();
-        for path in collect_workspace_files(&self.root)? {
+        for path in collect_workspace_files(&self.root, self.show_hidden, self.show_ignored)? {
             if items.len() >= MAX_QUICK_ITEMS {
                 break;
             }
@@ -1755,6 +1949,7 @@ impl App {
                     self.message = Some("delete cancelled".to_owned());
                 }
             }
+            PromptKind::ExplorerFilter => self.set_explorer_filter(prompt.input),
             PromptKind::Search => self.search_active(prompt.input),
             PromptKind::ReplaceFind { all } => self.replace_find_from_prompt(prompt.input, all),
             PromptKind::ReplaceWith { needle, all } => {
@@ -1788,6 +1983,85 @@ impl App {
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| self.root.clone())
         }
+    }
+
+    fn start_explorer_filter_prompt(&mut self) {
+        let initial = self.explorer_filter.clone().unwrap_or_default();
+        self.start_prompt(PromptKind::ExplorerFilter, &initial);
+    }
+
+    fn set_explorer_filter(&mut self, input: String) {
+        let filter = input.trim();
+        let selected_path = self
+            .visible_nodes()
+            .get(self.explorer.selected)
+            .map(|node| node.path.clone());
+        self.explorer_filter = (!filter.is_empty()).then(|| filter.to_owned());
+        self.restore_explorer_selection(selected_path);
+        self.message = match &self.explorer_filter {
+            Some(filter) => Some(format!("explorer filter: {filter}")),
+            None => Some("explorer filter cleared".to_owned()),
+        };
+    }
+
+    fn clear_explorer_filter(&mut self) {
+        self.explorer_filter = None;
+        self.restore_explorer_selection(None);
+        self.message = Some("explorer filter cleared".to_owned());
+    }
+
+    fn toggle_hidden_files(&mut self) {
+        let selected_path = self
+            .visible_nodes()
+            .get(self.explorer.selected)
+            .map(|node| node.path.clone());
+        self.show_hidden = !self.show_hidden;
+        self.restore_explorer_selection(selected_path);
+        self.message = Some(format!(
+            "{} hidden files",
+            if self.show_hidden {
+                "showing"
+            } else {
+                "hiding"
+            }
+        ));
+    }
+
+    fn toggle_ignored_files(&mut self) {
+        let selected_path = self
+            .visible_nodes()
+            .get(self.explorer.selected)
+            .map(|node| node.path.clone());
+        self.show_ignored = !self.show_ignored;
+        self.restore_explorer_selection(selected_path);
+        self.message = Some(format!(
+            "{} generated/ignored folders",
+            if self.show_ignored {
+                "showing"
+            } else {
+                "hiding"
+            }
+        ));
+    }
+
+    fn restore_explorer_selection(&mut self, selected_path: Option<PathBuf>) {
+        let nodes = self.visible_nodes();
+        if nodes.is_empty() {
+            self.explorer.selected = 0;
+            self.explorer.scroll = 0;
+            return;
+        }
+
+        if let Some(path) = selected_path
+            && let Some(index) = nodes.iter().position(|node| node.path == path)
+        {
+            self.explorer.selected = index;
+            self.ensure_explorer_selection_visible();
+            return;
+        }
+
+        self.explorer.selected = self.explorer.selected.min(nodes.len().saturating_sub(1));
+        self.ensure_explorer_selection_visible();
     }
 
     fn create_file_from_prompt(&mut self, name: String) -> Result<()> {
@@ -2209,6 +2483,13 @@ impl App {
         }
     }
 
+    fn move_editor_word(&mut self, forward: bool, selecting: bool) {
+        if let Some(tab) = self.active_tab_mut() {
+            tab.move_word(forward, selecting);
+            self.ensure_editor_cursor_visible();
+        }
+    }
+
     fn ensure_editor_cursor_visible(&mut self) {
         let height = self.editor_height.max(1);
         if let Some(tab) = self.active_tab_mut() {
@@ -2339,6 +2620,10 @@ impl App {
             CommandAction::RefreshExplorer => self.refresh_explorer()?,
             CommandAction::CollapseExplorer => self.collapse_explorer(),
             CommandAction::RevealActiveFile => self.reveal_active_file()?,
+            CommandAction::FilterExplorer => self.start_explorer_filter_prompt(),
+            CommandAction::ClearExplorerFilter => self.clear_explorer_filter(),
+            CommandAction::ToggleHiddenFiles => self.toggle_hidden_files(),
+            CommandAction::ToggleIgnoredFiles => self.toggle_ignored_files(),
             CommandAction::FindInFile => {
                 let initial = self.search_needle.clone().unwrap_or_default();
                 self.start_prompt(PromptKind::Search, &initial);
@@ -2365,6 +2650,10 @@ impl App {
                 self.message = Some("terminal cleared".to_owned());
             }
             CommandAction::RestartTerminal => self.restart_terminal()?,
+            CommandAction::ToggleTerminalFocus => self.toggle_terminal_focus(),
+            CommandAction::ToggleTerminalMaximized => self.toggle_terminal_maximized(),
+            CommandAction::IncreaseTerminalHeight => self.resize_terminal_panel(2),
+            CommandAction::DecreaseTerminalHeight => self.resize_terminal_panel(-2),
         }
         Ok(())
     }
@@ -2524,6 +2813,38 @@ impl App {
         self.message = Some("terminal restarted".to_owned());
         Ok(())
     }
+
+    fn toggle_terminal_focus(&mut self) {
+        self.focus = if self.focus == FocusPanel::Terminal {
+            if self.active_tab.is_some() {
+                FocusPanel::Editor
+            } else {
+                FocusPanel::Explorer
+            }
+        } else {
+            FocusPanel::Terminal
+        };
+        self.message = Some(format!("focus: {}", focus_label(self.focus)));
+    }
+
+    fn toggle_terminal_maximized(&mut self) {
+        self.terminal_maximized = !self.terminal_maximized;
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(if self.terminal_maximized {
+            "terminal maximized".to_owned()
+        } else {
+            "terminal restored".to_owned()
+        });
+    }
+
+    fn resize_terminal_panel(&mut self, delta: isize) {
+        self.terminal_maximized = false;
+        self.terminal_rows = add_signed(self.terminal_rows as usize, delta)
+            .clamp(4, 24)
+            .try_into()
+            .unwrap_or(10);
+        self.message = Some(format!("terminal height: {} rows", self.terminal_rows));
+    }
 }
 
 fn byte_index_for_char(s: &str, char_index: usize) -> usize {
@@ -2652,14 +2973,84 @@ fn line_rfind_before(line: &str, needle: &str, char_col: usize) -> Option<usize>
         .map(|found| line[..found].chars().count())
 }
 
-fn collect_workspace_files(root: &Path) -> Result<Vec<PathBuf>> {
+fn next_word_position(lines: &[String], mut line: usize, mut col: usize) -> (usize, usize) {
+    if lines.is_empty() {
+        return (0, 0);
+    }
+    line = line.min(lines.len().saturating_sub(1));
+
+    loop {
+        let chars = lines[line].chars().collect::<Vec<_>>();
+        col = col.min(chars.len());
+        if col >= chars.len() {
+            if line + 1 >= lines.len() {
+                return (line, chars.len());
+            }
+            line += 1;
+            col = 0;
+            continue;
+        }
+
+        while col < chars.len() && chars[col].is_whitespace() {
+            col += 1;
+        }
+        while col < chars.len() && !chars[col].is_whitespace() {
+            col += 1;
+        }
+        return (line, col);
+    }
+}
+
+fn previous_word_position(lines: &[String], mut line: usize, mut col: usize) -> (usize, usize) {
+    if lines.is_empty() {
+        return (0, 0);
+    }
+    line = line.min(lines.len().saturating_sub(1));
+
+    loop {
+        let chars = lines[line].chars().collect::<Vec<_>>();
+        col = col.min(chars.len());
+        if col == 0 {
+            if line == 0 {
+                return (0, 0);
+            }
+            line -= 1;
+            col = lines[line].chars().count();
+            continue;
+        }
+
+        let mut skipped_whitespace = false;
+        while col > 0 && chars[col - 1].is_whitespace() {
+            col -= 1;
+            skipped_whitespace = true;
+        }
+        if col == 0 && skipped_whitespace {
+            continue;
+        }
+        while col > 0 && !chars[col - 1].is_whitespace() {
+            col -= 1;
+        }
+        return (line, col);
+    }
+}
+
+fn collect_workspace_files(
+    root: &Path,
+    show_hidden: bool,
+    show_ignored: bool,
+) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    collect_workspace_files_into(root, &mut files)?;
+    collect_workspace_files_into(root, &mut files, show_hidden, show_ignored)?;
     files.sort();
     Ok(files)
 }
 
-fn collect_workspace_files_into(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+fn collect_workspace_files_into(
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+    show_hidden: bool,
+    show_ignored: bool,
+) -> Result<()> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -2670,12 +3061,14 @@ fn collect_workspace_files_into(dir: &Path, files: &mut Vec<PathBuf>) -> Result<
     for entry in entries {
         let path = entry.path();
         let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        let hidden = name.to_str().is_some_and(is_hidden_file_name);
         if file_type.is_dir() {
-            if should_skip_dir(&path) {
+            if (!show_hidden && hidden) || (!show_ignored && should_skip_dir(&path)) {
                 continue;
             }
-            let _ = collect_workspace_files_into(&path, files);
-        } else if file_type.is_file() {
+            let _ = collect_workspace_files_into(&path, files, show_hidden, show_ignored);
+        } else if file_type.is_file() && (show_hidden || !hidden) {
             files.push(path);
         }
     }
@@ -2700,6 +3093,46 @@ fn should_skip_dir(path: &Path) -> bool {
             | ".cache"
             | "__pycache__"
     )
+}
+
+fn path_has_hidden_component(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .any(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(is_hidden_file_name)
+        })
+}
+
+fn path_has_generated_component(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .any(|component| {
+            component.as_os_str().to_str().is_some_and(|name| {
+                matches!(
+                    name,
+                    ".git"
+                        | ".hg"
+                        | ".svn"
+                        | "target"
+                        | "node_modules"
+                        | "dist"
+                        | "build"
+                        | ".next"
+                        | ".nuxt"
+                        | ".cache"
+                        | "__pycache__"
+                )
+            })
+        })
+}
+
+fn is_hidden_file_name(name: &str) -> bool {
+    name.starts_with('.') && name != "." && name != ".."
 }
 
 fn relative_path(root: &Path, path: &Path) -> String {
@@ -3152,6 +3585,32 @@ mod tests {
     }
 
     #[test]
+    fn editor_ctrl_word_navigation_moves_by_words_and_selects() {
+        let path = temp_file("word-nav.txt");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "alpha beta\n  gamma\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.move_word(true, false);
+        assert_eq!(tab.cursor_position(), (0, 5));
+
+        tab.move_word(true, false);
+        assert_eq!(tab.cursor_position(), (0, 10));
+
+        tab.move_word(true, false);
+        assert_eq!(tab.cursor_position(), (1, 7));
+
+        tab.move_word(false, true);
+        assert_eq!(tab.cursor_position(), (1, 2));
+        assert_eq!(tab.selected_text().as_deref(), Some("gamma"));
+
+        tab.move_word(false, false);
+        assert_eq!(tab.cursor_position(), (0, 6));
+        assert!(tab.selection_range().is_none());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn fuzzy_score_matches_path_fragments_in_order() {
         assert!(fuzzy_score("src/main.rs", "smr").is_some());
         assert!(fuzzy_score("src/main.rs", "zzz").is_none());
@@ -3266,6 +3725,59 @@ mod tests {
 
         app.open_file(&search_items[0].path);
         assert!(app.active_tab().is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_visibility_hides_generated_by_default_and_can_filter() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-visibility-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("target")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join("target/generated.rs"), "generated\n").unwrap();
+        fs::write(root.join(".env"), "SECRET=1\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        let names = app
+            .visible_nodes()
+            .into_iter()
+            .map(|node| node.name)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"src".to_owned()));
+        assert!(names.contains(&".env".to_owned()));
+        assert!(!names.contains(&"target".to_owned()));
+
+        app.toggle_ignored_files();
+        let names = app
+            .visible_nodes()
+            .into_iter()
+            .map(|node| node.name)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"target".to_owned()));
+
+        app.toggle_hidden_files();
+        let names = app
+            .visible_nodes()
+            .into_iter()
+            .map(|node| node.name)
+            .collect::<Vec<_>>();
+        assert!(!names.contains(&".env".to_owned()));
+
+        app.set_explorer_filter("src".to_owned());
+        let names = app
+            .visible_nodes()
+            .into_iter()
+            .map(|node| node.name)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"src".to_owned()));
+        assert!(!names.contains(&"target".to_owned()));
+
+        let _ = app.terminal.kill();
         let _ = fs::remove_dir_all(root);
     }
 

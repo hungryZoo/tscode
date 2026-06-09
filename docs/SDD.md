@@ -37,13 +37,15 @@ The top-level state owns:
 - focused panel
 - hover target
 - quick panel state for quick open, workspace search, and command palette
+- explorer visibility state for dotfile visibility, generated-folder visibility, and visible-tree filtering
+- terminal layout state for normal height and maximized mode
 - terminal state
 - cached UI hit regions from the most recent draw
 - syntax highlighter
 
 ### Explorer
 
-The explorer stores a tree of `FsNode` values. Directories are loaded lazily when expanded. A flattened visible row list is produced after changes and during rendering. Explorer reveal expands path ancestors and selects the requested file or folder row.
+The explorer stores a tree of `FsNode` values. Directories are loaded lazily when expanded. Filesystem metadata such as file size and read-only state is captured when entries are loaded. A flattened visible row list is produced after changes and during rendering, then filtered by app-level visibility state so generated folders can stay hidden by default without changing the underlying tree. Explorer reveal expands path ancestors and selects the requested file or folder row.
 
 Explorer clipboard state stores copy/cut intent and the source path. Paste performs real filesystem copy or move operations, recursively copies directories, creates non-conflicting copy names, and updates open editor tab paths after moves.
 
@@ -61,11 +63,11 @@ Each opened file tab stores:
 - trailing-newline state
 - bounded undo and redo stacks
 
-Editor buffers support insertion, deletion, newline, paste, cursor movement, selection, save, undo, redo, in-file search, go-to-line, and active-line commands. Selection is stored as an anchor plus the current cursor position and normalized when copying, cutting, deleting, rendering, or replacing ranges. Line commands include indent, outdent, duplicate, delete, move up/down, and file-type-aware line-comment toggling. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
+Editor buffers support insertion, deletion, newline, paste, cursor movement, word movement, selection, save, undo, redo, in-file search, go-to-line, and active-line commands. Selection is stored as an anchor plus the current cursor position and normalized when copying, cutting, deleting, rendering, or replacing ranges. Line commands include indent, outdent, duplicate, delete, move up/down, and file-type-aware line-comment toggling. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
 
 ### Quick Panel
 
-The quick panel stores a mode, query text, result list, selected index, and scroll offset. Quick Open recursively scans workspace files while skipping common generated directories, then fuzzy matches path fragments. Workspace Search scans bounded-size text files, builds file/line preview results, and opens the selected result at its matching cursor location. Command Palette uses the same overlay model with `CommandAction` entries instead of file paths; activating a command dispatches through the app action layer.
+The quick panel stores a mode, query text, result list, selected index, and scroll offset. Quick Open recursively scans workspace files while applying the same hidden/generated visibility policy as the explorer, then fuzzy matches path fragments. Workspace Search scans bounded-size text files under that same visibility policy, builds file/line preview results, and opens the selected result at its matching cursor location. Command Palette uses the same overlay model with `CommandAction` entries instead of file paths; activating a command dispatches through the app action layer.
 
 ### Terminal
 
@@ -94,12 +96,14 @@ The body uses a horizontal split:
 1. file explorer
 2. editor column
 
-The editor column uses a vertical split:
+The editor column normally uses a vertical split:
 
 1. tab strip and code view
 2. integrated terminal
 
 Each render pass records clickable and hoverable rectangles into `HitRegions`.
+
+When terminal maximized mode is active, the editor column is replaced by the integrated terminal so command output can use the main workspace area while the title, explorer, and status bars remain visible.
 
 ## 5. Input Design
 
@@ -124,7 +128,7 @@ Wheel events route to the hovered panel if known, otherwise to the focused panel
 
 ### Keyboard
 
-Keyboard events map to panel-specific actions. Quick-panel input handles query editing, result movement, and activation before normal panel shortcuts. `F1` opens the command palette because many terminal sessions cannot reliably distinguish `Ctrl-P` from `Ctrl-Shift-P`. Editor-focused input supports save, search, go-to-line, repeated search, undo, redo, selection, internal clipboard operations, line commands, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
+Keyboard events map to panel-specific actions. Quick-panel input handles query editing, result movement, and activation before normal panel shortcuts. `F1` opens the command palette because many terminal sessions cannot reliably distinguish `Ctrl-P` from `Ctrl-Shift-P`. Explorer-focused input supports tree filtering and visibility toggles in addition to file operations. Editor-focused input supports save, search, go-to-line, repeated search, undo, redo, selection, word movement, internal clipboard operations, line commands, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
 
 ### Editor Clipboard
 

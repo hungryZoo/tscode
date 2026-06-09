@@ -9,6 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::{App, ClipboardAction, FocusPanel, HoverTarget},
+    fs_tree::VisibleNode,
     shell::TerminalStyle,
 };
 
@@ -45,13 +46,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     draw_explorer(frame, app, body[0]);
 
-    let main = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(10)])
-        .split(body[1]);
+    if app.terminal_maximized {
+        draw_terminal(frame, app, body[1]);
+    } else {
+        let main = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(8),
+                Constraint::Length(app.terminal_rows.max(4)),
+            ])
+            .split(body[1]);
 
-    draw_editor(frame, app, main[0]);
-    draw_terminal(frame, app, main[1]);
+        draw_editor(frame, app, main[0]);
+        draw_terminal(frame, app, main[1]);
+    }
     draw_quick_panel(frame, app, root_chunks[1]);
     draw_status(frame, app, root_chunks[2]);
 }
@@ -146,9 +154,26 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
     app.hit_regions.explorer_area = Some(area);
     let focused = app.focus == FocusPanel::Explorer;
+    let filter = app
+        .explorer_filter
+        .as_ref()
+        .map(|filter| format!(" filter:{filter}"))
+        .unwrap_or_default();
+    let hidden = if app.show_hidden {
+        "hidden:on"
+    } else {
+        "hidden:off"
+    };
+    let ignored = if app.show_ignored {
+        "generated:on"
+    } else {
+        "generated:off"
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Explorer  n/N new  e rename  D delete  c copy  x cut  p paste  y dup  o reveal  r refresh ")
+        .title(format!(
+            " Explorer  / filter  . hidden  i generated  n/N new  e rename  D delete  c copy  x cut  p paste  y dup  o reveal  r refresh  {hidden} {ignored}{filter} "
+        ))
         .border_style(border_style(focused));
     let inner = block.inner(area);
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), area);
@@ -177,7 +202,9 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
             " "
         };
         let indent = "  ".repeat(node.depth);
-        let text = format!("{indent}{marker} {}", node.name);
+        let prefix = format!("{indent}{marker} {}", node.name);
+        let suffix = explorer_node_suffix(node);
+        let text = fit_with_suffix(&prefix, &suffix, row_area.width as usize);
         frame.render_widget(Paragraph::new(text).style(style), row_area);
     }
 }
@@ -322,7 +349,7 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Terminal;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Terminal  real pty shell  F1 commands  Ctrl-Q quit app ")
+        .title(" Terminal  real pty shell  F6 focus  F12 max  Shift-Page scroll  Ctrl-Q quit app ")
         .border_style(border_style(focused));
     let inner = block.inner(area);
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), area);
@@ -440,6 +467,80 @@ fn border_style(focused: bool) -> Style {
     }
 }
 
+fn explorer_node_suffix(node: &VisibleNode) -> String {
+    if node.is_dir {
+        if node.readonly {
+            " ro".to_owned()
+        } else {
+            String::new()
+        }
+    } else {
+        let size = node.size.map(format_size).unwrap_or_else(|| "?".to_owned());
+        if node.readonly {
+            format!(" {size} ro")
+        } else {
+            format!(" {size}")
+        }
+    }
+}
+
+fn fit_with_suffix(prefix: &str, suffix: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if suffix.is_empty() {
+        return truncate_width(prefix, width);
+    }
+
+    let suffix_width = suffix.width();
+    if suffix_width + 1 >= width {
+        return truncate_width(prefix, width);
+    }
+
+    let prefix_width = prefix.width();
+    if prefix_width + suffix_width >= width {
+        let prefix_width = width.saturating_sub(suffix_width + 1);
+        return format!(
+            "{} {}",
+            truncate_width(prefix, prefix_width),
+            suffix.trim_start()
+        );
+    }
+
+    format!(
+        "{}{}{}",
+        prefix,
+        " ".repeat(width.saturating_sub(prefix_width + suffix_width)),
+        suffix
+    )
+}
+
+fn truncate_width(text: &str, width: usize) -> String {
+    let mut rendered = String::new();
+    let mut used = 0usize;
+    for c in text.chars() {
+        let char_width = c.to_string().width().max(1);
+        if used + char_width > width {
+            break;
+        }
+        rendered.push(c);
+        used += char_width;
+    }
+    rendered
+}
+
+fn format_size(size: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    if size >= MIB {
+        format!("{}M", size / MIB)
+    } else if size >= KIB {
+        format!("{}K", size / KIB)
+    } else {
+        format!("{size}B")
+    }
+}
+
 fn row_style(selected: bool, hovered: bool) -> Style {
     if selected {
         Style::default().fg(Color::White).bg(ACTIVE_BG)
@@ -527,6 +628,7 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::NewDir => "new folder",
         crate::app::PromptKind::Rename(_) => "rename",
         crate::app::PromptKind::Delete(_) => "delete: type yes",
+        crate::app::PromptKind::ExplorerFilter => "explorer filter",
         crate::app::PromptKind::Search => "find",
         crate::app::PromptKind::ReplaceFind { all } => {
             if *all {

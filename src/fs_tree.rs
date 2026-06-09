@@ -13,6 +13,8 @@ pub struct VisibleNode {
     pub depth: usize,
     pub is_dir: bool,
     pub expanded: bool,
+    pub size: Option<u64>,
+    pub readonly: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -21,6 +23,8 @@ struct FsNode {
     name: String,
     is_dir: bool,
     expanded: bool,
+    size: Option<u64>,
+    readonly: bool,
     children: Option<Vec<FsNode>>,
 }
 
@@ -39,11 +43,16 @@ impl FsTree {
             .unwrap_or_else(|| root.to_str().unwrap_or("/"))
             .to_owned();
 
+        let metadata = fs::metadata(&root).ok();
         let mut root = FsNode {
             path: root,
             name,
             is_dir: true,
             expanded: true,
+            size: None,
+            readonly: metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.permissions().readonly()),
             children: None,
         };
         load_children(&mut root)?;
@@ -126,6 +135,8 @@ fn flatten(node: &FsNode, depth: usize, visible: &mut Vec<VisibleNode>) {
         depth,
         is_dir: node.is_dir,
         expanded: node.expanded,
+        size: node.size,
+        readonly: node.readonly,
     });
 
     if node.is_dir
@@ -192,13 +203,19 @@ fn load_children(node: &mut FsNode) -> Result<()> {
     for entry in fs::read_dir(&node.path)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
+        let metadata = entry.metadata().ok();
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
+        let is_dir = file_type.is_dir();
         children.push(FsNode {
             path,
             name,
-            is_dir: file_type.is_dir(),
+            is_dir,
             expanded: false,
+            size: (!is_dir).then(|| metadata.as_ref().map_or(0, fs::Metadata::len)),
+            readonly: metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.permissions().readonly()),
             children: None,
         });
     }
