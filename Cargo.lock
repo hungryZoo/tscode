@@ -1701,6 +1701,7 @@ dependencies = [
  "crossterm",
  "portable-pty",
  "ratatui",
+ "serde_json",
  "syntect",
  "unicode-width",
  "vt100",

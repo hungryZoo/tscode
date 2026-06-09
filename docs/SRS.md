@@ -252,6 +252,10 @@ The command palette shall include Run Workspace Check and Show Problems actions.
 
 The command palette shall include a Source Control action. When the workspace is inside a Git repository, the action shall refresh Git status, open a quick panel listing changed files, include diff hunk entries parsed from `git diff --unified=0`, support filtering those entries with the quick-panel query, and open an existing changed file at the selected hunk line. Deleted or otherwise missing files shall remain visible as changed-file entries without crashing when selected.
 
+### R-243 Run Task
+
+`Ctrl-shift-b` or the command palette shall open a Run Task quick panel outside terminal focus. The panel shall detect shell tasks from `.vscode/tasks.json`, package manager scripts from `package.json`, Cargo tasks from `Cargo.toml`, Make targets from `Makefile`, Go tasks from `go.mod`, and Python tasks from `pyproject.toml` or `setup.py`. The panel shall support fuzzy filtering. Selecting a task shall create a new integrated PTY terminal session using the task working directory, send the task command as submitted shell input, focus the terminal, and keep other terminal sessions alive.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
@@ -423,6 +427,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use workspace search to find text in a different file and jump to the matching line.
 - Run Workspace Check in a broken Cargo, Go, or Python project and confirm the Problems panel opens with clickable diagnostics.
 - Modify a tracked Git file, open Source Control, and confirm changed-file and hunk rows appear and the hunk row opens the file at the changed line.
+- Use `Ctrl-shift-b` or the command palette in a project with task metadata and confirm detected tasks appear, filtering works, and selecting one starts a new PTY terminal running that command.
 - Use the command palette to clear and restart the integrated terminal.
 - Use the mouse wheel over explorer/editor/terminal and confirm scroll changes.
 - Type `pwd` in the terminal panel and confirm the output points at the workspace.

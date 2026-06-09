@@ -11,6 +11,7 @@ use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::Rect;
+use serde_json::Value;
 
 use crate::{
     fs_tree::{FsTree, VisibleNode},
@@ -1299,6 +1300,7 @@ pub enum QuickPanelKind {
     References,
     Problems,
     SourceControl,
+    Tasks,
     CommandPalette,
 }
 
@@ -1335,6 +1337,7 @@ pub enum CommandAction {
     RunWorkspaceCheck,
     ShowProblems,
     ShowSourceControl,
+    RunTask,
     SaveFile,
     SaveAll,
     RevertFile,
@@ -1693,6 +1696,14 @@ impl App {
                 }
                 KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.start_workspace_replace_prompt();
+                    return Ok(());
+                }
+                KeyCode::Char('B') => {
+                    self.open_quick_panel(QuickPanelKind::Tasks)?;
+                    return Ok(());
+                }
+                KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.open_quick_panel(QuickPanelKind::Tasks)?;
                     return Ok(());
                 }
                 _ => {}
@@ -2668,6 +2679,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::ShowSourceControl,
         },
         CommandSpec {
+            label: "Run Task",
+            detail: "Detect workspace tasks and run one in a real integrated PTY terminal",
+            shortcut: "Ctrl-Shift-B",
+            action: CommandAction::RunTask,
+        },
+        CommandSpec {
             label: "Save File",
             detail: "Write the active editor tab to disk",
             shortcut: "Ctrl-S",
@@ -3054,6 +3071,7 @@ impl App {
             QuickPanelKind::References => self.reference_items(&query)?,
             QuickPanelKind::Problems => self.problem_items(&query),
             QuickPanelKind::SourceControl => self.source_control_items(&query)?,
+            QuickPanelKind::Tasks => self.task_items(&query),
             QuickPanelKind::CommandPalette => self.command_palette_items(&query),
         };
 
@@ -3361,6 +3379,54 @@ impl App {
         }
 
         Ok(items.into_iter().take(MAX_QUICK_ITEMS).collect())
+    }
+
+    fn task_items(&self, query: &str) -> Vec<QuickItem> {
+        let mut items = collect_workspace_tasks(&self.root)
+            .into_iter()
+            .map(|task| QuickItem {
+                label: task.label,
+                detail: task.command,
+                path: task.cwd,
+                line: None,
+                col: None,
+                preview: Some(task.source),
+                command: None,
+            })
+            .collect::<Vec<_>>();
+
+        let query = query.trim();
+        if !query.is_empty() {
+            items.retain(|item| {
+                let haystack = format!(
+                    "{} {} {}",
+                    item.label,
+                    item.detail,
+                    item.preview.as_deref().unwrap_or_default()
+                );
+                fuzzy_score(&haystack, query).is_some()
+            });
+            items.sort_by(|a, b| {
+                let a_haystack = format!(
+                    "{} {} {}",
+                    a.label,
+                    a.detail,
+                    a.preview.as_deref().unwrap_or_default()
+                );
+                let b_haystack = format!(
+                    "{} {} {}",
+                    b.label,
+                    b.detail,
+                    b.preview.as_deref().unwrap_or_default()
+                );
+                fuzzy_score(&a_haystack, query)
+                    .unwrap_or(usize::MAX)
+                    .cmp(&fuzzy_score(&b_haystack, query).unwrap_or(usize::MAX))
+                    .then(a.label.cmp(&b.label))
+            });
+        }
+
+        items.into_iter().take(MAX_QUICK_ITEMS).collect()
     }
 
     fn workspace_text_files(&self) -> Result<Vec<WorkspaceTextFile>> {
@@ -4568,6 +4634,33 @@ impl App {
         Ok(())
     }
 
+    fn run_task_item(&mut self, item: QuickItem) -> Result<()> {
+        let command = item.detail.trim().to_owned();
+        if command.is_empty() {
+            self.message = Some(format!("task has no command: {}", item.label));
+            return Ok(());
+        }
+
+        let cwd = if item.path.is_dir() {
+            item.path.canonicalize().unwrap_or(item.path)
+        } else {
+            self.root.clone()
+        };
+        let id = self.next_terminal_id;
+        self.next_terminal_id += 1;
+        let title = format!("task: {}", truncate_chars(&item.label, 28));
+        let terminal = TerminalSession::with_title(id, title.clone(), cwd)?;
+        self.terminals.push(terminal);
+        self.active_terminal = self.terminals.len() - 1;
+        self.focus = FocusPanel::Terminal;
+        self.terminal_selection = None;
+
+        let submitted = terminal_submission_text(&command);
+        self.active_terminal_mut().shell.send_text(&submitted)?;
+        self.message = Some(format!("started {title}: {command}"));
+        Ok(())
+    }
+
     fn editor_text_for_terminal_submission(&self) -> Option<String> {
         let tab = self.active_tab()?;
         if let Some(text) = tab.selected_text()
@@ -4782,14 +4875,22 @@ impl App {
     }
 
     fn activate_selected_quick_item(&mut self) {
-        let Some(item) = self
-            .quick_panel
-            .as_ref()
-            .and_then(|panel| panel.items.get(panel.selected))
-            .cloned()
-        else {
+        let Some((kind, item)) = self.quick_panel.as_ref().and_then(|panel| {
+            panel
+                .items
+                .get(panel.selected)
+                .map(|item| (panel.kind.clone(), item.clone()))
+        }) else {
             return;
         };
+
+        if kind == QuickPanelKind::Tasks {
+            self.quick_panel = None;
+            if let Err(error) = self.run_task_item(item) {
+                self.last_error = Some(error.to_string());
+            }
+            return;
+        }
 
         if let Some(command) = item.command {
             self.quick_panel = None;
@@ -4853,6 +4954,7 @@ impl App {
                 }
                 self.open_quick_panel(QuickPanelKind::SourceControl)?;
             }
+            CommandAction::RunTask => self.open_quick_panel(QuickPanelKind::Tasks)?,
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAll => self.save_all_tabs(),
             CommandAction::RevertFile => self.revert_active_tab()?,
@@ -5383,6 +5485,14 @@ fn terminal_submission_text(text: &str) -> String {
 
 fn take_chars_owned(s: &str, count: usize) -> String {
     s.chars().take(count).collect()
+}
+
+fn truncate_chars(s: &str, count: usize) -> String {
+    let mut text = take_chars_owned(s, count);
+    if s.chars().count() > count {
+        text.push_str("...");
+    }
+    text
 }
 
 fn skip_chars_owned(s: &str, count: usize) -> String {
@@ -6845,6 +6955,343 @@ fn workspace_check_command(root: &Path) -> Option<WorkspaceCheckCommand> {
     None
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceTask {
+    label: String,
+    command: String,
+    cwd: PathBuf,
+    source: String,
+}
+
+fn collect_workspace_tasks(root: &Path) -> Vec<WorkspaceTask> {
+    let mut tasks = Vec::new();
+    tasks.extend(vscode_tasks(root));
+    tasks.extend(package_json_tasks(root));
+    tasks.extend(cargo_tasks(root));
+    tasks.extend(makefile_tasks(root));
+    tasks.extend(go_tasks(root));
+    tasks.extend(python_tasks(root));
+
+    let mut seen = HashSet::new();
+    tasks.retain(|task| seen.insert((task.cwd.clone(), task.command.clone())));
+    tasks
+}
+
+fn vscode_tasks(root: &Path) -> Vec<WorkspaceTask> {
+    let path = root.join(".vscode/tasks.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&strip_json_comments(&text)) else {
+        return Vec::new();
+    };
+    let Some(tasks) = value.get("tasks").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    tasks
+        .iter()
+        .filter_map(|task| {
+            let command = task.get("command").and_then(Value::as_str)?.trim();
+            if command.is_empty() {
+                return None;
+            }
+            let label = task
+                .get("label")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+                .unwrap_or(command);
+            let args = task
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|args| {
+                    args.iter()
+                        .filter_map(task_arg_value)
+                        .map(|arg| shell_escape_task_arg(&arg))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let command = if args.is_empty() {
+                command.to_owned()
+            } else {
+                format!("{command} {}", args.join(" "))
+            };
+            let cwd = task
+                .get("options")
+                .and_then(|options| options.get("cwd"))
+                .and_then(Value::as_str)
+                .map(|cwd| resolve_task_cwd(root, cwd))
+                .unwrap_or_else(|| root.to_path_buf());
+            Some(WorkspaceTask {
+                label: format!("task: {label}"),
+                command,
+                cwd,
+                source: ".vscode/tasks.json".to_owned(),
+            })
+        })
+        .collect()
+}
+
+fn package_json_tasks(root: &Path) -> Vec<WorkspaceTask> {
+    let path = root.join("package.json");
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(scripts) = value.get("scripts").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+
+    let manager = package_manager(root);
+    let mut names = scripts
+        .iter()
+        .filter_map(|(name, command)| {
+            command
+                .as_str()
+                .map(str::trim)
+                .filter(|command| !command.is_empty())
+                .map(|_| name.clone())
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+
+    names
+        .into_iter()
+        .map(|name| WorkspaceTask {
+            label: format!("{manager}: {name}"),
+            command: format!("{manager} run {}", shell_escape_task_arg(&name)),
+            cwd: root.to_path_buf(),
+            source: "package.json script".to_owned(),
+        })
+        .collect()
+}
+
+fn cargo_tasks(root: &Path) -> Vec<WorkspaceTask> {
+    if !root.join("Cargo.toml").is_file() {
+        return Vec::new();
+    }
+    [
+        ("cargo: check", "cargo check"),
+        ("cargo: build", "cargo build"),
+        ("cargo: test", "cargo test"),
+        ("cargo: run", "cargo run"),
+    ]
+    .into_iter()
+    .map(|(label, command)| WorkspaceTask {
+        label: label.to_owned(),
+        command: command.to_owned(),
+        cwd: root.to_path_buf(),
+        source: "Cargo.toml".to_owned(),
+    })
+    .collect()
+}
+
+fn makefile_tasks(root: &Path) -> Vec<WorkspaceTask> {
+    let path = ["Makefile", "makefile", "GNUmakefile"]
+        .into_iter()
+        .map(|name| root.join(name))
+        .find(|path| path.is_file());
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+
+    let mut targets = text.lines().filter_map(makefile_target).collect::<Vec<_>>();
+    targets.sort();
+    targets.dedup();
+    targets
+        .into_iter()
+        .take(40)
+        .map(|target| WorkspaceTask {
+            label: format!("make: {target}"),
+            command: format!("make {}", shell_escape_task_arg(&target)),
+            cwd: root.to_path_buf(),
+            source: "Makefile target".to_owned(),
+        })
+        .collect()
+}
+
+fn go_tasks(root: &Path) -> Vec<WorkspaceTask> {
+    if !root.join("go.mod").is_file() {
+        return Vec::new();
+    }
+    [
+        ("go: test", "go test ./..."),
+        ("go: build", "go build ./..."),
+        ("go: vet", "go vet ./..."),
+    ]
+    .into_iter()
+    .map(|(label, command)| WorkspaceTask {
+        label: label.to_owned(),
+        command: command.to_owned(),
+        cwd: root.to_path_buf(),
+        source: "go.mod".to_owned(),
+    })
+    .collect()
+}
+
+fn python_tasks(root: &Path) -> Vec<WorkspaceTask> {
+    if !root.join("pyproject.toml").is_file() && !root.join("setup.py").is_file() {
+        return Vec::new();
+    }
+    let runner = if root.join("uv.lock").is_file() {
+        "uv run"
+    } else {
+        "python3 -m"
+    };
+    vec![
+        WorkspaceTask {
+            label: "python: pytest".to_owned(),
+            command: format!("{runner} pytest"),
+            cwd: root.to_path_buf(),
+            source: "pyproject.toml".to_owned(),
+        },
+        WorkspaceTask {
+            label: "python: compileall".to_owned(),
+            command: if runner == "uv run" {
+                "uv run python -m compileall -q .".to_owned()
+            } else {
+                "python3 -m compileall -q .".to_owned()
+            },
+            cwd: root.to_path_buf(),
+            source: "pyproject.toml".to_owned(),
+        },
+    ]
+}
+
+fn package_manager(root: &Path) -> &'static str {
+    if root.join("pnpm-lock.yaml").is_file() {
+        "pnpm"
+    } else if root.join("yarn.lock").is_file() {
+        "yarn"
+    } else if root.join("bun.lock").is_file() || root.join("bun.lockb").is_file() {
+        "bun"
+    } else {
+        "npm"
+    }
+}
+
+fn makefile_target(line: &str) -> Option<String> {
+    if line.starts_with(['\t', ' ', '#']) {
+        return None;
+    }
+    let (target, after) = line.split_once(':')?;
+    if after.starts_with('=') || target.is_empty() || target.starts_with('.') {
+        return None;
+    }
+    if target.contains('%') || target.contains('$') || target.contains('/') {
+        return None;
+    }
+    let target = target.trim();
+    if target.is_empty()
+        || !target
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
+        return None;
+    }
+    Some(target.to_owned())
+}
+
+fn task_arg_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn resolve_task_cwd(root: &Path, cwd: &str) -> PathBuf {
+    let root_string = root.to_string_lossy();
+    let expanded = cwd.replace("${workspaceFolder}", &root_string);
+    let path = PathBuf::from(expanded);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    };
+    path.canonicalize().unwrap_or(path)
+}
+
+fn shell_escape_task_arg(arg: &str) -> String {
+    if !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '='))
+    {
+        return arg.to_owned();
+    }
+    let escaped = arg.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+fn strip_json_comments(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while let Some(c) = chars.next() {
+        if in_string {
+            output.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if c == '"' {
+            in_string = true;
+            output.push(c);
+            continue;
+        }
+
+        if c == '/' {
+            match chars.peek().copied() {
+                Some('/') => {
+                    let _ = chars.next();
+                    for next in chars.by_ref() {
+                        if next == '\n' {
+                            output.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('*') => {
+                    let _ = chars.next();
+                    let mut previous = '\0';
+                    for next in chars.by_ref() {
+                        if next == '\n' {
+                            output.push('\n');
+                        }
+                        if previous == '*' && next == '/' {
+                            break;
+                        }
+                        previous = next;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        output.push(c);
+    }
+
+    output
+}
+
 fn parse_problem_items(output: &str, root: &Path) -> Vec<QuickItem> {
     let mut items = Vec::new();
     let lines = output.lines().collect::<Vec<_>>();
@@ -8010,6 +8457,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ShowSourceControl))
         );
+        let commands = app.command_palette_items("run task");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RunTask))
+        );
         let commands = app.command_palette_items("symbol file");
         assert!(
             commands
@@ -8096,6 +8549,114 @@ mod tests {
             terminal_submission_text("echo one\r\necho two"),
             "echo one\recho two\r"
         );
+    }
+
+    #[test]
+    fn task_panel_detects_vscode_package_cargo_and_make_tasks() {
+        let root = std::env::temp_dir().join(format!("tscode-test-tasks-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".vscode")).unwrap();
+        fs::write(
+            root.join(".vscode/tasks.json"),
+            r#"
+            {
+              // JSONC comments are valid in VS Code task files.
+              "version": "2.0.0",
+              "tasks": [
+                {
+                  "label": "smoke",
+                  "type": "shell",
+                  "command": "printf",
+                  "args": ["hello world"],
+                  "options": { "cwd": "${workspaceFolder}" }
+                }
+              ]
+            }
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("package.json"),
+            r#"{"scripts":{"test":"vitest","build":"vite build"}}"#,
+        )
+        .unwrap();
+        fs::write(root.join("pnpm-lock.yaml"), "").unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"task_test\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Makefile"),
+            "install-deps:\n\t@true\n.PHONY: skip\n",
+        )
+        .unwrap();
+
+        let tasks = collect_workspace_tasks(&root);
+        assert!(tasks.iter().any(|task| {
+            task.label == "task: smoke" && task.command == "printf \"hello world\""
+        }));
+        assert!(
+            tasks
+                .iter()
+                .any(|task| { task.label == "pnpm: build" && task.command == "pnpm run build" })
+        );
+        assert!(tasks.iter().any(|task| task.label == "cargo: test"));
+        assert!(tasks.iter().any(|task| {
+            task.label == "make: install-deps" && task.command == "make install-deps"
+        }));
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.run_command(CommandAction::RunTask).unwrap();
+        assert!(
+            app.quick_panel
+                .as_ref()
+                .is_some_and(|panel| panel.kind == QuickPanelKind::Tasks)
+        );
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn run_task_item_executes_in_new_real_pty_terminal() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-run-task-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let out = root.join("task.out");
+        let command = format!(
+            "printf task-ok > {}",
+            shell_escape_task_arg(&out.to_string_lossy())
+        );
+
+        let mut app = App::new(root.clone()).unwrap();
+        let initial_terminals = app.terminals.len();
+        app.run_task_item(QuickItem {
+            label: "shell smoke".to_owned(),
+            detail: command,
+            path: root.clone(),
+            line: None,
+            col: None,
+            preview: Some("test".to_owned()),
+            command: None,
+        })
+        .unwrap();
+
+        assert_eq!(app.focus, FocusPanel::Terminal);
+        assert_eq!(app.terminals.len(), initial_terminals + 1);
+        assert!(app.active_terminal().title.starts_with("task: shell smoke"));
+        for _ in 0..50 {
+            app.drain_terminal();
+            if out.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(fs::read_to_string(&out).unwrap(), "task-ok");
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
