@@ -126,7 +126,7 @@ The command palette shall include a Save As action for the active editor tab. Th
 
 ### R-208B Editor Context Menu
 
-Right-clicking the editor body or an editor tab shall focus the editor and open a mouse-selectable context menu. Right-clicking the editor body shall update the editor cursor to the clicked buffer location before opening the menu. The menu shall expose actions for save, copy, cut, paste, select all, find, replace, go to line, go to definition, find references, rename symbol, trigger suggest, format document, toggle line comment, run selection/current line in terminal, copy absolute file path, copy relative file path, revert file, and close active tab. Activating a menu item shall call the same editor, workspace, terminal, or clipboard command used by keyboard shortcuts and the command palette.
+Right-clicking the editor body or an editor tab shall focus the editor and open a mouse-selectable context menu. Right-clicking the editor body shall update the editor cursor to the clicked buffer location before opening the menu. The menu shall expose actions for save, copy, cut, paste, select all, find, replace, go to line, go to definition, find references, rename symbol, trigger suggest, format document, fold/unfold, toggle line comment, run selection/current line in terminal, copy absolute file path, copy relative file path, revert file, and close active tab. Activating a menu item shall call the same editor, workspace, terminal, or clipboard command used by keyboard shortcuts and the command palette.
 
 ### R-209 Search
 
@@ -255,6 +255,10 @@ The app shall detect when an open editor tab's backing file is modified or delet
 ### R-236A Code Suggestions
 
 `Ctrl-space` or the command palette shall open a suggestions quick panel for the active editor cursor. The initial suggestions query shall be seeded from the identifier prefix before the cursor, while activation shall replace the current identifier span around the cursor. Suggestion candidates shall include lightweight code symbols, identifier tokens from visible workspace text files, dirty open editor buffers from memory, and file-type keywords. Selecting a suggestion shall focus the editor, update the active buffer as one undoable edit, mark the tab dirty when text changes, and preserve the backing file on disk until the user saves.
+
+### R-236B Code Folding
+
+The editor shall detect foldable delimiter and indentation blocks in the active buffer. Clicking a fold marker in the editor gutter, pressing `Alt-[`, using the command palette, or using the editor context menu shall fold or unfold the block at that line. `Alt-]`, the command palette, and the editor context menu shall unfold all folded blocks. Folded blocks shall hide their interior lines from the rendered editor viewport, vertical scroll calculations, and editor mouse-coordinate mapping while preserving the underlying file contents, dirty state, undo/redo history, and line numbers. If the editor cursor moves into a folded block through search, navigation, or editing, the block containing the cursor shall unfold so the cursor remains visible.
 
 ### R-237 Format Document
 

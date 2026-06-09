@@ -63,6 +63,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can undo and redo edits, paste text, repeat search matches, and close saved tabs without losing unsaved changes.
 - As a developer, I can save the active editor buffer as a new relative or absolute path, have missing parent folders created, and keep editing the newly saved file.
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
+- As a developer, I can fold and unfold code blocks from the editor gutter, keyboard, command palette, or editor context menu so large files are easier to scan over SSH.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
 - As a developer, I can right-click inside the editor and run common editing, navigation, formatting, path-copy, terminal-send, revert, and tab actions from a mouse-selectable context menu.
 - As a developer, I can right-click the integrated terminal and run terminal copy/paste/search/session-management actions from a mouse-selectable context menu when the shell application is not owning mouse input.
@@ -141,6 +142,7 @@ Keyboard fallback:
 - `Ctrl-Shift-H` opens replace-in-files; the command palette provides the same action as an SSH-friendly fallback
 - `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, and `Ctrl-R` provide document symbols, workspace symbols, go-to-definition, and find-references code navigation
 - `Ctrl-Space` or the command palette opens code suggestions for the identifier at the editor cursor
+- Editor gutter fold markers, `Alt-[`, `Alt-]`, the command palette, and the editor context menu provide code fold/unfold actions
 - The command palette provides Run Workspace Check and Show Problems actions for project diagnostics
 - The command palette provides a Source Control action for Git changed files and diff hunks
 - `Ctrl-Shift-B` or the command palette opens Run Task for detected workspace tasks
@@ -148,7 +150,7 @@ Keyboard fallback:
 - `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
 - The command palette provides Save As for writing the active editor buffer to a new path and retargeting the tab
 - `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions
-- Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, definition/references/rename/suggest, format, comments, send-to-terminal, path-copy, revert, and close-tab actions
+- Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, definition/references/rename/suggest, format, fold/unfold, comments, send-to-terminal, path-copy, revert, and close-tab actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor
 - `Shift` with arrow keys and mouse drag select editor text
 - `Enter` preserves indentation and adds one extra indent level after opening braces/brackets/parentheses

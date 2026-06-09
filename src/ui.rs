@@ -255,7 +255,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Editor;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Editor  Ctrl-S save  Ctrl-F find  Ctrl-H replace  Ctrl-A/C/X/V clipboard ")
+        .title(" Editor  Ctrl-S save  Ctrl-F find  Ctrl-H replace  Alt-[ fold  Alt-] unfold ")
         .border_style(border_style(focused));
     let inner = block.inner(chunks[1]);
     app.hit_regions.editor_body = Some(inner);
@@ -286,26 +286,39 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let height = inner.height as usize;
-    let max_scroll = tab.lines.len().saturating_sub(height.max(1));
+    let visible_lines = tab.visible_line_indices();
+    let max_scroll = visible_lines.len().saturating_sub(height.max(1));
     tab.scroll = tab.scroll.min(max_scroll);
     let start = tab.scroll;
-    let end = (start + height).min(tab.lines.len());
+    let end = (start + height).min(visible_lines.len());
     let number_width = tab.lines.len().max(1).to_string().len().max(3);
     let gutter_width = editor_gutter_width(tab.lines.len());
     let code_width = inner.width as usize;
     let code_width = code_width.saturating_sub(gutter_width);
     let max_horizontal_scroll = max_horizontal_scroll(tab, code_width);
     tab.horizontal_scroll = tab.horizontal_scroll.min(max_horizontal_scroll);
+    let raw_start = visible_lines.get(start).copied().unwrap_or(0);
+    let raw_end = visible_lines
+        .get(end.saturating_sub(1))
+        .map(|line| line.saturating_add(1))
+        .unwrap_or(raw_start);
     let highlighted = app
         .syntax
-        .highlight_visible(&tab.path, &tab.lines, start, end);
+        .highlight_visible(&tab.path, &tab.lines, raw_start, raw_end);
 
     let mut rendered = Vec::new();
-    for (offset, line_index) in (start..end).enumerate() {
+    for line_index in visible_lines.iter().take(end).skip(start).copied() {
         let problem = problem_summaries.get(&line_index);
         let gutter_style = problem
             .map(|problem| problem_gutter_style(problem.severity))
             .unwrap_or_else(|| Style::default().fg(MUTED));
+        let fold_marker = if tab.is_line_folded(line_index) {
+            "+"
+        } else if tab.fold_end_for_line(line_index).is_some() {
+            "-"
+        } else {
+            " "
+        };
         let mut spans = vec![
             Span::styled(
                 format!("{:>width$} ", line_index + 1, width = number_width),
@@ -314,10 +327,16 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(
                 problem
                     .map(|problem| problem_marker(problem.severity))
-                    .unwrap_or(" "),
+                    .unwrap_or(fold_marker),
                 problem
                     .map(|problem| problem_gutter_style(problem.severity))
-                    .unwrap_or_else(|| Style::default().fg(MUTED)),
+                    .unwrap_or_else(|| {
+                        if tab.is_line_folded(line_index) {
+                            Style::default().fg(ACCENT)
+                        } else {
+                            Style::default().fg(MUTED)
+                        }
+                    }),
             ),
         ];
         let mut code_spans = Vec::new();
@@ -335,15 +354,23 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
                 && let Some(search_spans) = search_line_spans(tab, line_index, needle, focused)
             {
                 code_spans.extend(search_spans);
-            } else if let Some(parts) = highlighted.get(offset) {
+            } else if let Some(parts) = highlighted.get(line_index.saturating_sub(raw_start)) {
                 code_spans.extend(parts.clone());
             }
         } else if let Some(needle) = &search_needle
             && let Some(search_spans) = search_line_spans(tab, line_index, needle, focused)
         {
             code_spans.extend(search_spans);
-        } else if let Some(parts) = highlighted.get(offset) {
+        } else if let Some(parts) = highlighted.get(line_index.saturating_sub(raw_start)) {
             code_spans.extend(parts.clone());
+        }
+        if tab.is_line_folded(line_index)
+            && let Some(end) = tab.fold_end_for_line(line_index)
+        {
+            code_spans.push(Span::styled(
+                format!("  ... {} folded line(s)", end.saturating_sub(line_index)),
+                Style::default().fg(MUTED),
+            ));
         }
         spans.extend(crop_spans_by_chars(
             code_spans,

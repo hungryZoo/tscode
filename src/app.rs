@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     env, fs,
     io::Write,
     path::{Path, PathBuf},
@@ -225,6 +225,7 @@ pub struct EditorTab {
     pub selection_anchor: Option<(usize, usize)>,
     pub extra_selections: Vec<EditorSelection>,
     pub extra_cursors: Vec<(usize, usize)>,
+    pub folded_lines: BTreeSet<usize>,
     pub dirty: bool,
     pub external_state: ExternalFileState,
     disk_stamp: Option<FileStamp>,
@@ -257,6 +258,7 @@ impl EditorTab {
             selection_anchor: None,
             extra_selections: Vec::new(),
             extra_cursors: Vec::new(),
+            folded_lines: BTreeSet::new(),
             dirty: false,
             external_state: ExternalFileState::Clean,
             disk_stamp,
@@ -285,6 +287,7 @@ impl EditorTab {
         self.selection_anchor = None;
         self.extra_selections.clear();
         self.extra_cursors.clear();
+        self.folded_lines.clear();
         self.dirty = false;
         self.external_state = ExternalFileState::Clean;
         self.disk_stamp = file_stamp(&self.path);
@@ -321,6 +324,7 @@ impl EditorTab {
         self.selection_anchor = None;
         self.extra_selections.clear();
         self.extra_cursors.clear();
+        self.folded_lines.clear();
         self.dirty = true;
         true
     }
@@ -920,6 +924,166 @@ impl EditorTab {
         self.cursor_col = self.lines[self.cursor_line].chars().count();
     }
 
+    pub fn fold_end_for_line(&self, line_index: usize) -> Option<usize> {
+        if line_index + 1 >= self.lines.len() {
+            return None;
+        }
+
+        self.brace_fold_end_for_line(line_index)
+            .or_else(|| self.indent_fold_end_for_line(line_index))
+            .filter(|end| *end > line_index)
+    }
+
+    pub fn is_line_folded(&self, line_index: usize) -> bool {
+        self.folded_lines.contains(&line_index) && self.fold_end_for_line(line_index).is_some()
+    }
+
+    pub fn toggle_fold_at_line(&mut self, line_index: usize) -> Option<bool> {
+        let line_index = line_index.min(self.lines.len().saturating_sub(1));
+        self.fold_end_for_line(line_index)?;
+        if !self.folded_lines.insert(line_index) {
+            self.folded_lines.remove(&line_index);
+            Some(false)
+        } else {
+            Some(true)
+        }
+    }
+
+    pub fn fold_all(&mut self) -> usize {
+        self.folded_lines.clear();
+        for line_index in 0..self.lines.len() {
+            if self.fold_end_for_line(line_index).is_some() {
+                self.folded_lines.insert(line_index);
+            }
+        }
+        self.folded_lines.len()
+    }
+
+    pub fn unfold_all(&mut self) -> usize {
+        let count = self.folded_lines.len();
+        self.folded_lines.clear();
+        count
+    }
+
+    pub fn visible_line_indices(&self) -> Vec<usize> {
+        let mut indices = Vec::with_capacity(self.lines.len());
+        let mut line_index = 0;
+        while line_index < self.lines.len() {
+            indices.push(line_index);
+            if self.folded_lines.contains(&line_index)
+                && let Some(end) = self.fold_end_for_line(line_index)
+            {
+                line_index = end.saturating_add(1);
+            } else {
+                line_index += 1;
+            }
+        }
+        indices
+    }
+
+    pub fn visible_line_at(&self, row: usize) -> Option<usize> {
+        self.visible_line_indices().get(row).copied()
+    }
+
+    pub fn visible_row_for_line(&self, target_line: usize) -> Option<usize> {
+        let mut row = 0;
+        let mut line_index = 0;
+        while line_index < self.lines.len() {
+            if line_index == target_line {
+                return Some(row);
+            }
+            if self.folded_lines.contains(&line_index)
+                && let Some(end) = self.fold_end_for_line(line_index)
+            {
+                if target_line <= end {
+                    return Some(row);
+                }
+                line_index = end.saturating_add(1);
+            } else {
+                line_index += 1;
+            }
+            row += 1;
+        }
+        None
+    }
+
+    fn unfold_line_containing(&mut self, target_line: usize) -> bool {
+        let folded = self.folded_lines.iter().copied().collect::<Vec<_>>();
+        let mut changed = false;
+        for start in folded {
+            if start < target_line
+                && self
+                    .fold_end_for_line(start)
+                    .is_some_and(|end| target_line <= end)
+            {
+                changed |= self.folded_lines.remove(&start);
+            }
+        }
+        changed
+    }
+
+    fn brace_fold_end_for_line(&self, line_index: usize) -> Option<usize> {
+        for (opener, closer) in [('{', '}'), ('[', ']'), ('(', ')')] {
+            if let Some(end) = self.matching_delimiter_end(line_index, opener, closer) {
+                return Some(end);
+            }
+        }
+        None
+    }
+
+    fn matching_delimiter_end(
+        &self,
+        line_index: usize,
+        opener: char,
+        closer: char,
+    ) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut started = false;
+        for (index, line) in self.lines.iter().enumerate().skip(line_index) {
+            for ch in line.chars() {
+                if ch == opener {
+                    depth += 1;
+                    started = true;
+                } else if ch == closer && started {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return (index > line_index).then_some(index);
+                    }
+                }
+            }
+            if index == line_index && !started {
+                return None;
+            }
+        }
+        None
+    }
+
+    fn indent_fold_end_for_line(&self, line_index: usize) -> Option<usize> {
+        let base_indent = leading_whitespace(self.lines.get(line_index)?)
+            .chars()
+            .count();
+        if self.lines[line_index].trim().is_empty() {
+            return None;
+        }
+
+        let mut end = None;
+        for index in line_index + 1..self.lines.len() {
+            let line = &self.lines[index];
+            if line.trim().is_empty() {
+                if end.is_some() {
+                    end = Some(index);
+                }
+                continue;
+            }
+            let indent = leading_whitespace(line).chars().count();
+            if indent <= base_indent {
+                break;
+            }
+            end = Some(index);
+        }
+        end
+    }
+
     fn command_line_range(&self) -> (usize, usize, bool) {
         let Some((start, end)) = self.selection_range() else {
             return (self.cursor_line, self.cursor_line, false);
@@ -1309,6 +1473,7 @@ impl EditorTab {
         self.selection_anchor = snapshot.selection_anchor;
         self.extra_selections = snapshot.extra_selections;
         self.extra_cursors = snapshot.extra_cursors;
+        self.folded_lines.clear();
         self.clamp_cursor_col();
         self.clamp_selections();
     }
@@ -1319,6 +1484,7 @@ impl EditorTab {
             self.undo_stack.remove(0);
         }
         self.redo_stack.clear();
+        self.folded_lines.clear();
     }
 
     fn clamp_selections(&mut self) {
@@ -1521,6 +1687,9 @@ pub enum CommandAction {
     MoveLineUp,
     MoveLineDown,
     ToggleLineComment,
+    ToggleFold,
+    FoldAll,
+    UnfoldAll,
     TrimTrailingWhitespace,
     IndentLine,
     OutdentLine,
@@ -2100,9 +2269,8 @@ impl App {
                 }
             }
             HoverTarget::QuickRow(index) => self.activate_quick_row(index),
-            HoverTarget::Editor => {
-                self.set_editor_cursor_from_mouse(false);
-            }
+            HoverTarget::Editor if self.toggle_editor_fold_from_mouse() => {}
+            HoverTarget::Editor => self.set_editor_cursor_from_mouse(false),
             HoverTarget::Terminal | HoverTarget::TerminalInput => {
                 self.send_terminal_mouse_click();
             }
@@ -2152,6 +2320,8 @@ impl App {
                 KeyCode::Right => self.go_forward(),
                 KeyCode::Up => self.move_active_line_up(),
                 KeyCode::Down => self.move_active_line_down(),
+                KeyCode::Char('[') => self.toggle_active_fold(),
+                KeyCode::Char(']') => self.unfold_all_active_tab(),
                 KeyCode::Char('f') | KeyCode::Char('F')
                     if key.modifiers.contains(KeyModifiers::SHIFT) =>
                 {
@@ -2797,7 +2967,7 @@ impl App {
     fn scroll_editor(&mut self, amount: isize) {
         let height = self.editor_height.max(1);
         if let Some(tab) = self.active_tab_mut() {
-            let max_scroll = tab.lines.len().saturating_sub(height);
+            let max_scroll = tab.visible_line_indices().len().saturating_sub(height);
             tab.scroll = add_signed(tab.scroll, amount).min(max_scroll);
         }
     }
@@ -3364,6 +3534,24 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::ToggleLineComment,
         },
         CommandSpec {
+            label: "Toggle Fold",
+            detail: "Fold or unfold the code block at the editor cursor",
+            shortcut: "Alt-[",
+            action: CommandAction::ToggleFold,
+        },
+        CommandSpec {
+            label: "Fold All",
+            detail: "Fold every detected block in the active editor tab",
+            shortcut: "",
+            action: CommandAction::FoldAll,
+        },
+        CommandSpec {
+            label: "Unfold All",
+            detail: "Show every folded block in the active editor tab",
+            shortcut: "Alt-]",
+            action: CommandAction::UnfoldAll,
+        },
+        CommandSpec {
             label: "Trim Trailing Whitespace",
             detail: "Remove spaces and tabs at line ends in the active editor tab",
             shortcut: "",
@@ -3895,6 +4083,24 @@ impl App {
                 detail: "Comment or uncomment the current line or selected lines".to_owned(),
                 shortcut: "Ctrl-/",
                 action: CommandAction::ToggleLineComment,
+            },
+            ContextMenuAction {
+                label: "Toggle Fold",
+                detail: "Fold or unfold the code block at the cursor".to_owned(),
+                shortcut: "Alt-[",
+                action: CommandAction::ToggleFold,
+            },
+            ContextMenuAction {
+                label: "Fold All",
+                detail: "Fold every detected block in this file".to_owned(),
+                shortcut: "",
+                action: CommandAction::FoldAll,
+            },
+            ContextMenuAction {
+                label: "Unfold All",
+                detail: "Show every folded block in this file".to_owned(),
+                shortcut: "Alt-]",
+                action: CommandAction::UnfoldAll,
             },
             ContextMenuAction {
                 label: "Run Selection in Terminal",
@@ -5592,6 +5798,40 @@ impl App {
         }
     }
 
+    fn toggle_active_fold(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            match tab.toggle_fold_at_line(tab.cursor_line) {
+                Some(true) => {
+                    self.ensure_editor_cursor_visible();
+                    self.message = Some("folded block".to_owned());
+                }
+                Some(false) => {
+                    self.ensure_editor_cursor_visible();
+                    self.message = Some("unfolded block".to_owned());
+                }
+                None => {
+                    self.message = Some("no foldable block at cursor".to_owned());
+                }
+            }
+        }
+    }
+
+    fn fold_all_active_tab(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            let count = tab.fold_all();
+            self.ensure_editor_cursor_visible();
+            self.message = Some(format!("folded {count} block(s)"));
+        }
+    }
+
+    fn unfold_all_active_tab(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            let count = tab.unfold_all();
+            self.ensure_editor_cursor_visible();
+            self.message = Some(format!("unfolded {count} block(s)"));
+        }
+    }
+
     fn toggle_active_line_comment(&mut self) {
         if let Some(tab) = self.active_tab_mut() {
             if tab.toggle_line_comment() {
@@ -5946,10 +6186,12 @@ impl App {
         let height = self.editor_height.max(1);
         let editor_width = self.editor_width;
         if let Some(tab) = self.active_tab_mut() {
-            if tab.cursor_line < tab.scroll {
-                tab.scroll = tab.cursor_line;
-            } else if tab.cursor_line >= tab.scroll + height {
-                tab.scroll = tab.cursor_line.saturating_sub(height - 1);
+            tab.unfold_line_containing(tab.cursor_line);
+            let cursor_row = tab.visible_row_for_line(tab.cursor_line).unwrap_or(0);
+            if cursor_row < tab.scroll {
+                tab.scroll = cursor_row;
+            } else if cursor_row >= tab.scroll + height {
+                tab.scroll = cursor_row.saturating_sub(height - 1);
             }
 
             let code_width = editor_code_width(tab, editor_width);
@@ -5996,15 +6238,53 @@ impl App {
     fn editor_mouse_position(&self) -> Option<(usize, usize)> {
         let body = self.hit_regions.editor_body?;
         let tab = self.active_tab()?;
-        let line_number_width = tab.lines.len().max(1).to_string().len().max(3) + 2;
+        let gutter_width = editor_gutter_width(tab.lines.len());
         let local_x = self.hit_regions.last_mouse_x.saturating_sub(body.x) as usize;
-        let col = if local_x < line_number_width {
+        let col = if local_x < gutter_width {
             0
         } else {
-            local_x.saturating_sub(line_number_width) + tab.horizontal_scroll
+            local_x.saturating_sub(gutter_width) + tab.horizontal_scroll
         };
-        let line = tab.scroll + self.hit_regions.last_mouse_y.saturating_sub(body.y) as usize;
+        let visible_row =
+            tab.scroll + self.hit_regions.last_mouse_y.saturating_sub(body.y) as usize;
+        let line = tab.visible_line_at(visible_row)?;
         Some((line, col))
+    }
+
+    fn editor_mouse_fold_line(&self) -> Option<usize> {
+        let body = self.hit_regions.editor_body?;
+        let tab = self.active_tab()?;
+        let local_x = self.hit_regions.last_mouse_x.saturating_sub(body.x) as usize;
+        let gutter_width = editor_gutter_width(tab.lines.len());
+        if local_x + 1 != gutter_width {
+            return None;
+        }
+        let visible_row =
+            tab.scroll + self.hit_regions.last_mouse_y.saturating_sub(body.y) as usize;
+        let line = tab.visible_line_at(visible_row)?;
+        tab.fold_end_for_line(line).map(|_| line)
+    }
+
+    fn toggle_editor_fold_from_mouse(&mut self) -> bool {
+        let Some(line) = self.editor_mouse_fold_line() else {
+            return false;
+        };
+        let Some(tab) = self.active_tab_mut() else {
+            return false;
+        };
+        match tab.toggle_fold_at_line(line) {
+            Some(true) => {
+                self.ensure_editor_cursor_visible();
+                self.message = Some(format!("folded line {}", line + 1));
+                true
+            }
+            Some(false) => {
+                self.ensure_editor_cursor_visible();
+                self.message = Some(format!("unfolded line {}", line + 1));
+                true
+            }
+            None => false,
+        }
     }
 
     fn move_quick_selection(&mut self, delta: isize) {
@@ -6213,6 +6493,9 @@ impl App {
             CommandAction::MoveLineUp => self.move_active_line_up(),
             CommandAction::MoveLineDown => self.move_active_line_down(),
             CommandAction::ToggleLineComment => self.toggle_active_line_comment(),
+            CommandAction::ToggleFold => self.toggle_active_fold(),
+            CommandAction::FoldAll => self.fold_all_active_tab(),
+            CommandAction::UnfoldAll => self.unfold_all_active_tab(),
             CommandAction::TrimTrailingWhitespace => self.trim_active_trailing_whitespace(),
             CommandAction::IndentLine => self.indent_active_line(),
             CommandAction::OutdentLine => self.outdent_active_line(),
@@ -9903,6 +10186,103 @@ mod tests {
         app.set_editor_cursor_from_mouse(false);
         assert_eq!(app.active_tab().unwrap().cursor_position(), (0, 0));
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_code_folding_updates_visible_lines_scroll_and_cursor() {
+        let path = temp_file("folding.rs");
+        let _ = fs::remove_file(&path);
+        fs::write(
+            &path,
+            "fn main() {\n    let value = 1;\n    if value > 0 {\n        println!(\"{value}\");\n    }\n}\nfn next() {}\n",
+        )
+        .unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        assert_eq!(tab.fold_end_for_line(0), Some(5));
+        assert_eq!(tab.toggle_fold_at_line(0), Some(true));
+        assert_eq!(tab.visible_line_indices(), vec![0, 6]);
+
+        tab.set_cursor(3, 8);
+        assert!(tab.is_line_folded(0));
+        tab.unfold_line_containing(tab.cursor_line);
+        assert!(!tab.is_line_folded(0));
+        assert_eq!(tab.visible_row_for_line(3), Some(3));
+
+        assert_eq!(tab.toggle_fold_at_line(2), Some(true));
+        assert_eq!(tab.visible_line_indices(), vec![0, 1, 2, 5, 6]);
+        assert_eq!(tab.unfold_all(), 1);
+        assert_eq!(tab.visible_line_indices(), vec![0, 1, 2, 3, 4, 5, 6]);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn editor_fold_commands_and_mouse_gutter_click_use_real_view_state() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-fold-command-mouse-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(
+            &path,
+            "fn main() {\n    let value = 1;\n    println!(\"{value}\");\n}\nfn next() {}\n",
+        )
+        .unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.focus = FocusPanel::Editor;
+        app.editor_height = 3;
+        app.editor_width = 40;
+
+        app.run_command(CommandAction::ToggleFold).unwrap();
+        assert!(app.active_tab().unwrap().is_line_folded(0));
+        assert_eq!(app.active_tab().unwrap().visible_line_indices(), vec![0, 4]);
+
+        app.scroll_editor(10);
+        assert_eq!(app.active_tab().unwrap().scroll, 0);
+
+        app.run_command(CommandAction::UnfoldAll).unwrap();
+        assert!(!app.active_tab().unwrap().is_line_folded(0));
+        app.hit_regions.editor_area = Some(Rect::new(0, 0, 40, 5));
+        app.hit_regions.editor_body = Some(Rect::new(0, 0, 40, 5));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+        assert!(app.active_tab().unwrap().is_line_folded(0));
+        assert_eq!(app.message.as_deref(), Some("folded line 1"));
+
+        app.open_quick_panel(QuickPanelKind::EditorContextMenu)
+            .unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ToggleFold))
+        );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::FoldAll))
+        );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::UnfoldAll))
+        );
+
+        app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
 

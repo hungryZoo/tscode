@@ -20,6 +20,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Document Symbols with `Ctrl-Shift-O` lists functions, types, classes, interfaces, modules, and impl blocks from the active editor buffer and jumps to the selected symbol.
 - Workspace Symbols with `Ctrl-T` scans visible workspace text files for code symbols, including dirty open buffers from memory, and jumps directly to the selected file location.
 - Code suggestions with `Ctrl-Space` or command palette Trigger Suggest use workspace symbols, identifier tokens, dirty open buffers, and file-type keywords, then insert the selected suggestion into the active editor as one undoable edit.
+- Code folding now detects delimiter and indentation blocks, shows fold markers in the editor gutter, supports mouse gutter toggles, `Alt-[` toggle-fold, `Alt-]` unfold-all, command palette actions, and editor context-menu actions while keeping scroll and mouse coordinates mapped to visible lines.
 - Go to Definition with `Ctrl-]` or the command palette jumps from the editor cursor symbol to a matching workspace symbol definition, or lists multiple definition candidates when needed.
 - Find References with `Ctrl-R` or the command palette lists whole-word workspace references for the editor cursor symbol and jumps directly to the selected occurrence.
 - Source Control from the command palette lists Git changed files and parsed diff hunks, supports fuzzy filtering, and jumps from a hunk row to the changed source line.
