@@ -1297,6 +1297,7 @@ pub enum QuickPanelKind {
     WorkspaceSymbols,
     Definitions,
     References,
+    Problems,
     CommandPalette,
 }
 
@@ -1330,6 +1331,8 @@ pub enum CommandAction {
     GoForward,
     RenameSymbol,
     WorkspaceReplace,
+    RunWorkspaceCheck,
+    ShowProblems,
     SaveFile,
     SaveAll,
     RevertFile,
@@ -1519,6 +1522,7 @@ pub struct App {
     pub navigation_back: Vec<EditorLocation>,
     pub navigation_forward: Vec<EditorLocation>,
     pub terminal_selection: Option<TerminalSelection>,
+    pub problems: Vec<QuickItem>,
     pending_clipboard_export: Option<String>,
 }
 
@@ -1563,6 +1567,7 @@ impl App {
             navigation_back: Vec::new(),
             navigation_forward: Vec::new(),
             terminal_selection: None,
+            problems: Vec::new(),
             pending_clipboard_export: None,
         })
     }
@@ -2621,6 +2626,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::WorkspaceReplace,
         },
         CommandSpec {
+            label: "Run Workspace Check",
+            detail: "Run the detected project checker and collect compiler diagnostics",
+            shortcut: "",
+            action: CommandAction::RunWorkspaceCheck,
+        },
+        CommandSpec {
+            label: "Show Problems",
+            detail: "Show the last collected workspace diagnostics",
+            shortcut: "",
+            action: CommandAction::ShowProblems,
+        },
+        CommandSpec {
             label: "Save File",
             detail: "Write the active editor tab to disk",
             shortcut: "Ctrl-S",
@@ -3005,6 +3022,7 @@ impl App {
             QuickPanelKind::WorkspaceSymbols => self.workspace_symbol_items(&query)?,
             QuickPanelKind::Definitions => self.definition_items(&query)?,
             QuickPanelKind::References => self.reference_items(&query)?,
+            QuickPanelKind::Problems => self.problem_items(&query),
             QuickPanelKind::CommandPalette => self.command_palette_items(&query),
         };
 
@@ -3203,6 +3221,41 @@ impl App {
             }
         }
         Ok(items)
+    }
+
+    fn problem_items(&self, query: &str) -> Vec<QuickItem> {
+        let query = query.trim();
+        let mut items = self.problems.clone();
+        if !query.is_empty() {
+            items.retain(|item| {
+                let haystack = format!(
+                    "{} {} {}",
+                    item.label,
+                    item.detail,
+                    item.preview.as_deref().unwrap_or_default()
+                );
+                fuzzy_score(&haystack, query).is_some()
+            });
+            items.sort_by(|a, b| {
+                let a_haystack = format!(
+                    "{} {} {}",
+                    a.label,
+                    a.detail,
+                    a.preview.as_deref().unwrap_or_default()
+                );
+                let b_haystack = format!(
+                    "{} {} {}",
+                    b.label,
+                    b.detail,
+                    b.preview.as_deref().unwrap_or_default()
+                );
+                fuzzy_score(&a_haystack, query)
+                    .unwrap_or(usize::MAX)
+                    .cmp(&fuzzy_score(&b_haystack, query).unwrap_or(usize::MAX))
+                    .then(a.label.cmp(&b.label))
+            });
+        }
+        items.into_iter().take(MAX_QUICK_ITEMS).collect()
     }
 
     fn workspace_text_files(&self) -> Result<Vec<WorkspaceTextFile>> {
@@ -4250,6 +4303,60 @@ impl App {
         Ok(())
     }
 
+    fn run_workspace_check(&mut self) -> Result<()> {
+        let Some(command) = workspace_check_command(&self.root) else {
+            self.message = Some("no workspace checker detected".to_owned());
+            return Ok(());
+        };
+
+        self.message = Some(format!("running {}", command.label));
+        let output = Command::new(command.program)
+            .args(command.args)
+            .current_dir(&self.root)
+            .env("NO_COLOR", "1")
+            .env("CLICOLOR", "0")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .with_context(|| format!("failed to run {}", command.label))?;
+
+        let mut combined = String::new();
+        combined.push_str(&String::from_utf8_lossy(&output.stderr));
+        if !output.stdout.is_empty() {
+            if !combined.is_empty() && !combined.ends_with('\n') {
+                combined.push('\n');
+            }
+            combined.push_str(&String::from_utf8_lossy(&output.stdout));
+        }
+
+        self.problems = parse_problem_items(&combined, &self.root);
+        let problem_count = self.problems.len();
+        self.open_quick_panel(QuickPanelKind::Problems)?;
+
+        let dirty_note = if self.tabs.iter().any(|tab| tab.dirty) {
+            "; unsaved buffers were not checked"
+        } else {
+            ""
+        };
+        self.message = if problem_count == 0 && output.status.success() {
+            Some(format!(
+                "{} completed: no problems{dirty_note}",
+                command.label
+            ))
+        } else if problem_count == 0 {
+            Some(format!(
+                "{} failed but no parseable file diagnostics were found{dirty_note}",
+                command.label
+            ))
+        } else {
+            Some(format!(
+                "{} found {} problem(s){dirty_note}",
+                command.label, problem_count
+            ))
+        };
+        Ok(())
+    }
+
     fn select_all_active_tab(&mut self) {
         if let Some(tab) = self.active_tab_mut() {
             tab.select_all();
@@ -4627,6 +4734,8 @@ impl App {
             CommandAction::GoForward => self.go_forward(),
             CommandAction::RenameSymbol => self.start_rename_symbol_prompt(),
             CommandAction::WorkspaceReplace => self.start_workspace_replace_prompt(),
+            CommandAction::RunWorkspaceCheck => self.run_workspace_check()?,
+            CommandAction::ShowProblems => self.open_quick_panel(QuickPanelKind::Problems)?,
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAll => self.save_all_tabs(),
             CommandAction::RevertFile => self.revert_active_tab()?,
@@ -6461,6 +6570,215 @@ fn parse_line_col(input: &str) -> Option<(usize, usize)> {
     Some((line - 1, col.saturating_sub(1)))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WorkspaceCheckCommand {
+    label: &'static str,
+    program: &'static str,
+    args: &'static [&'static str],
+}
+
+fn workspace_check_command(root: &Path) -> Option<WorkspaceCheckCommand> {
+    if root.join("Cargo.toml").is_file() {
+        return Some(WorkspaceCheckCommand {
+            label: "cargo check",
+            program: "cargo",
+            args: &["check", "--message-format=short"],
+        });
+    }
+    if root.join("go.mod").is_file() {
+        return Some(WorkspaceCheckCommand {
+            label: "go test ./...",
+            program: "go",
+            args: &["test", "./..."],
+        });
+    }
+    if root.join("pyproject.toml").is_file() || root.join("setup.py").is_file() {
+        return Some(WorkspaceCheckCommand {
+            label: "python compileall",
+            program: "python3",
+            args: &["-m", "compileall", "-q", "."],
+        });
+    }
+    None
+}
+
+fn parse_problem_items(output: &str, root: &Path) -> Vec<QuickItem> {
+    let mut items = Vec::new();
+    let lines = output.lines().collect::<Vec<_>>();
+    let mut index = 0;
+
+    while index < lines.len() {
+        if let Some(item) = parse_problem_line(lines[index], root) {
+            items.push(item);
+            if items.len() >= MAX_QUICK_ITEMS {
+                break;
+            }
+        } else if let Some((item, consumed)) = parse_python_problem_lines(&lines[index..], root) {
+            items.push(item);
+            if items.len() >= MAX_QUICK_ITEMS {
+                break;
+            }
+            index += consumed.saturating_sub(1);
+        }
+        index += 1;
+    }
+
+    items
+}
+
+fn parse_problem_line(line: &str, root: &Path) -> Option<QuickItem> {
+    for (colon_byte, _) in line.match_indices(':') {
+        let path_part = clean_problem_path_part(&line[..colon_byte]);
+        let after_path = &line[colon_byte + 1..];
+        let line_digits = leading_ascii_digits(after_path);
+        if line_digits.is_empty() {
+            continue;
+        }
+        let after_line = after_path.strip_prefix(line_digits)?.strip_prefix(':')?;
+        let col_digits = leading_ascii_digits(after_line);
+        let (col_digits, rest) = if col_digits.is_empty() {
+            ("1", after_line.trim())
+        } else {
+            (
+                col_digits,
+                after_line
+                    .strip_prefix(col_digits)?
+                    .strip_prefix(':')?
+                    .trim(),
+            )
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        let (severity, message) = parse_problem_message(rest);
+        let line_index = line_digits.parse::<usize>().ok()?.saturating_sub(1);
+        let col_index = col_digits.parse::<usize>().ok()?.saturating_sub(1);
+        let Some(reference) =
+            file_reference_from_parts(path_part, Some(line_index), Some(col_index), root)
+        else {
+            continue;
+        };
+        let relative = relative_path(root, &reference.path);
+        let label = format!(
+            "{} {}:{}:{}",
+            severity_label(severity),
+            relative,
+            line_digits,
+            col_digits
+        );
+        return Some(QuickItem {
+            label,
+            detail: message.to_owned(),
+            path: reference.path,
+            line: reference.line,
+            col: reference.col,
+            preview: Some(rest.to_owned()),
+            command: None,
+        });
+    }
+
+    None
+}
+
+fn clean_problem_path_part(path_part: &str) -> &str {
+    path_part
+        .trim()
+        .trim_start_matches("-->")
+        .trim()
+        .trim_matches('"')
+}
+
+fn parse_problem_message(rest: &str) -> (&str, &str) {
+    if let Some((severity, message)) = rest.split_once(':') {
+        let severity = severity.trim();
+        if is_problem_severity(severity) {
+            return (severity, message.trim());
+        }
+    }
+    ("problem", rest.trim())
+}
+
+fn parse_python_problem_lines(lines: &[&str], root: &Path) -> Option<(QuickItem, usize)> {
+    let location = lines.first()?.trim();
+    let location = location.strip_prefix("File \"")?;
+    let (path_part, after_path) = location.split_once('"')?;
+    let after_path = after_path.trim_start();
+    let after_line = after_path.strip_prefix(", line ")?;
+    let line_digits = leading_ascii_digits(after_line);
+    if line_digits.is_empty() {
+        return None;
+    }
+
+    let line_index = line_digits.parse::<usize>().ok()?.saturating_sub(1);
+    let reference = file_reference_from_parts(path_part, Some(line_index), Some(0), root)?;
+    let mut consumed = 1;
+    let mut severity = "problem";
+    let mut message = "Python compile error";
+
+    for (offset, line) in lines.iter().enumerate().skip(1).take(6) {
+        consumed = offset + 1;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((kind, text)) = trimmed.split_once(':') {
+            if is_problem_severity(kind) || kind.ends_with("Error") || kind.ends_with("Warning") {
+                severity = kind.trim();
+                message = text.trim();
+                break;
+            }
+        } else if trimmed.ends_with("Error") || trimmed.ends_with("Warning") {
+            severity = trimmed;
+            message = trimmed;
+            break;
+        }
+    }
+
+    let relative = relative_path(root, &reference.path);
+    Some((
+        QuickItem {
+            label: format!(
+                "{} {}:{}:1",
+                severity_label(severity),
+                relative,
+                line_digits
+            ),
+            detail: message.to_owned(),
+            path: reference.path,
+            line: reference.line,
+            col: reference.col,
+            preview: Some(format!("{severity}: {message}")),
+            command: None,
+        },
+        consumed,
+    ))
+}
+
+fn is_problem_severity(severity: &str) -> bool {
+    let severity = severity.to_ascii_lowercase();
+    severity.starts_with("error")
+        || severity.starts_with("warning")
+        || severity.starts_with("note")
+        || severity.starts_with("help")
+        || severity.ends_with("Error")
+        || severity.ends_with("Warning")
+}
+
+fn severity_label(severity: &str) -> &'static str {
+    let severity = severity.to_ascii_lowercase();
+    if severity.starts_with("error") || severity.ends_with("error") {
+        "error"
+    } else if severity.starts_with("warning") || severity.ends_with("warning") {
+        "warning"
+    } else if severity.starts_with("note") {
+        "note"
+    } else if severity.starts_with("help") {
+        "help"
+    } else {
+        "problem"
+    }
+}
+
 fn terminal_selection_bounds(anchor: (u16, u16), head: (u16, u16)) -> ((u16, u16), (u16, u16)) {
     if anchor <= head {
         (anchor, head)
@@ -7431,6 +7749,18 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::WorkspaceReplace))
         );
+        let commands = app.command_palette_items("workspace check");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RunWorkspaceCheck))
+        );
+        let commands = app.command_palette_items("show problems");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ShowProblems))
+        );
         let commands = app.command_palette_items("symbol file");
         assert!(
             commands
@@ -7857,6 +8187,85 @@ mod tests {
         assert_eq!(parse_line_col("12:4"), Some((11, 3)));
         assert_eq!(parse_line_col("0"), None);
         assert_eq!(parse_line_col(""), None);
+    }
+
+    #[test]
+    fn problem_parser_reads_cargo_and_go_style_diagnostics() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-problem-parser-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn ok() {}\n").unwrap();
+        fs::write(src.join("main.go"), "package main\n").unwrap();
+        fs::write(root.join("bad.py"), "def bad(:\n").unwrap();
+        let root = root.canonicalize().unwrap();
+
+        let output = "\
+src/lib.rs:2:5: error[E0425]: cannot find value `missing` in this scope
+./src/main.go:7:13: undefined: missing
+  File \"./bad.py\", line 1
+    def bad(:
+            ^
+SyntaxError: invalid syntax
+";
+        let items = parse_problem_items(output, &root);
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].label, "error src/lib.rs:2:5");
+        assert_eq!(items[0].detail, "cannot find value `missing` in this scope");
+        assert_eq!(items[0].line, Some(1));
+        assert_eq!(items[0].col, Some(4));
+        assert_eq!(items[1].label, "problem src/main.go:7:13");
+        assert_eq!(items[1].detail, "undefined: missing");
+        assert_eq!(items[2].label, "error bad.py:1:1");
+        assert_eq!(items[2].detail, "invalid syntax");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_workspace_check_collects_cargo_problems_and_jumps_to_file() {
+        if Command::new("cargo").arg("--version").output().is_err() {
+            return;
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-cargo-check-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"tscode_problem_test\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(src.join("lib.rs"), "pub fn broken() {\n    missing();\n}\n").unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        let lib = canonical_root.join("src/lib.rs");
+
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.run_workspace_check().unwrap();
+
+        assert!(!app.problems.is_empty());
+        assert!(
+            app.problems
+                .iter()
+                .any(|item| item.path == lib && item.label.starts_with("error src/lib.rs:2:"))
+        );
+        assert!(
+            app.quick_panel
+                .as_ref()
+                .is_some_and(|panel| panel.kind == QuickPanelKind::Problems)
+        );
+
+        app.activate_selected_quick_item();
+        assert_eq!(app.focus, FocusPanel::Editor);
+        assert_eq!(app.active_tab().unwrap().path, lib);
+        assert_eq!(app.active_tab().unwrap().cursor_position().0, 1);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -244,6 +244,10 @@ The app shall record the current editor file, line, and column before quick-pane
 
 `F2` or the command palette shall prompt for a replacement identifier for the active editor selection, when it is a valid identifier, or the identifier under the editor cursor. The command shall replace whole-identifier occurrences across visible workspace text files using the same hidden/generated-folder visibility policy as workspace search. Open editor buffers shall be updated in memory as undoable dirty edits without immediately writing their backing files. Matching closed files shall be written to disk, binary and oversized files shall be skipped, and longer identifiers that merely contain the old name shall not be modified.
 
+### R-241 Workspace Problems
+
+The command palette shall include Run Workspace Check and Show Problems actions. Run Workspace Check shall detect supported project roots, run the matching external checker in the workspace root, collect parseable file diagnostics from checker output, and open a Problems quick panel. Selecting a problem shall open the referenced file and move the editor cursor to the diagnostic line and column. The Problems panel shall be filterable with the same quick-panel query input and shall report when no supported checker is detected or no parseable diagnostics are found. If dirty editor buffers exist, the completion message shall indicate that unsaved buffers were not checked.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
@@ -413,6 +417,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use line editing commands, save, and confirm file contents on disk.
 - Use `Ctrl-p` to quick-open a file by path fragment.
 - Use workspace search to find text in a different file and jump to the matching line.
+- Run Workspace Check in a broken Cargo, Go, or Python project and confirm the Problems panel opens with clickable diagnostics.
 - Use the command palette to clear and restart the integrated terminal.
 - Use the mouse wheel over explorer/editor/terminal and confirm scroll changes.
 - Type `pwd` in the terminal panel and confirm the output points at the workspace.

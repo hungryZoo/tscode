@@ -72,6 +72,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can move backward and forward through previous editor locations after definition, reference, search, line, or terminal-output jumps.
 - As a developer, I can rename the symbol under the editor cursor across workspace files while open buffers receive undoable edits and longer identifiers with the same prefix are left intact.
 - As a developer, I can replace text across real workspace files while clean open tabs stay synchronized and dirty open buffers are not overwritten.
+- As a developer, I can run a workspace check for supported project types, see compiler diagnostics in a Problems panel, filter the collected diagnostics, and jump directly to the source file and line.
 - As a developer, I can send the current editor selection, or the current line when nothing is selected, directly into the integrated terminal shell.
 - As a developer, I can clean up trailing spaces and tabs in the active file through the command palette, save the cleaned file, and undo the cleanup if needed.
 - As a developer, I can format the active source file with the language formatter already installed on the machine and review the changed dirty buffer before saving.
@@ -121,6 +122,7 @@ Keyboard fallback:
 - `Ctrl-Shift-F` and `Ctrl-G` open workspace text search
 - `Ctrl-Shift-H` opens replace-in-files; the command palette provides the same action as an SSH-friendly fallback
 - `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, and `Ctrl-R` provide document symbols, workspace symbols, go-to-definition, and find-references code navigation
+- The command palette provides Run Workspace Check and Show Problems actions for project diagnostics
 - `F2` or the command palette renames the identifier under the editor cursor across visible workspace text files
 - `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
 - `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions

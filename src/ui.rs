@@ -568,6 +568,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         crate::app::QuickPanelKind::WorkspaceSymbols => " Go to Symbol in Workspace  Ctrl-T ",
         crate::app::QuickPanelKind::Definitions => " Go to Definition  Ctrl-] ",
         crate::app::QuickPanelKind::References => " Find References  Ctrl-R ",
+        crate::app::QuickPanelKind::Problems => " Problems ",
         crate::app::QuickPanelKind::CommandPalette => " Command Palette  F1 / Ctrl-Shift-P ",
     };
     let block = Block::default()
@@ -600,6 +601,9 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             crate::app::QuickPanelKind::Definitions => "No definition found for the current query.",
             crate::app::QuickPanelKind::References => {
                 "No whole-word references found for the current query."
+            }
+            crate::app::QuickPanelKind::Problems => {
+                "No problems collected. Run Workspace Check from the command palette."
             }
             crate::app::QuickPanelKind::CommandPalette => "Type a command name.",
         };
