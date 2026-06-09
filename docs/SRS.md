@@ -246,6 +246,14 @@ When the child terminal application requests xterm mouse events, terminal clicks
 
 The application shall support moving focus in and out of the terminal, maximizing/restoring the terminal panel, and increasing/decreasing the normal terminal panel height through shortcuts such as `F6`/`F12` or command palette actions.
 
+### R-317 Multiple Terminal Sessions
+
+The integrated terminal shall support multiple PTY shell sessions. The user shall be able to create a new terminal, switch the active terminal, close a terminal, and preserve each terminal's independent shell state while it remains open.
+
+### R-318 Terminal Tab Mouse Controls
+
+The terminal panel shall render terminal session tabs with mouse hover highlighting. Clicking a terminal tab shall activate that session, clicking a close target shall close that session, and clicking the new-terminal target shall create a new PTY session.
+
 ## 6. Mouse Requirements
 
 ### R-401 Mouse Capture

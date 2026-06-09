@@ -60,6 +60,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can search text across the workspace, see file/line previews, and jump to a matching location.
 - As a developer, I can clear the integrated terminal viewport or restart the PTY shell without restarting the whole application.
 - As a developer, I can focus the integrated terminal quickly, maximize it when command output needs more space, and resize its normal panel height.
+- As a developer, I can create multiple integrated terminal sessions, switch between them, close them, and keep each shell's state independent.
 - As a developer, I can rename or delete folders and have open tabs update or close consistently with the filesystem change.
 - As a keyboard user, I can navigate, open files, switch focus, edit, scroll, and submit shell input without a mouse.
 
@@ -102,6 +103,7 @@ Keyboard fallback:
 - `q` exits outside terminal focus; `Ctrl-q` exits globally
 - `Shift-PageUp` and `Shift-PageDown` scroll terminal scrollback when terminal focus is active
 - `F6` or ``Ctrl-` `` focuses the integrated terminal and `F12` or `Ctrl-J` toggles the maximized terminal layout outside terminal focus
+- `F7`, `F8`, and `F9` create a new terminal, switch to the next terminal, and close the active terminal
 
 ## 8. Release Requirements
 

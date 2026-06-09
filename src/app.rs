@@ -34,6 +34,9 @@ pub enum HoverTarget {
     Editor,
     Tab(usize),
     TabClose(usize),
+    TerminalTab(usize),
+    TerminalTabClose(usize),
+    TerminalNew,
     QuickRow(usize),
     Terminal,
     TerminalInput,
@@ -50,6 +53,9 @@ pub struct HitRegions {
     pub explorer_rows: Vec<(Rect, usize)>,
     pub tabs: Vec<(Rect, usize)>,
     pub tab_closes: Vec<(Rect, usize)>,
+    pub terminal_tabs: Vec<(Rect, usize)>,
+    pub terminal_tab_closes: Vec<(Rect, usize)>,
+    pub terminal_new: Option<Rect>,
     pub quick_rows: Vec<(Rect, usize)>,
     pub last_mouse_x: u16,
     pub last_mouse_y: u16,
@@ -64,6 +70,22 @@ impl HitRegions {
         for (rect, index) in &self.quick_rows {
             if contains(*rect, x, y) {
                 return HoverTarget::QuickRow(*index);
+            }
+        }
+
+        if self.terminal_new.is_some_and(|rect| contains(rect, x, y)) {
+            return HoverTarget::TerminalNew;
+        }
+
+        for (rect, index) in &self.terminal_tab_closes {
+            if contains(*rect, x, y) {
+                return HoverTarget::TerminalTabClose(*index);
+            }
+        }
+
+        for (rect, index) in &self.terminal_tabs {
+            if contains(*rect, x, y) {
+                return HoverTarget::TerminalTab(*index);
             }
         }
 
@@ -726,6 +748,10 @@ pub enum CommandAction {
     FocusTerminal,
     ClearTerminal,
     RestartTerminal,
+    NewTerminal,
+    CloseTerminal,
+    NextTerminal,
+    PreviousTerminal,
     ToggleTerminalFocus,
     ToggleTerminalMaximized,
     IncreaseTerminalHeight,
@@ -753,6 +779,24 @@ pub struct ExplorerClipboard {
     pub path: PathBuf,
 }
 
+pub struct TerminalSession {
+    pub id: usize,
+    pub title: String,
+    pub shell: ShellPanel,
+    pub exited: bool,
+}
+
+impl TerminalSession {
+    fn new(id: usize, workspace: PathBuf) -> Result<Self> {
+        Ok(Self {
+            id,
+            title: format!("term {id}"),
+            shell: ShellPanel::new(workspace)?,
+            exited: false,
+        })
+    }
+}
+
 pub struct App {
     pub root: PathBuf,
     pub explorer: FsTree,
@@ -761,7 +805,9 @@ pub struct App {
     pub focus: FocusPanel,
     pub hover: HoverTarget,
     pub hit_regions: HitRegions,
-    pub terminal: ShellPanel,
+    pub terminals: Vec<TerminalSession>,
+    pub active_terminal: usize,
+    next_terminal_id: usize,
     pub syntax: SyntaxHighlighter,
     pub should_quit: bool,
     pub explorer_height: usize,
@@ -786,6 +832,7 @@ impl App {
     pub fn new(root: PathBuf) -> Result<Self> {
         let root = root.canonicalize().unwrap_or(root);
         let explorer = FsTree::new(root.clone())?;
+        let terminal = TerminalSession::new(1, root.clone())?;
         Ok(Self {
             root: root.clone(),
             explorer,
@@ -794,7 +841,9 @@ impl App {
             focus: FocusPanel::Explorer,
             hover: HoverTarget::None,
             hit_regions: HitRegions::default(),
-            terminal: ShellPanel::new(root.clone())?,
+            terminals: vec![terminal],
+            active_terminal: 0,
+            next_terminal_id: 2,
             syntax: SyntaxHighlighter::new(),
             should_quit: false,
             explorer_height: 0,
@@ -849,6 +898,18 @@ impl App {
         }
         if !matches!(self.focus, FocusPanel::Terminal) && key.code == KeyCode::F(12) {
             self.toggle_terminal_maximized();
+            return Ok(());
+        }
+        if key.code == KeyCode::F(7) {
+            self.new_terminal()?;
+            return Ok(());
+        }
+        if key.code == KeyCode::F(8) {
+            self.next_terminal();
+            return Ok(());
+        }
+        if key.code == KeyCode::F(9) {
+            self.close_active_terminal()?;
             return Ok(());
         }
 
@@ -939,6 +1000,11 @@ impl App {
             MouseEventKind::Down(MouseButton::Middle) => {
                 if let HoverTarget::Tab(index) | HoverTarget::TabClose(index) = target {
                     self.close_tab(index);
+                } else if let HoverTarget::TerminalTab(index) | HoverTarget::TerminalTabClose(index) =
+                    target
+                    && let Err(error) = self.close_terminal(index)
+                {
+                    self.last_error = Some(error.to_string());
                 }
             }
             MouseEventKind::ScrollUp => self.handle_scroll(target, -3, true)?,
@@ -959,6 +1025,11 @@ impl App {
             HoverTarget::Tab(_) | HoverTarget::TabClose(_) | HoverTarget::Editor => {
                 self.focus = FocusPanel::Editor;
             }
+            HoverTarget::TerminalTab(_)
+            | HoverTarget::TerminalTabClose(_)
+            | HoverTarget::TerminalNew => {
+                self.focus = FocusPanel::Terminal;
+            }
             HoverTarget::QuickRow(_) => {}
             HoverTarget::Terminal | HoverTarget::TerminalInput => {
                 self.focus = FocusPanel::Terminal;
@@ -975,6 +1046,17 @@ impl App {
                 self.active_tab = Some(index);
             }
             HoverTarget::TabClose(index) => self.close_tab(index),
+            HoverTarget::TerminalTab(index) => self.select_terminal(index),
+            HoverTarget::TerminalTabClose(index) => {
+                if let Err(error) = self.close_terminal(index) {
+                    self.last_error = Some(error.to_string());
+                }
+            }
+            HoverTarget::TerminalNew => {
+                if let Err(error) = self.new_terminal() {
+                    self.last_error = Some(error.to_string());
+                }
+            }
             HoverTarget::QuickRow(index) => self.activate_quick_row(index),
             HoverTarget::Editor => {
                 self.set_editor_cursor_from_mouse(false);
@@ -1097,7 +1179,7 @@ impl App {
             }
         }
 
-        self.terminal.send_key(key)
+        self.active_terminal_mut().shell.send_key(key)
     }
 
     fn handle_prompt_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -1176,7 +1258,7 @@ impl App {
                     self.ensure_editor_cursor_visible();
                 }
             }
-            FocusPanel::Terminal => self.terminal.send_paste(&text)?,
+            FocusPanel::Terminal => self.active_terminal_mut().shell.send_paste(&text)?,
             FocusPanel::Explorer => {}
         }
         Ok(())
@@ -1243,10 +1325,26 @@ impl App {
     }
 
     pub fn drain_terminal(&mut self) -> bool {
-        let changed = self.terminal.drain();
-        if self.terminal.child_exited() {
-            self.message = Some("terminal shell exited".to_owned());
+        let mut changed = false;
+        let mut exited = Vec::new();
+        for terminal in &mut self.terminals {
+            changed |= terminal.shell.drain();
+            if !terminal.exited && terminal.shell.child_exited() {
+                terminal.exited = true;
+                exited.push(terminal.title.clone());
+            }
         }
+        if !exited.is_empty() {
+            self.message = if self.terminals.len() == 1 {
+                Some("terminal shell exited".to_owned())
+            } else {
+                Some(format!("terminal exited: {}", exited.join(", ")))
+            };
+            changed = true;
+        }
+        self.active_terminal = self
+            .active_terminal
+            .min(self.terminals.len().saturating_sub(1));
         changed
     }
 
@@ -1256,6 +1354,14 @@ impl App {
 
     pub fn active_tab_mut(&mut self) -> Option<&mut EditorTab> {
         self.active_tab.and_then(|index| self.tabs.get_mut(index))
+    }
+
+    pub fn active_terminal(&self) -> &TerminalSession {
+        &self.terminals[self.active_terminal]
+    }
+
+    pub fn active_terminal_mut(&mut self) -> &mut TerminalSession {
+        &mut self.terminals[self.active_terminal]
     }
 
     fn handle_scroll(&mut self, target: HoverTarget, amount: isize, up: bool) -> Result<()> {
@@ -1276,7 +1382,11 @@ impl App {
                 self.scroll_editor(amount)
             }
             HoverTarget::QuickRow(_) => self.scroll_quick_panel(amount),
-            HoverTarget::Terminal | HoverTarget::TerminalInput => self.scroll_terminal(amount),
+            HoverTarget::Terminal
+            | HoverTarget::TerminalInput
+            | HoverTarget::TerminalTab(_)
+            | HoverTarget::TerminalTabClose(_)
+            | HoverTarget::TerminalNew => self.scroll_terminal(amount),
             HoverTarget::None => match self.focus {
                 FocusPanel::Explorer => self.scroll_explorer(amount),
                 FocusPanel::Editor => self.scroll_editor(amount),
@@ -1300,7 +1410,7 @@ impl App {
     }
 
     fn scroll_terminal(&mut self, amount: isize) {
-        self.terminal.scroll(amount);
+        self.active_terminal_mut().shell.scroll(amount);
     }
 
     fn scroll_quick_panel(&mut self, amount: isize) {
@@ -1631,6 +1741,30 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Kill the current shell and start a fresh PTY shell",
             shortcut: "",
             action: CommandAction::RestartTerminal,
+        },
+        CommandSpec {
+            label: "New Terminal",
+            detail: "Create a new integrated PTY terminal session",
+            shortcut: "F7",
+            action: CommandAction::NewTerminal,
+        },
+        CommandSpec {
+            label: "Close Terminal",
+            detail: "Close the active integrated terminal session",
+            shortcut: "F9",
+            action: CommandAction::CloseTerminal,
+        },
+        CommandSpec {
+            label: "Next Terminal",
+            detail: "Switch to the next integrated terminal session",
+            shortcut: "F8",
+            action: CommandAction::NextTerminal,
+        },
+        CommandSpec {
+            label: "Previous Terminal",
+            detail: "Switch to the previous integrated terminal session",
+            shortcut: "",
+            action: CommandAction::PreviousTerminal,
         },
         CommandSpec {
             label: "Toggle Terminal Focus",
@@ -2646,10 +2780,14 @@ impl App {
             CommandAction::FocusEditor => self.focus = FocusPanel::Editor,
             CommandAction::FocusTerminal => self.focus = FocusPanel::Terminal,
             CommandAction::ClearTerminal => {
-                self.terminal.clear();
+                self.active_terminal_mut().shell.clear();
                 self.message = Some("terminal cleared".to_owned());
             }
             CommandAction::RestartTerminal => self.restart_terminal()?,
+            CommandAction::NewTerminal => self.new_terminal()?,
+            CommandAction::CloseTerminal => self.close_active_terminal()?,
+            CommandAction::NextTerminal => self.next_terminal(),
+            CommandAction::PreviousTerminal => self.previous_terminal(),
             CommandAction::ToggleTerminalFocus => self.toggle_terminal_focus(),
             CommandAction::ToggleTerminalMaximized => self.toggle_terminal_maximized(),
             CommandAction::IncreaseTerminalHeight => self.resize_terminal_panel(2),
@@ -2664,7 +2802,7 @@ impl App {
         };
         let row = self.hit_regions.last_mouse_y.saturating_sub(body.y);
         let col = self.hit_regions.last_mouse_x.saturating_sub(body.x);
-        match self.terminal.send_mouse_click(row, col) {
+        match self.active_terminal_mut().shell.send_mouse_click(row, col) {
             Ok(true) => {}
             Ok(false) => {
                 let _ = self.open_terminal_reference(row, col);
@@ -2679,11 +2817,13 @@ impl App {
         };
         let row = self.hit_regions.last_mouse_y.saturating_sub(body.y);
         let col = self.hit_regions.last_mouse_x.saturating_sub(body.x);
-        self.terminal.send_mouse_wheel(row, col, up)
+        self.active_terminal_mut()
+            .shell
+            .send_mouse_wheel(row, col, up)
     }
 
     fn open_terminal_reference(&mut self, row: u16, col: u16) -> bool {
-        let Some(line) = self.terminal.row_text(row) else {
+        let Some(line) = self.active_terminal().shell.row_text(row) else {
             return false;
         };
         let Some(reference) = terminal_file_reference_at(&line, col as usize, &self.root) else {
@@ -2807,11 +2947,93 @@ impl App {
     }
 
     fn restart_terminal(&mut self) -> Result<()> {
-        let _ = self.terminal.kill();
-        self.terminal = ShellPanel::new(self.root.clone())?;
+        let title = self.active_terminal().title.clone();
+        let id = self.active_terminal().id;
+        let _ = self.active_terminal_mut().shell.kill();
+        self.terminals[self.active_terminal] = TerminalSession {
+            id,
+            title: title.clone(),
+            shell: ShellPanel::new(self.root.clone())?,
+            exited: false,
+        };
         self.focus = FocusPanel::Terminal;
-        self.message = Some("terminal restarted".to_owned());
+        self.message = Some(format!("terminal restarted: {title}"));
         Ok(())
+    }
+
+    fn new_terminal(&mut self) -> Result<()> {
+        let id = self.next_terminal_id;
+        self.next_terminal_id += 1;
+        let terminal = TerminalSession::new(id, self.root.clone())?;
+        let title = terminal.title.clone();
+        self.terminals.push(terminal);
+        self.active_terminal = self.terminals.len() - 1;
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(format!("new terminal: {title}"));
+        Ok(())
+    }
+
+    fn select_terminal(&mut self, index: usize) {
+        if index >= self.terminals.len() {
+            return;
+        }
+        self.active_terminal = index;
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(format!("terminal: {}", self.active_terminal().title));
+    }
+
+    fn close_active_terminal(&mut self) -> Result<()> {
+        self.close_terminal(self.active_terminal)
+    }
+
+    fn close_terminal(&mut self, index: usize) -> Result<()> {
+        if index >= self.terminals.len() {
+            return Ok(());
+        }
+        if self.terminals.len() == 1 {
+            self.restart_terminal()?;
+            self.message = Some("last terminal restarted instead of closed".to_owned());
+            return Ok(());
+        }
+
+        let mut terminal = self.terminals.remove(index);
+        let title = terminal.title.clone();
+        let _ = terminal.shell.kill();
+        self.active_terminal = if self.active_terminal > index {
+            self.active_terminal - 1
+        } else {
+            self.active_terminal
+                .min(self.terminals.len().saturating_sub(1))
+        };
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(format!("closed terminal: {title}"));
+        Ok(())
+    }
+
+    fn next_terminal(&mut self) {
+        if self.terminals.is_empty() {
+            return;
+        }
+        self.active_terminal = (self.active_terminal + 1) % self.terminals.len();
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(format!("terminal: {}", self.active_terminal().title));
+    }
+
+    fn previous_terminal(&mut self) {
+        if self.terminals.is_empty() {
+            return;
+        }
+        self.active_terminal =
+            (self.active_terminal + self.terminals.len() - 1) % self.terminals.len();
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(format!("terminal: {}", self.active_terminal().title));
+    }
+
+    #[cfg(test)]
+    fn kill_all_terminals(&mut self) {
+        for terminal in &mut self.terminals {
+            let _ = terminal.shell.kill();
+        }
     }
 
     fn toggle_terminal_focus(&mut self) {
@@ -3527,7 +3749,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL))
             .unwrap();
         assert_eq!(app.active_tab().unwrap().lines, vec!["alpha", "beta"]);
-        let _ = app.terminal.kill();
+        app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3563,7 +3785,7 @@ mod tests {
             app.active_tab().unwrap().lines,
             vec!["gamma beta alpha", "beta"]
         );
-        let _ = app.terminal.kill();
+        app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3650,7 +3872,53 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ReplaceAllInFile))
         );
-        let _ = app.terminal.kill();
+        let commands = app.command_palette_items("new terminal");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::NewTerminal))
+        );
+        let commands = app.command_palette_items("next terminal");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::NextTerminal))
+        );
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_sessions_can_be_created_switched_and_closed() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-terminals-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        assert_eq!(app.terminals.len(), 1);
+        assert_eq!(app.active_terminal, 0);
+
+        app.new_terminal().unwrap();
+        assert_eq!(app.terminals.len(), 2);
+        assert_eq!(app.active_terminal, 1);
+        assert_eq!(app.active_terminal().title, "term 2");
+
+        app.previous_terminal();
+        assert_eq!(app.active_terminal, 0);
+        app.next_terminal();
+        assert_eq!(app.active_terminal, 1);
+
+        app.close_active_terminal().unwrap();
+        assert_eq!(app.terminals.len(), 1);
+        assert_eq!(app.active_terminal, 0);
+        assert_eq!(app.active_terminal().title, "term 1");
+
+        app.close_active_terminal().unwrap();
+        assert_eq!(app.terminals.len(), 1);
+        assert_eq!(app.active_terminal, 0);
+
+        app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3777,7 +4045,7 @@ mod tests {
         assert!(names.contains(&"src".to_owned()));
         assert!(!names.contains(&"target".to_owned()));
 
-        let _ = app.terminal.kill();
+        app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
 

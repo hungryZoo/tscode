@@ -349,7 +349,7 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Terminal;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Terminal  real pty shell  F6 focus  F12 max  Shift-Page scroll  Ctrl-Q quit app ")
+        .title(" Terminal  real pty shell  F6 focus  F7 new  F8 next  F9 close  F12 max ")
         .border_style(border_style(focused));
     let inner = block.inner(area);
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), area);
@@ -358,13 +358,34 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    app.hit_regions.terminal_body = Some(inner);
-    app.hit_regions.terminal_input = Some(inner);
-    app.terminal_height = inner.height as usize;
-    app.terminal.resize(inner.height, inner.width);
+    let chunks = if inner.height > 1 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1)])
+            .split(inner)
+    };
+    let body = if chunks.len() > 1 {
+        draw_terminal_tabs(frame, app, chunks[0]);
+        chunks[1]
+    } else {
+        inner
+    };
+
+    app.hit_regions.terminal_body = Some(body);
+    app.hit_regions.terminal_input = Some(body);
+    app.terminal_height = body.height as usize;
+    app.active_terminal_mut()
+        .shell
+        .resize(body.height, body.width);
 
     let lines = app
-        .terminal
+        .active_terminal()
+        .shell
         .styled_rows()
         .into_iter()
         .map(|row| {
@@ -378,20 +399,80 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
 
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().fg(TEXT).bg(PANEL_BG)),
-        inner,
+        body,
     );
 
     if focused {
-        let (row, col) = app.terminal.cursor();
-        let x = inner
+        let (row, col) = app.active_terminal().shell.cursor();
+        let x = body
             .x
             .saturating_add(col)
-            .min(inner.right().saturating_sub(1));
-        let y = inner
+            .min(body.right().saturating_sub(1));
+        let y = body
             .y
             .saturating_add(row)
-            .min(inner.bottom().saturating_sub(1));
+            .min(body.bottom().saturating_sub(1));
         frame.set_cursor_position((x, y));
+    }
+}
+
+fn draw_terminal_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().fg(TEXT).bg(Color::Rgb(18, 24, 33))),
+        area,
+    );
+
+    let mut x = area.x;
+    let terminals = app
+        .terminals
+        .iter()
+        .map(|terminal| (terminal.title.clone(), terminal.exited))
+        .collect::<Vec<_>>();
+    for (index, (title, exited)) in terminals.into_iter().enumerate() {
+        if x >= area.right() {
+            break;
+        }
+        let exit_marker = if exited { "!" } else { "" };
+        let label = format!(" {}{} x ", title, exit_marker);
+        let width = label.width().clamp(9, 20) as u16;
+        let width = width.min(area.right().saturating_sub(x));
+        let rect = Rect::new(x, area.y, width, 1);
+        app.hit_regions.terminal_tabs.push((rect, index));
+        if width >= 3 {
+            app.hit_regions.terminal_tab_closes.push((
+                Rect::new(rect.right().saturating_sub(3), rect.y, 3, 1),
+                index,
+            ));
+        }
+
+        let active = app.active_terminal == index;
+        let hovered = app.hover == HoverTarget::TerminalTab(index)
+            || app.hover == HoverTarget::TerminalTabClose(index);
+        let style = if active {
+            Style::default()
+                .fg(Color::White)
+                .bg(ACTIVE_BG)
+                .add_modifier(Modifier::BOLD)
+        } else if hovered {
+            Style::default().fg(Color::White).bg(HOVER_BG)
+        } else {
+            Style::default().fg(TEXT).bg(Color::Rgb(18, 24, 33))
+        };
+        frame.render_widget(Paragraph::new(label).style(style), rect);
+        x = x.saturating_add(width);
+    }
+
+    if x < area.right() {
+        let width = 5_u16.min(area.right().saturating_sub(x));
+        let rect = Rect::new(x, area.y, width, 1);
+        app.hit_regions.terminal_new = Some(rect);
+        let hovered = app.hover == HoverTarget::TerminalNew;
+        let style = if hovered {
+            Style::default().fg(Color::White).bg(HOVER_BG)
+        } else {
+            Style::default().fg(ACCENT).bg(Color::Rgb(18, 24, 33))
+        };
+        frame.render_widget(Paragraph::new(" + ").style(style), rect);
     }
 }
 
@@ -616,6 +697,9 @@ fn hover_name(hover: &HoverTarget) -> String {
         HoverTarget::Editor => "editor".to_owned(),
         HoverTarget::Tab(index) => format!("tab {index}"),
         HoverTarget::TabClose(index) => format!("tab close {index}"),
+        HoverTarget::TerminalTab(index) => format!("terminal tab {index}"),
+        HoverTarget::TerminalTabClose(index) => format!("terminal close {index}"),
+        HoverTarget::TerminalNew => "terminal new".to_owned(),
         HoverTarget::QuickRow(index) => format!("quick row {index}"),
         HoverTarget::Terminal => "terminal".to_owned(),
         HoverTarget::TerminalInput => "terminal input".to_owned(),

@@ -39,6 +39,7 @@ The top-level state owns:
 - quick panel state for quick open, workspace search, and command palette
 - explorer visibility state for dotfile visibility, generated-folder visibility, and visible-tree filtering
 - terminal layout state for normal height and maximized mode
+- integrated terminal sessions and the active terminal index
 - terminal state
 - cached UI hit regions from the most recent draw
 - syntax highlighter
@@ -71,7 +72,7 @@ The quick panel stores a mode, query text, result list, selected index, and scro
 
 ### Terminal
 
-The integrated terminal owns:
+Each integrated terminal session owns:
 
 - a native PTY master/slave pair
 - a spawned platform shell running in the workspace root
@@ -79,9 +80,9 @@ The integrated terminal owns:
 - a writer for user input
 - a `vt100::Parser` screen with scrollback
 
-Keyboard input while terminal-focused is encoded as terminal byte sequences and written to the PTY. PTY output is parsed asynchronously and rendered into the bottom panel.
+The app stores a vector of terminal sessions, an active terminal index, and a monotonic id used for stable terminal tab titles. Keyboard input while terminal-focused is encoded as terminal byte sequences and written to the active PTY. PTY output is drained from every open terminal session so background terminals keep their screen state up to date.
 
-Terminal management commands reset only the `vt100::Parser` for clear-terminal, or kill the current PTY child and replace the `ShellPanel` with a new workspace-root shell for restart-terminal.
+Terminal management commands reset only the active session's `vt100::Parser` for clear-terminal, kill and replace only the active session for restart-terminal, create new independent PTY sessions for new-terminal, and kill/remove terminal sessions for close-terminal. Closing the last terminal restarts it instead of leaving the app without a shell.
 
 ## 4. Rendering Design
 
@@ -103,7 +104,7 @@ The editor column normally uses a vertical split:
 
 Each render pass records clickable and hoverable rectangles into `HitRegions`.
 
-When terminal maximized mode is active, the editor column is replaced by the integrated terminal so command output can use the main workspace area while the title, explorer, and status bars remain visible.
+When terminal maximized mode is active, the editor column is replaced by the integrated terminal so command output can use the main workspace area while the title, explorer, and status bars remain visible. The terminal panel renders a one-line terminal tab strip above the active PTY screen when height allows. The tab strip records hit regions for terminal activation, terminal close, and new-terminal actions.
 
 ## 5. Input Design
 
