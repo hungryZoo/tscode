@@ -220,6 +220,10 @@ The command palette shall include a trim-trailing-whitespace action for the acti
 
 The command palette shall include a revert-file action for the active editor tab. The action shall reload the active file's current contents from disk, discard unsaved editor-buffer changes, clear selection and undo/redo history for that tab, reset the dirty marker, preserve cursor visibility within the reloaded content, and refresh Git status markers.
 
+### R-232A External File Changes
+
+The app shall detect when an open editor tab's backing file is modified or deleted outside `tscode`. A clean tab whose backing file changed shall reload from disk, clear disk-change status, keep the tab clean, and refresh Git status markers. A dirty tab whose backing file changed or disappeared shall keep the in-memory edits, show disk-change status in the tab strip and status bar, and prevent Save File or Save All from overwriting the changed or deleted backing file until the user explicitly reloads/reverts the tab or saves it to another path. A clean tab whose backing file was deleted shall stay open with deleted-on-disk status and shall not recreate the file through Save File without an explicit alternate save path.
+
 ### R-233 Document Symbols
 
 `Ctrl-shift-o` or the command palette shall open a quick panel listing code symbols extracted from the active editor buffer. Selecting a symbol shall focus the editor and move the cursor to the symbol's file location. The extractor shall recognize common function, method, type, class, interface, module, namespace, and implementation declarations without requiring a language server.

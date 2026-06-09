@@ -8,7 +8,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{App, ClipboardAction, FocusPanel, HoverTarget, ProblemSeverity},
+    app::{App, ClipboardAction, ExternalFileState, FocusPanel, HoverTarget, ProblemSeverity},
     fs_tree::VisibleNode,
     shell::{TerminalSpan, TerminalStyle},
 };
@@ -93,6 +93,10 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         .active_tab()
         .map(|tab| {
             let dirty = if tab.dirty { " *" } else { "" };
+            let disk = match tab.external_state {
+                ExternalFileState::Clean => String::new(),
+                state => format!("  Disk {}", state.label()),
+            };
             let selection = if let Some(text) = tab.selected_text() {
                 let count = tab.selection_count();
                 if count > 1 {
@@ -126,11 +130,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 })
                 .unwrap_or_default();
             format!(
-                "{}{}  Ln {}, Col {}{}{}{}{}",
+                "{}{}  Ln {}, Col {}{}{}{}{}{}",
                 tab.path.display(),
                 dirty,
                 tab.cursor_line + 1,
                 tab.cursor_col + 1,
+                disk,
                 selection,
                 search,
                 problems,
@@ -372,7 +377,12 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
         }
 
         let dirty = if tab.dirty { "*" } else { "" };
-        let label = format!(" {}{} x ", tab.title, dirty);
+        let external = match tab.external_state {
+            ExternalFileState::Clean => "",
+            ExternalFileState::Modified => "!",
+            ExternalFileState::Deleted => "?",
+        };
+        let label = format!(" {}{}{} x ", tab.title, dirty, external);
         let width = label.width().clamp(8, 24) as u16;
         let remaining = area.x.saturating_add(area.width).saturating_sub(x);
         let width = width.min(remaining);
@@ -388,6 +398,13 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
         let active = app.active_tab == Some(index);
         let hovered =
             app.hover == HoverTarget::Tab(index) || app.hover == HoverTarget::TabClose(index);
+        let fg = if tab.external_state == ExternalFileState::Deleted {
+            Color::LightRed
+        } else if tab.external_state == ExternalFileState::Modified {
+            Color::Yellow
+        } else {
+            TEXT
+        };
         let style = if active {
             Style::default()
                 .fg(Color::White)
@@ -396,7 +413,7 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
         } else if hovered {
             Style::default().fg(Color::White).bg(HOVER_BG)
         } else {
-            Style::default().fg(TEXT).bg(Color::Rgb(18, 24, 33))
+            Style::default().fg(fg).bg(Color::Rgb(18, 24, 33))
         };
         frame.render_widget(Paragraph::new(label).style(style), rect);
         x = x.saturating_add(width);

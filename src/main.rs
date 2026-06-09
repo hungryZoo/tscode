@@ -82,7 +82,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
     terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
     while !app.should_quit {
-        if app.drain_terminal() {
+        let terminal_changed = app.drain_terminal();
+        let files_changed = app.check_external_file_changes();
+        if terminal_changed || files_changed {
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
         }
 

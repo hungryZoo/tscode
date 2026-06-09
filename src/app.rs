@@ -4,6 +4,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::SystemTime,
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -159,6 +160,33 @@ pub struct EditorSelection {
 
 type EditorReplacement = ((usize, usize), (usize, usize), String);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalFileState {
+    Clean,
+    Modified,
+    Deleted,
+}
+
+impl ExternalFileState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::Modified => "modified on disk",
+            Self::Deleted => "deleted on disk",
+        }
+    }
+
+    fn is_clean(self) -> bool {
+        self == Self::Clean
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
 impl EditorSelection {
     fn new(start: (usize, usize), end: (usize, usize)) -> Option<Self> {
         let selection = if start <= end {
@@ -186,6 +214,8 @@ pub struct EditorTab {
     pub extra_selections: Vec<EditorSelection>,
     pub extra_cursors: Vec<(usize, usize)>,
     pub dirty: bool,
+    pub external_state: ExternalFileState,
+    disk_stamp: Option<FileStamp>,
     trailing_newline: bool,
     undo_stack: Vec<EditorSnapshot>,
     redo_stack: Vec<EditorSnapshot>,
@@ -196,6 +226,7 @@ impl EditorTab {
         let bytes = std::fs::read(&path)?;
         let text = String::from_utf8_lossy(&bytes);
         let (lines, trailing_newline) = split_editor_text(&text);
+        let disk_stamp = file_stamp(&path);
 
         let title = path
             .file_name()
@@ -215,6 +246,8 @@ impl EditorTab {
             extra_selections: Vec::new(),
             extra_cursors: Vec::new(),
             dirty: false,
+            external_state: ExternalFileState::Clean,
+            disk_stamp,
             trailing_newline,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -241,8 +274,23 @@ impl EditorTab {
         self.extra_selections.clear();
         self.extra_cursors.clear();
         self.dirty = false;
+        self.external_state = ExternalFileState::Clean;
+        self.disk_stamp = file_stamp(&self.path);
         self.undo_stack.clear();
         self.redo_stack.clear();
+    }
+
+    fn refresh_disk_stamp(&mut self) {
+        self.external_state = ExternalFileState::Clean;
+        self.disk_stamp = file_stamp(&self.path);
+    }
+
+    fn current_disk_state(&self) -> ExternalFileState {
+        match file_stamp(&self.path) {
+            None => ExternalFileState::Deleted,
+            Some(stamp) if Some(stamp) != self.disk_stamp => ExternalFileState::Modified,
+            Some(_) => ExternalFileState::Clean,
+        }
     }
 
     fn replace_entire_text_as_edit(&mut self, text: &str) -> bool {
@@ -268,6 +316,8 @@ impl EditorTab {
     fn save(&mut self) -> Result<()> {
         fs::write(&self.path, self.text())?;
         self.dirty = false;
+        self.external_state = ExternalFileState::Clean;
+        self.disk_stamp = file_stamp(&self.path);
         Ok(())
     }
 
@@ -2504,6 +2554,98 @@ impl App {
         changed
     }
 
+    pub fn check_external_file_changes(&mut self) -> bool {
+        let mut changed = false;
+        let mut reloaded = 0usize;
+        let mut modified_conflicts = 0usize;
+        let mut deleted_conflicts = 0usize;
+        let mut deleted_clean = 0usize;
+        let mut read_errors = Vec::new();
+
+        for index in 0..self.tabs.len() {
+            let state = self.tabs[index].current_disk_state();
+
+            if state == ExternalFileState::Clean {
+                if self.tabs[index].external_state != ExternalFileState::Clean {
+                    self.tabs[index].external_state = ExternalFileState::Clean;
+                    changed = true;
+                }
+                continue;
+            }
+
+            if self.tabs[index].dirty {
+                if self.tabs[index].external_state != state {
+                    self.tabs[index].external_state = state;
+                    changed = true;
+                }
+                match state {
+                    ExternalFileState::Modified => modified_conflicts += 1,
+                    ExternalFileState::Deleted => deleted_conflicts += 1,
+                    ExternalFileState::Clean => {}
+                }
+                continue;
+            }
+
+            match state {
+                ExternalFileState::Modified => {
+                    let path = self.tabs[index].path.clone();
+                    let title = self.tabs[index].title.clone();
+                    match read_text_lossy(&path) {
+                        Ok(text) => {
+                            self.tabs[index].set_clean_text(&text);
+                            reloaded += 1;
+                            changed = true;
+                        }
+                        Err(error) => {
+                            self.tabs[index].external_state = ExternalFileState::Modified;
+                            read_errors.push(format!("{title}: {error}"));
+                            changed = true;
+                        }
+                    }
+                }
+                ExternalFileState::Deleted => {
+                    if self.tabs[index].external_state != ExternalFileState::Deleted {
+                        self.tabs[index].external_state = ExternalFileState::Deleted;
+                        changed = true;
+                    }
+                    deleted_clean += 1;
+                }
+                ExternalFileState::Clean => {}
+            }
+        }
+
+        if changed {
+            if reloaded > 0 || deleted_clean > 0 {
+                self.refresh_git_status();
+            }
+            let mut parts = Vec::new();
+            if reloaded > 0 {
+                parts.push(format!("reloaded {reloaded} clean tab(s) from disk"));
+            }
+            if modified_conflicts > 0 {
+                parts.push(format!(
+                    "external changes detected in {modified_conflicts} dirty tab(s)"
+                ));
+            }
+            if deleted_conflicts > 0 {
+                parts.push(format!(
+                    "{deleted_conflicts} dirty tab(s) were deleted on disk"
+                ));
+            }
+            if deleted_clean > 0 {
+                parts.push(format!("{deleted_clean} clean tab(s) deleted on disk"));
+            }
+            if !read_errors.is_empty() {
+                parts.push(format!("reload failed: {}", read_errors.join(", ")));
+            }
+            if !parts.is_empty() {
+                self.message = Some(parts.join("; "));
+            }
+        }
+
+        changed
+    }
+
     pub fn active_tab(&self) -> Option<&EditorTab> {
         self.active_tab.and_then(|index| self.tabs.get(index))
     }
@@ -2888,6 +3030,12 @@ fn command_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             label: "Revert File",
             detail: "Discard editor changes and reload the active file from disk",
+            shortcut: "",
+            action: CommandAction::RevertFile,
+        },
+        CommandSpec {
+            label: "Reload File From Disk",
+            detail: "Reload the active tab from disk and clear disk-change warnings",
             shortcut: "",
             action: CommandAction::RevertFile,
         },
@@ -4275,6 +4423,7 @@ impl App {
                     .and_then(|file_name| file_name.to_str())
                     .unwrap_or("[file]")
                     .to_owned();
+                tab.refresh_disk_stamp();
             }
         }
     }
@@ -4338,11 +4487,24 @@ impl App {
     }
 
     fn save_active_tab(&mut self) {
-        let Some(tab) = self.active_tab_mut() else {
+        let Some(index) = self.active_tab else {
             return;
         };
-        let path = tab.path.clone();
-        match tab.save() {
+        self.check_external_file_changes();
+        let Some(tab) = self.tabs.get(index) else {
+            return;
+        };
+        if !tab.external_state.is_clean() {
+            self.message = Some(format!(
+                "{} {}; use Revert File or Save As before overwriting",
+                tab.title,
+                tab.external_state.label()
+            ));
+            return;
+        }
+
+        let path = self.tabs[index].path.clone();
+        match self.tabs[index].save() {
             Ok(()) => {
                 self.refresh_git_status();
                 self.message = Some(format!("saved {}", path.display()));
@@ -4420,6 +4582,7 @@ impl App {
         self.tabs[active_index].path = saved_path.clone();
         self.tabs[active_index].title = title;
         self.tabs[active_index].dirty = false;
+        self.tabs[active_index].refresh_disk_stamp();
 
         self.refresh_explorer()?;
         if saved_path.starts_with(&self.root) {
@@ -4440,8 +4603,7 @@ impl App {
         let path = self.tabs[index].path.clone();
         let title = self.tabs[index].title.clone();
         let previous_text = self.tabs[index].text();
-        let bytes = fs::read(&path)?;
-        let text = String::from_utf8_lossy(&bytes);
+        let text = read_text_lossy(&path)?;
         let changed = previous_text != text;
 
         self.tabs[index].set_clean_text(&text);
@@ -4456,9 +4618,15 @@ impl App {
     }
 
     fn save_all_tabs(&mut self) {
+        self.check_external_file_changes();
         let mut saved = 0usize;
+        let mut skipped = 0usize;
         for tab in &mut self.tabs {
             if !tab.dirty {
+                continue;
+            }
+            if !tab.external_state.is_clean() {
+                skipped += 1;
                 continue;
             }
             match tab.save() {
@@ -4472,7 +4640,13 @@ impl App {
         if saved > 0 {
             self.refresh_git_status();
         }
-        self.message = Some(format!("saved {saved} dirty tab(s)"));
+        self.message = if skipped > 0 {
+            Some(format!(
+                "saved {saved} dirty tab(s); skipped {skipped} tab(s) with disk changes"
+            ))
+        } else {
+            Some(format!("saved {saved} dirty tab(s)"))
+        };
     }
 
     fn search_active(&mut self, needle: String) {
@@ -6096,6 +6270,19 @@ fn split_editor_text(text: &str) -> (Vec<String>, bool) {
         lines.push(String::new());
     }
     (lines, trailing_newline)
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let metadata = fs::metadata(path).ok()?;
+    Some(FileStamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+fn read_text_lossy(path: &Path) -> Result<String> {
+    let bytes = fs::read(path)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn terminal_submission_text(text: &str) -> String {
@@ -9260,6 +9447,112 @@ mod tests {
     }
 
     #[test]
+    fn clean_open_tab_reloads_external_file_change() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-external-reload-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "disk one\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        thread::sleep(Duration::from_millis(10));
+        fs::write(&path, "external disk two\n").unwrap();
+
+        assert!(app.check_external_file_changes());
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.lines, vec!["external disk two"]);
+        assert!(!tab.dirty);
+        assert_eq!(tab.external_state, ExternalFileState::Clean);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("reloaded 1 clean tab(s) from disk")
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dirty_open_tab_marks_external_change_and_refuses_save_overwrite() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-external-conflict-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "disk one\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.active_tab_mut().unwrap().insert_text("dirty ");
+        thread::sleep(Duration::from_millis(10));
+        fs::write(&path, "external changed on disk\n").unwrap();
+
+        assert!(app.check_external_file_changes());
+        let tab = app.active_tab().unwrap();
+        assert!(tab.dirty);
+        assert_eq!(tab.external_state, ExternalFileState::Modified);
+
+        app.run_command(CommandAction::SaveFile).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "external changed on disk\n"
+        );
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("modified on disk"))
+        );
+
+        app.run_command(CommandAction::RevertFile).unwrap();
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.text(), "external changed on disk\n");
+        assert!(!tab.dirty);
+        assert_eq!(tab.external_state, ExternalFileState::Clean);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deleted_open_file_marks_disk_deleted_and_save_refuses_recreate() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-external-delete-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "disk one\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        fs::remove_file(&path).unwrap();
+
+        assert!(app.check_external_file_changes());
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.external_state, ExternalFileState::Deleted);
+        assert!(!tab.dirty);
+        assert!(!path.exists());
+
+        app.run_command(CommandAction::SaveFile).unwrap();
+        assert!(!path.exists());
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("deleted on disk"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn search_wraps_forward_and_backward() {
         let path = temp_file("search.txt");
         let _ = fs::remove_file(&path);
@@ -9361,6 +9654,12 @@ mod tests {
                 .any(|item| item.command == Some(CommandAction::TrimTrailingWhitespace))
         );
         let commands = app.command_palette_items("revert file");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RevertFile))
+        );
+        let commands = app.command_palette_items("reload disk");
         assert!(
             commands
                 .iter()

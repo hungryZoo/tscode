@@ -30,6 +30,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Run Selection in Terminal with `Ctrl-Enter` or the command palette sends selected editor text, or the current editor line when there is no selection, to the active PTY shell and focuses the integrated terminal.
 - Editable tabbed code buffers with line numbers, syntax highlighting, dirty markers, cursor movement, paste, save, repeated search, undo, and redo.
 - Save As from the command palette writes the active editor buffer to a new relative or absolute path, creates parent folders, retargets the tab, refreshes explorer and Git status, and refuses dirty open target tabs.
+- Open editor tabs now detect external disk changes while the app is running: clean tabs reload automatically after terminal/Git/tool writes, dirty tabs keep unsaved edits with `!`/status-bar conflict markers, deleted files show deleted-on-disk state, and Save File/Save All refuse accidental overwrites until Reload/Revert or Save As is chosen.
 - Long editor lines now support horizontal scrolling with cursor tracking, mouse-click coordinate mapping, and horizontal wheel panning.
 - In-file search now highlights visible matches and shows a match count in the status bar.
 - `Ctrl-H` and the command palette can replace the current/next active-file match, while replace-all changes every match as one undoable edit.
@@ -45,7 +46,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Editor line commands for indent/outdent, duplicate, delete, move up/down, and toggle comments now work on selected line ranges as one undoable edit, while still supporting the current line when no selection is active.
 - Format Document with `Shift-Alt-F` or the command palette pipes the active buffer through installed formatters such as `rustfmt`, `prettier`, `gofmt`, `black`, `shfmt`, or `clang-format`, then applies the result as one undoable dirty-buffer edit.
 - Command palette Trim Trailing Whitespace removes spaces and tabs at line ends in the active editor buffer as one undoable edit, then saves cleanly to the real file when `Ctrl-S` or Save File is used.
-- Command palette Revert File reloads the active editor tab from disk, discards unsaved buffer edits, clears per-tab edit history, resets the dirty marker, and refreshes Git status markers.
+- Command palette Revert File and Reload File From Disk reload the active editor tab from disk, discard unsaved buffer edits, clear per-tab edit history, reset dirty/external-file markers, and refresh Git status markers.
 - Opening files now canonicalizes paths before tab lookup, avoiding duplicate tabs and broken relative-path behavior when the OS exposes aliases such as `/tmp` and `/private/tmp`.
 - File explorer actions for refresh, new file, new folder, rename, and delete with confirmation; folder rename/delete keeps open tabs in sync.
 - Explorer collapse-all is available through the command palette.

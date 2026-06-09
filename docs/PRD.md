@@ -86,6 +86,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can clean up trailing spaces and tabs in the active file through the command palette, save the cleaned file, and undo the cleanup if needed.
 - As a developer, I can format the active source file with the language formatter already installed on the machine and review the changed dirty buffer before saving.
 - As a developer, I can revert the active editor tab back to the file currently on disk when I want to discard unsaved edits or reload external changes.
+- As a developer, I can keep files open while terminal commands, Git operations, or external tools change those files on disk; clean tabs reload automatically, while dirty tabs show conflict status and prevent accidental overwrite saves.
 - As a developer, I can clear the integrated terminal viewport or restart the PTY shell without restarting the whole application.
 - As a developer, I can see which terminal session is active, where it is running, whether it is live, and whether scrollback or terminal child modes are active.
 - As a developer, I can focus the integrated terminal quickly, maximize it when command output needs more space, and resize its normal panel height.
