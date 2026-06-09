@@ -258,6 +258,12 @@ impl ShellPanel {
         Ok(())
     }
 
+    pub fn send_text(&mut self, text: &str) -> Result<()> {
+        self.writer.write_all(text.as_bytes())?;
+        self.writer.flush()?;
+        Ok(())
+    }
+
     pub fn clear(&mut self) {
         self.parser = vt100::Parser::new(self.rows, self.cols, SCROLLBACK);
         self.user_scrollback = 0;

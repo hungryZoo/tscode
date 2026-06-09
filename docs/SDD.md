@@ -145,6 +145,8 @@ In-file search state lives on `App::search_needle`. The editor renderer overlays
 
 Replace in file is modeled as a two-step prompt: find text, then replacement text. Single replace changes the current match when the cursor is on one or otherwise searches forward with wraparound. Replace-all updates every active-buffer line match in one `EditorTab` undo snapshot so a single undo restores the previous file contents.
 
+Run Selection in Terminal is an editor-to-PTY bridge in the app action layer. The app derives the active selection, falling back to the current non-blank line, normalizes CRLF/CR line endings to LF, appends a final enter when needed, converts enters to carriage returns for the PTY, writes the bytes through `ShellPanel::send_text`, and focuses the integrated terminal so the submitted command and output are immediately visible.
+
 ## 6. Syntax Highlighting
 
 `syntect` loads default syntax and theme sets once during startup. The renderer chooses syntax by token or file extension, highlights visible lines only, and converts style foreground colors into ratatui `Color::Rgb`.

@@ -951,6 +951,7 @@ pub enum CommandAction {
     CopySelection,
     CutSelection,
     PasteClipboard,
+    RunSelectionInTerminal,
     FocusExplorer,
     FocusEditor,
     FocusTerminal,
@@ -1392,6 +1393,11 @@ impl App {
                 KeyCode::Char('x') | KeyCode::Char('X') => self.cut_editor_selection(),
                 KeyCode::Char('v') | KeyCode::Char('V') => self.paste_editor_clipboard(),
                 KeyCode::Char('s') => self.save_active_tab(),
+                KeyCode::Enter => {
+                    if let Err(error) = self.run_selection_in_terminal() {
+                        self.last_error = Some(error.to_string());
+                    }
+                }
                 KeyCode::Char('f') => {
                     let initial = self.search_needle.clone().unwrap_or_default();
                     self.start_prompt(PromptKind::Search, &initial);
@@ -2062,6 +2068,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Paste the internal editor clipboard at the cursor",
             shortcut: "Ctrl-V",
             action: CommandAction::PasteClipboard,
+        },
+        CommandSpec {
+            label: "Run Selection in Terminal",
+            detail: "Send the editor selection or current line to the active PTY shell",
+            shortcut: "Ctrl-Enter",
+            action: CommandAction::RunSelectionInTerminal,
         },
         CommandSpec {
             label: "Focus Explorer",
@@ -3109,6 +3121,34 @@ impl App {
         }
     }
 
+    fn run_selection_in_terminal(&mut self) -> Result<()> {
+        let Some(text) = self.editor_text_for_terminal_submission() else {
+            self.message = Some("no editor text to run in terminal".to_owned());
+            return Ok(());
+        };
+
+        let submitted = terminal_submission_text(&text);
+        self.active_terminal_mut().shell.send_text(&submitted)?;
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(format!(
+            "sent {} line(s) to terminal",
+            text.lines().count().max(1)
+        ));
+        Ok(())
+    }
+
+    fn editor_text_for_terminal_submission(&self) -> Option<String> {
+        let tab = self.active_tab()?;
+        if let Some(text) = tab.selected_text()
+            && !text.trim().is_empty()
+        {
+            return Some(text);
+        }
+
+        let line = tab.lines.get(tab.cursor_line)?.clone();
+        (!line.trim().is_empty()).then_some(line)
+    }
+
     fn move_editor_cursor_with_selection(
         &mut self,
         line_delta: isize,
@@ -3330,6 +3370,7 @@ impl App {
             CommandAction::CopySelection => self.copy_editor_selection(),
             CommandAction::CutSelection => self.cut_editor_selection(),
             CommandAction::PasteClipboard => self.paste_editor_clipboard(),
+            CommandAction::RunSelectionInTerminal => self.run_selection_in_terminal()?,
             CommandAction::FocusExplorer => self.focus = FocusPanel::Explorer,
             CommandAction::FocusEditor => self.focus = FocusPanel::Editor,
             CommandAction::FocusTerminal => self.focus = FocusPanel::Terminal,
@@ -3652,6 +3693,14 @@ fn split_editor_text(text: &str) -> (Vec<String>, bool) {
         lines.push(String::new());
     }
     (lines, trailing_newline)
+}
+
+fn terminal_submission_text(text: &str) -> String {
+    let mut normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    if !normalized.ends_with('\n') {
+        normalized.push('\n');
+    }
+    normalized.replace('\n', "\r")
 }
 
 fn take_chars_owned(s: &str, count: usize) -> String {
@@ -4364,6 +4413,7 @@ fn is_terminal_reference_delimiter(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{thread, time::Duration};
 
     fn temp_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("tscode-test-{}-{name}", std::process::id()))
@@ -4797,6 +4847,12 @@ mod tests {
             item.command == Some(CommandAction::CopyActiveFileRelativePath)
                 || item.command == Some(CommandAction::CopySelectedExplorerRelativePath)
         }));
+        let commands = app.command_palette_items("run selection terminal");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RunSelectionInTerminal))
+        );
         let commands = app.command_palette_items("new terminal");
         assert!(
             commands
@@ -4809,6 +4865,49 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::NextTerminal))
         );
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_submission_text_uses_carriage_return_enters() {
+        assert_eq!(terminal_submission_text("echo ok"), "echo ok\r");
+        assert_eq!(
+            terminal_submission_text("echo one\necho two\n"),
+            "echo one\recho two\r"
+        );
+        assert_eq!(
+            terminal_submission_text("echo one\r\necho two"),
+            "echo one\recho two\r"
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn run_selection_in_terminal_executes_current_line_in_real_pty() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-run-terminal-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let out = root.join("out.txt");
+        let path = root.join("cmd.txt");
+        fs::write(&path, format!("printf run-ok > {}\n", out.display())).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.focus = FocusPanel::Editor;
+        app.run_selection_in_terminal().unwrap();
+        assert_eq!(app.focus, FocusPanel::Terminal);
+
+        for _ in 0..50 {
+            app.drain_terminal();
+            if out.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        assert_eq!(fs::read_to_string(&out).unwrap(), "run-ok");
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }

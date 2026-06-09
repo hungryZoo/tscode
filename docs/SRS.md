@@ -194,6 +194,10 @@ The editor shall support modified-arrow word movement and word selection for `Ct
 
 The command palette shall expose commands to copy the active editor file path and the selected explorer item path as both absolute and workspace-relative strings. These commands shall queue the same OSC52 terminal clipboard export used by editor copy and cut without modifying explorer copy/cut state.
 
+### R-230 Run Selection in Terminal
+
+`Ctrl-enter` or the command palette shall send the active editor selection, or the current non-blank line when no selection exists, to the active PTY shell as submitted command text and then focus the integrated terminal. Blank editor selections and blank current lines shall not send PTY input.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
