@@ -148,7 +148,7 @@ Saving an edited file shall preserve an existing trailing newline unless the buf
 
 ### R-218 Line Editing Commands
 
-The editor shall support indenting, outdenting, duplicating, deleting, moving, and toggling comments for the active line or selected line range. `Tab`, `Shift-tab`, `Ctrl-d`, `Ctrl-/`, `Alt-up`, and `Alt-down` shall invoke the corresponding editor actions where the terminal can report those keys. Each selected-range line command shall be undoable as a single edit.
+The editor shall support indenting, outdenting, duplicating, deleting, moving, and toggling comments for the active line or selected line range. `Tab`, `Shift-tab`, `Ctrl-shift-d`, `Ctrl-/`, `Alt-up`, and `Alt-down` shall invoke the corresponding editor actions where the terminal can report those keys. Each selected-range line command shall be undoable as a single edit.
 
 ### R-219 Go To Line
 
@@ -160,7 +160,7 @@ The command palette shall include a save-all command that writes every dirty edi
 
 ### R-221 Editor Selection
 
-The editor shall support text selection with `Shift` plus arrow keys and with mouse drag inside the editor body. Selected text shall be visually highlighted.
+The editor shall support text selection with `Shift` plus arrow keys and with mouse drag inside the editor body. Selected text shall be visually highlighted. The editor shall also support multiple selected occurrence ranges in the active file.
 
 ### R-222 Editor Clipboard
 
@@ -168,7 +168,7 @@ When editor focus is active, `Ctrl-a` shall select the full buffer, `Ctrl-c` sha
 
 ### R-223 Selection Replacement
 
-Typing, paste events, `Enter`, `Backspace`, or `Delete` with an active editor selection shall replace or remove the selected range as a single undoable edit.
+Typing, paste events, `Enter`, `Backspace`, or `Delete` with active editor selections shall replace or remove the selected range or selected occurrence ranges as a single undoable edit.
 
 ### R-224 Editor Auto Pairs and Indentation
 
@@ -225,6 +225,10 @@ The command palette shall include a revert-file action for the active editor tab
 ### R-237 Format Document
 
 `Shift-alt-f` or the command palette shall format the active editor buffer by piping its current text to a configured external formatter for the file type. Supported formatter integrations shall include `rustfmt` for Rust, `prettier` for JavaScript/TypeScript/JSON/CSS/HTML/Markdown/YAML, `gofmt` for Go, `black` for Python, `shfmt` for shell scripts, and `clang-format` for C-family files where those tools are installed. The command shall update the editor buffer as one undoable edit, mark the tab dirty when formatting changes text, preserve the on-disk file until save, and report a clear message when no formatter is configured.
+
+### R-238 Occurrence Selection
+
+`Ctrl-d` or the command palette shall add the next active-file occurrence of the current single-line selection, or the identifier under the editor cursor when no selection exists, to the editor selection set. `Ctrl-shift-l` or the command palette shall select all active-file occurrences. Identifier-based occurrence selection shall respect identifier boundaries. Copy, cut, typing, paste, `Enter`, `Backspace`, and `Delete` shall operate on all selected occurrence ranges as one undoable edit, and the status bar shall show the selected occurrence count.
 
 ## 5. Integrated Terminal Requirements
 

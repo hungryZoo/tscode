@@ -22,7 +22,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 
 ## 3. Non-Goals for the First Prerelease
 
-- Advanced editor behavior such as multi-cursor editing and full VS Code command parity.
+- Full VS Code command parity and extension-host behavior.
 - Language server protocol integration.
 - Debug adapter protocol integration.
 - Extension marketplace compatibility.
@@ -56,6 +56,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
 - As a developer, I can select text with the keyboard or mouse, copy or cut it to both the editor clipboard and a terminal clipboard export where supported, then paste it back into the editor.
+- As a developer, I can use `Ctrl-D` and `Ctrl-Shift-L` to select the next or all active-file occurrences of the current word or selection, then replace the selected occurrences together as one undoable edit.
 - As a developer, I can copy active-file or selected-explorer absolute and workspace-relative paths for use in shell commands, bug reports, or external tools.
 - As a developer, I can use common line editing actions on the current line or selected line range: indent, outdent, duplicate, delete, move, toggle comments, and go to line.
 - As a developer, I can rely on editor conveniences such as auto-indent on newline, bracket/quote auto-pairs, skip-over of existing closing pairs, and paired deletion with Backspace.
@@ -122,7 +123,8 @@ Keyboard fallback:
 - The command palette provides trim-trailing-whitespace for the active editor buffer
 - `Shift-Alt-F` or the command palette formats the active editor buffer with an installed language formatter
 - The command palette provides revert-file for the active editor buffer
-- `Ctrl-L`, `Ctrl-/`, `Ctrl-D`, `Alt-Up`, `Alt-Down`, `Tab`, and `Shift-Tab` provide editor go-to-line and selection-aware line editing actions
+- `Ctrl-D` and `Ctrl-Shift-L` provide occurrence selection for the current word or selection
+- `Ctrl-L`, `Ctrl-/`, `Ctrl-Shift-D`, `Alt-Up`, `Alt-Down`, `Tab`, and `Shift-Tab` provide editor go-to-line and selection-aware line editing actions
 - `Esc` clears transient mode or exits when appropriate
 - `q` exits outside terminal focus; `Ctrl-q` exits globally
 - `Shift-PageUp` and `Shift-PageDown` scroll terminal scrollback when terminal focus is active

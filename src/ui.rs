@@ -90,10 +90,18 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         .active_tab()
         .map(|tab| {
             let dirty = if tab.dirty { " *" } else { "" };
-            let selection = tab
-                .selected_text()
-                .map(|text| format!("  Sel {}", text.chars().count()))
-                .unwrap_or_default();
+            let selection = if let Some(text) = tab.selected_text() {
+                let count = tab.selection_count();
+                if count > 1 {
+                    format!("  Sel {}x/{} chars", count, text.chars().count())
+                } else {
+                    format!("  Sel {}", text.chars().count())
+                }
+            } else if tab.selection_count() > 1 {
+                format!("  Cursors {}", tab.selection_count())
+            } else {
+                String::new()
+            };
             let search = app
                 .active_search_match_count()
                 .map(|count| format!("  Find {count}"))
@@ -271,30 +279,27 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::raw(" "),
         ];
         let mut code_spans = Vec::new();
-        if let Some((selection_start, selection_end)) = line_selection_range(tab, line_index) {
-            let source = &tab.lines[line_index];
-            code_spans.push(Span::raw(take_chars(source, selection_start)));
-            code_spans.push(Span::styled(
-                slice_chars(source, selection_start, selection_end),
-                Style::default().fg(Color::White).bg(ACTIVE_BG),
+        let selection_ranges = line_selection_ranges(tab, line_index);
+        if !selection_ranges.is_empty() {
+            code_spans.extend(selection_line_spans(
+                &tab.lines[line_index],
+                &selection_ranges,
             ));
-            code_spans.push(Span::raw(skip_chars(source, selection_end)));
+        } else if focused {
+            let cursor_cols = line_cursor_cols(tab, line_index);
+            if !cursor_cols.is_empty() {
+                code_spans.extend(cursor_line_spans(&tab.lines[line_index], &cursor_cols));
+            } else if let Some(needle) = &search_needle
+                && let Some(search_spans) = search_line_spans(tab, line_index, needle, focused)
+            {
+                code_spans.extend(search_spans);
+            } else if let Some(parts) = highlighted.get(offset) {
+                code_spans.extend(parts.clone());
+            }
         } else if let Some(needle) = &search_needle
             && let Some(search_spans) = search_line_spans(tab, line_index, needle, focused)
         {
             code_spans.extend(search_spans);
-        } else if focused && line_index == tab.cursor_line {
-            let cursor_col = tab.cursor_col;
-            let source = &tab.lines[line_index];
-            let before = take_chars(source, cursor_col);
-            let cursor = source.chars().nth(cursor_col).unwrap_or(' ');
-            let after = skip_chars(source, cursor_col.saturating_add(1));
-            code_spans.push(Span::raw(before));
-            code_spans.push(Span::styled(
-                cursor.to_string(),
-                Style::default().fg(Color::Black).bg(ACCENT),
-            ));
-            code_spans.push(Span::raw(after));
         } else if let Some(parts) = highlighted.get(offset) {
             code_spans.extend(parts.clone());
         }
@@ -821,10 +826,6 @@ fn crop_spans_by_chars(
     cropped
 }
 
-fn take_chars(s: &str, count: usize) -> String {
-    s.chars().take(count).collect()
-}
-
 fn skip_chars(s: &str, count: usize) -> String {
     s.chars().skip(count).collect()
 }
@@ -836,27 +837,90 @@ fn slice_chars(s: &str, start: usize, end: usize) -> String {
         .collect()
 }
 
-fn line_selection_range(tab: &crate::app::EditorTab, line_index: usize) -> Option<(usize, usize)> {
-    let (start, end) = tab.selection_range()?;
-    let (start_line, start_col) = start;
-    let (end_line, end_col) = end;
-    if line_index < start_line || line_index > end_line {
-        return None;
-    }
-
+fn line_selection_ranges(tab: &crate::app::EditorTab, line_index: usize) -> Vec<(usize, usize)> {
     let line_len = tab.lines[line_index].chars().count();
-    let selection_start = if line_index == start_line {
-        start_col.min(line_len)
-    } else {
-        0
-    };
-    let selection_end = if line_index == end_line {
-        end_col.min(line_len)
-    } else {
-        line_len
-    };
+    tab.selection_ranges()
+        .into_iter()
+        .filter_map(|selection| {
+            let (start_line, start_col) = selection.start;
+            let (end_line, end_col) = selection.end;
+            if line_index < start_line || line_index > end_line {
+                return None;
+            }
 
-    (selection_start != selection_end).then_some((selection_start, selection_end))
+            let selection_start = if line_index == start_line {
+                start_col.min(line_len)
+            } else {
+                0
+            };
+            let selection_end = if line_index == end_line {
+                end_col.min(line_len)
+            } else {
+                line_len
+            };
+
+            (selection_start != selection_end).then_some((selection_start, selection_end))
+        })
+        .collect()
+}
+
+fn selection_line_spans(source: &str, ranges: &[(usize, usize)]) -> Vec<Span<'static>> {
+    let mut ranges = ranges.to_vec();
+    ranges.sort();
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    for (start, end) in ranges {
+        if start > cursor {
+            spans.push(Span::raw(slice_chars(source, cursor, start)));
+        }
+        spans.push(Span::styled(
+            slice_chars(source, start, end),
+            Style::default().fg(Color::White).bg(ACTIVE_BG),
+        ));
+        cursor = end;
+    }
+    let line_len = source.chars().count();
+    if cursor < line_len {
+        spans.push(Span::raw(skip_chars(source, cursor)));
+    }
+    spans
+}
+
+fn line_cursor_cols(tab: &crate::app::EditorTab, line_index: usize) -> Vec<usize> {
+    let line_len = tab.lines[line_index].chars().count();
+    tab.cursor_positions()
+        .into_iter()
+        .filter_map(|(line, col)| (line == line_index).then_some(col.min(line_len)))
+        .collect()
+}
+
+fn cursor_line_spans(source: &str, cursor_cols: &[usize]) -> Vec<Span<'static>> {
+    let mut cursor_cols = cursor_cols.to_vec();
+    cursor_cols.sort();
+    cursor_cols.dedup();
+    let chars = source.chars().collect::<Vec<_>>();
+    let mut spans = Vec::new();
+    let mut cursor_index = 0usize;
+    for (index, c) in chars.iter().enumerate() {
+        if cursor_index < cursor_cols.len() && cursor_cols[cursor_index] == index {
+            spans.push(Span::styled(
+                c.to_string(),
+                Style::default().fg(Color::Black).bg(ACCENT),
+            ));
+            while cursor_index < cursor_cols.len() && cursor_cols[cursor_index] == index {
+                cursor_index += 1;
+            }
+        } else {
+            spans.push(Span::raw(c.to_string()));
+        }
+    }
+    if cursor_cols.iter().any(|col| *col >= chars.len()) {
+        spans.push(Span::styled(
+            " ",
+            Style::default().fg(Color::Black).bg(ACCENT),
+        ));
+    }
+    spans
 }
 
 fn search_line_spans(

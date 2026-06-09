@@ -143,7 +143,32 @@ struct EditorSnapshot {
     lines: Vec<String>,
     cursor_line: usize,
     cursor_col: usize,
+    selection_anchor: Option<(usize, usize)>,
+    extra_selections: Vec<EditorSelection>,
+    extra_cursors: Vec<(usize, usize)>,
     trailing_newline: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorSelection {
+    pub start: (usize, usize),
+    pub end: (usize, usize),
+}
+
+type EditorReplacement = ((usize, usize), (usize, usize), String);
+
+impl EditorSelection {
+    fn new(start: (usize, usize), end: (usize, usize)) -> Option<Self> {
+        let selection = if start <= end {
+            Self { start, end }
+        } else {
+            Self {
+                start: end,
+                end: start,
+            }
+        };
+        (selection.start != selection.end).then_some(selection)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +181,8 @@ pub struct EditorTab {
     pub cursor_line: usize,
     pub cursor_col: usize,
     pub selection_anchor: Option<(usize, usize)>,
+    pub extra_selections: Vec<EditorSelection>,
+    pub extra_cursors: Vec<(usize, usize)>,
     pub dirty: bool,
     trailing_newline: bool,
     undo_stack: Vec<EditorSnapshot>,
@@ -183,6 +210,8 @@ impl EditorTab {
             cursor_line: 0,
             cursor_col: 0,
             selection_anchor: None,
+            extra_selections: Vec::new(),
+            extra_cursors: Vec::new(),
             dirty: false,
             trailing_newline,
             undo_stack: Vec::new(),
@@ -207,6 +236,8 @@ impl EditorTab {
         self.scroll = self.scroll.min(self.lines.len().saturating_sub(1));
         self.horizontal_scroll = 0;
         self.selection_anchor = None;
+        self.extra_selections.clear();
+        self.extra_cursors.clear();
         self.dirty = false;
         self.undo_stack.clear();
         self.redo_stack.clear();
@@ -226,6 +257,8 @@ impl EditorTab {
         self.scroll = self.scroll.min(self.lines.len().saturating_sub(1));
         self.horizontal_scroll = 0;
         self.selection_anchor = None;
+        self.extra_selections.clear();
+        self.extra_cursors.clear();
         self.dirty = true;
         true
     }
@@ -237,14 +270,19 @@ impl EditorTab {
     }
 
     fn insert_char(&mut self, c: char) {
-        if self.selection_range().is_none() && self.char_at_cursor() == Some(c) && is_pair_close(c)
+        if !self.has_selection()
+            && !self.has_extra_cursors()
+            && self.char_at_cursor() == Some(c)
+            && is_pair_close(c)
         {
             self.cursor_col += 1;
             return;
         }
 
-        if let Some(close) = auto_pair_close(c) {
-            if self.selection_range().is_some() {
+        if !self.has_extra_cursors()
+            && let Some(close) = auto_pair_close(c)
+        {
+            if self.has_selection() {
                 self.wrap_selection_with(c, close);
                 return;
             }
@@ -257,8 +295,13 @@ impl EditorTab {
             return;
         }
 
-        if self.selection_range().is_some() {
+        if self.has_selection() {
             self.replace_selection_with(&c.to_string());
+            return;
+        }
+
+        if self.has_extra_cursors() {
+            self.insert_text_at_cursors(&c.to_string());
             return;
         }
 
@@ -272,8 +315,13 @@ impl EditorTab {
             return;
         }
 
-        if self.selection_range().is_some() {
+        if self.has_selection() {
             self.replace_selection_with(text);
+            return;
+        }
+
+        if self.has_extra_cursors() {
+            self.insert_text_at_cursors(text);
             return;
         }
 
@@ -301,8 +349,13 @@ impl EditorTab {
     }
 
     fn newline(&mut self) {
-        if self.selection_range().is_some() {
+        if self.has_selection() {
             self.replace_selection_with("\n");
+            return;
+        }
+
+        if self.has_extra_cursors() {
+            self.insert_text_at_cursors("\n");
             return;
         }
 
@@ -610,10 +663,14 @@ impl EditorTab {
 
     fn move_cursor_with_selection(&mut self, line_delta: isize, col_delta: isize, selecting: bool) {
         let previous = self.cursor_position();
+        if selecting {
+            self.extra_selections.clear();
+            self.extra_cursors.clear();
+        }
         if selecting && self.selection_anchor.is_none() {
             self.selection_anchor = Some(previous);
         } else if !selecting {
-            self.selection_anchor = None;
+            self.clear_selection();
         }
 
         self.cursor_line =
@@ -625,10 +682,14 @@ impl EditorTab {
 
     fn move_word(&mut self, forward: bool, selecting: bool) {
         let previous = self.cursor_position();
+        if selecting {
+            self.extra_selections.clear();
+            self.extra_cursors.clear();
+        }
         if selecting && self.selection_anchor.is_none() {
             self.selection_anchor = Some(previous);
         } else if !selecting {
-            self.selection_anchor = None;
+            self.clear_selection();
         }
 
         let (line, col) = if forward {
@@ -641,11 +702,13 @@ impl EditorTab {
     }
 
     fn set_cursor(&mut self, line: usize, col: usize) {
-        self.selection_anchor = None;
+        self.clear_selection();
         self.set_cursor_raw(line, col);
     }
 
     fn set_cursor_selecting(&mut self, line: usize, col: usize) {
+        self.extra_selections.clear();
+        self.extra_cursors.clear();
         if self.selection_anchor.is_none() {
             self.selection_anchor = Some(self.cursor_position());
         }
@@ -661,6 +724,14 @@ impl EditorTab {
 
     fn cursor_position(&self) -> (usize, usize) {
         (self.cursor_line, self.cursor_col)
+    }
+
+    pub fn cursor_positions(&self) -> Vec<(usize, usize)> {
+        let mut cursors = self.extra_cursors.clone();
+        cursors.push(self.cursor_position());
+        cursors.sort();
+        cursors.dedup();
+        cursors
     }
 
     fn current_line_mut(&mut self) -> &mut String {
@@ -697,8 +768,40 @@ impl EditorTab {
         }
     }
 
+    pub fn selection_ranges(&self) -> Vec<EditorSelection> {
+        let mut ranges = Vec::new();
+        if let Some((start, end)) = self.selection_range()
+            && let Some(selection) = EditorSelection::new(start, end)
+        {
+            ranges.push(selection);
+        }
+        ranges.extend(self.extra_selections.iter().copied());
+        normalize_editor_selections(ranges)
+    }
+
+    pub fn selection_count(&self) -> usize {
+        let selected = self.selection_ranges().len();
+        if selected > 0 {
+            selected
+        } else if self.has_extra_cursors() {
+            self.extra_cursors.len() + 1
+        } else {
+            0
+        }
+    }
+
+    fn has_selection(&self) -> bool {
+        !self.selection_ranges().is_empty()
+    }
+
+    fn has_extra_cursors(&self) -> bool {
+        !self.extra_cursors.is_empty()
+    }
+
     fn clear_selection(&mut self) {
         self.selection_anchor = None;
+        self.extra_selections.clear();
+        self.extra_cursors.clear();
     }
 
     fn clear_collapsed_selection(&mut self) {
@@ -709,6 +812,8 @@ impl EditorTab {
 
     fn select_all(&mut self) {
         self.selection_anchor = Some((0, 0));
+        self.extra_selections.clear();
+        self.extra_cursors.clear();
         self.cursor_line = self.lines.len().saturating_sub(1);
         self.cursor_col = self.lines[self.cursor_line].chars().count();
     }
@@ -729,48 +834,71 @@ impl EditorTab {
         let start = start.min(self.lines.len().saturating_sub(1));
         let end = end.min(self.lines.len().saturating_sub(1));
         self.selection_anchor = Some((start, 0));
+        self.extra_selections.clear();
+        self.extra_cursors.clear();
         self.cursor_line = end;
         self.cursor_col = self.lines[end].chars().count();
     }
 
     pub fn selected_text(&self) -> Option<String> {
-        let (start, end) = self.selection_range()?;
-        Some(self.text_in_range(start, end))
+        let ranges = self.selection_ranges();
+        if ranges.is_empty() {
+            return None;
+        }
+        Some(
+            ranges
+                .into_iter()
+                .map(|range| self.text_in_range(range.start, range.end))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
     }
 
     fn delete_selection(&mut self) -> Option<String> {
-        let (start, end) = self.selection_range()?;
-        let deleted = self.text_in_range(start, end);
+        let ranges = self.selection_ranges();
+        if ranges.is_empty() {
+            return None;
+        }
+        let deleted = ranges
+            .iter()
+            .map(|range| self.text_in_range(range.start, range.end))
+            .collect::<Vec<_>>()
+            .join("\n");
         self.push_undo();
-        self.delete_range_raw(start, end);
+        self.replace_ranges_raw(&ranges, "", true);
         self.dirty = true;
         Some(deleted)
     }
 
     fn replace_selection_with(&mut self, text: &str) {
-        let Some((start, end)) = self.selection_range() else {
+        let ranges = self.selection_ranges();
+        if ranges.is_empty() {
             return;
-        };
+        }
         self.push_undo();
-        self.delete_range_raw(start, end);
-        self.insert_text_raw(text);
+        self.replace_ranges_raw(&ranges, text, true);
         self.dirty = true;
     }
 
     fn wrap_selection_with(&mut self, open: char, close: char) {
-        let Some((start, end)) = self.selection_range() else {
+        let ranges = self.selection_ranges();
+        if ranges.is_empty() {
             return;
         };
-        let selected = self.text_in_range(start, end);
         self.push_undo();
-        self.delete_range_raw(start, end);
-        self.insert_char_raw(open);
-        self.insert_text_raw(&selected);
-        self.insert_char_raw(close);
-        let open_width = open.len_utf8();
-        self.selection_anchor = Some((start.0, start.1 + open_width));
-        self.cursor_line = end.0;
-        self.cursor_col = end.1 + open_width;
+        let replacements = ranges
+            .iter()
+            .map(|range| {
+                let selected = self.text_in_range(range.start, range.end);
+                (range.start, range.end, format!("{open}{selected}{close}"))
+            })
+            .collect::<Vec<_>>();
+        self.replace_distinct_ranges_raw(&replacements, false);
+        let first = ranges[0];
+        let open_width = open.to_string().chars().count();
+        self.selection_anchor = Some((first.start.0, first.start.1 + open_width));
+        self.cursor_line = first.end.0;
+        self.cursor_col = first.end.1 + open_width;
         self.dirty = true;
     }
 
@@ -824,6 +952,70 @@ impl EditorTab {
         count
     }
 
+    fn add_next_occurrence_selection(&mut self) -> Option<(usize, String)> {
+        let (needle, whole_word, primary) = self.occurrence_seed()?;
+        if self.selection_range().is_none() {
+            self.selection_anchor = Some(primary.start);
+            self.cursor_line = primary.end.0;
+            self.cursor_col = primary.end.1;
+        }
+
+        let selected = self.selection_ranges();
+        let after = selected
+            .last()
+            .map(|selection| selection.end)
+            .unwrap_or(primary.end);
+        let next = find_next_occurrence_after(&self.lines, &needle, after, whole_word, &selected)?;
+        self.extra_selections = normalize_editor_selections(selected);
+        self.selection_anchor = Some(next.start);
+        self.cursor_line = next.end.0;
+        self.cursor_col = next.end.1;
+        Some((self.selection_count(), needle))
+    }
+
+    fn select_all_occurrences(&mut self) -> Option<(usize, String)> {
+        let (needle, whole_word, primary) = self.occurrence_seed()?;
+        let mut ranges = occurrence_ranges(&self.lines, &needle, whole_word);
+        if ranges.is_empty() {
+            ranges.push(primary);
+        }
+        let primary_index = ranges
+            .iter()
+            .position(|selection| *selection == primary)
+            .unwrap_or(0);
+        let primary = ranges.remove(primary_index);
+        self.selection_anchor = Some(primary.start);
+        self.cursor_line = primary.end.0;
+        self.cursor_col = primary.end.1;
+        self.extra_selections = normalize_editor_selections(ranges);
+        Some((self.selection_count(), needle))
+    }
+
+    fn occurrence_seed(&self) -> Option<(String, bool, EditorSelection)> {
+        if let Some((start, end)) = self.selection_range() {
+            let selected = self.text_in_range(start, end);
+            if selected.is_empty() || selected.contains('\n') {
+                return None;
+            }
+            return Some((
+                selected.clone(),
+                is_identifier_token(&selected),
+                EditorSelection { start, end },
+            ));
+        }
+
+        let line = self.lines.get(self.cursor_line)?;
+        let (start_col, end_col, token) = identifier_range_at_char(line, self.cursor_col)?;
+        Some((
+            token,
+            true,
+            EditorSelection {
+                start: (self.cursor_line, start_col),
+                end: (self.cursor_line, end_col),
+            },
+        ))
+    }
+
     fn text_in_range(&self, start: (usize, usize), end: (usize, usize)) -> String {
         let (start_line, start_col) = start;
         let (end_line, end_col) = end;
@@ -863,6 +1055,87 @@ impl EditorTab {
         self.clear_selection();
     }
 
+    fn insert_text_at_cursors(&mut self, text: &str) {
+        let mut replacements = self
+            .extra_cursors
+            .iter()
+            .map(|cursor| (*cursor, *cursor, text.to_owned()))
+            .collect::<Vec<_>>();
+        replacements.push((
+            self.cursor_position(),
+            self.cursor_position(),
+            text.to_owned(),
+        ));
+        self.push_undo();
+        self.replace_distinct_ranges_raw(&replacements, !text.contains('\n'));
+        self.dirty = true;
+    }
+
+    fn replace_ranges_raw(
+        &mut self,
+        ranges: &[EditorSelection],
+        replacement: &str,
+        keep_cursors: bool,
+    ) {
+        let replacements = ranges
+            .iter()
+            .map(|range| (range.start, range.end, replacement.to_owned()))
+            .collect::<Vec<_>>();
+        self.replace_distinct_ranges_raw(
+            &replacements,
+            keep_cursors && !replacement.contains('\n'),
+        );
+    }
+
+    fn replace_distinct_ranges_raw(
+        &mut self,
+        replacements: &[EditorReplacement],
+        keep_cursors: bool,
+    ) {
+        if replacements.is_empty() {
+            return;
+        }
+
+        let mut ordered = replacements.to_vec();
+        ordered.sort_by_key(|replacement| std::cmp::Reverse(replacement.0));
+        let mut final_cursors = Vec::new();
+        let first_start = ordered
+            .iter()
+            .map(|(start, _, _)| *start)
+            .min()
+            .unwrap_or((0, 0));
+        let first_replacement = ordered
+            .iter()
+            .find(|(start, _, _)| *start == first_start)
+            .map(|(_, _, replacement)| replacement.clone())
+            .unwrap_or_default();
+
+        for (start, end, replacement) in ordered {
+            if keep_cursors {
+                shift_cursor_positions_for_replacement(
+                    &mut final_cursors,
+                    start,
+                    end,
+                    &replacement,
+                );
+                final_cursors.push(replacement_end_position(start, &replacement));
+            }
+            self.delete_range_raw(start, end);
+            self.insert_text_raw(&replacement);
+        }
+
+        let final_cursor = replacement_end_position(first_start, &first_replacement);
+        self.clear_selection();
+        if keep_cursors && !final_cursors.is_empty() {
+            final_cursors.sort();
+            final_cursors.dedup();
+            self.set_cursor_raw(final_cursors[0].0, final_cursors[0].1);
+            self.extra_cursors = final_cursors.into_iter().skip(1).collect();
+        } else {
+            self.set_cursor_raw(final_cursor.0, final_cursor.1);
+        }
+    }
+
     fn undo(&mut self) -> bool {
         let Some(snapshot) = self.undo_stack.pop() else {
             return false;
@@ -888,6 +1161,9 @@ impl EditorTab {
             lines: self.lines.clone(),
             cursor_line: self.cursor_line,
             cursor_col: self.cursor_col,
+            selection_anchor: self.selection_anchor,
+            extra_selections: self.extra_selections.clone(),
+            extra_cursors: self.extra_cursors.clone(),
             trailing_newline: self.trailing_newline,
         }
     }
@@ -901,8 +1177,11 @@ impl EditorTab {
         self.trailing_newline = snapshot.trailing_newline;
         self.cursor_line = snapshot.cursor_line.min(self.lines.len().saturating_sub(1));
         self.cursor_col = snapshot.cursor_col;
+        self.selection_anchor = snapshot.selection_anchor;
+        self.extra_selections = snapshot.extra_selections;
+        self.extra_cursors = snapshot.extra_cursors;
         self.clamp_cursor_col();
-        self.clear_selection();
+        self.clamp_selections();
     }
 
     fn push_undo(&mut self) {
@@ -911,6 +1190,40 @@ impl EditorTab {
             self.undo_stack.remove(0);
         }
         self.redo_stack.clear();
+    }
+
+    fn clamp_selections(&mut self) {
+        if let Some((line, col)) = self.selection_anchor {
+            let line = line.min(self.lines.len().saturating_sub(1));
+            let col = col.min(self.lines[line].chars().count());
+            self.selection_anchor = Some((line, col));
+        }
+        self.extra_selections = normalize_editor_selections(
+            self.extra_selections
+                .iter()
+                .filter_map(|selection| {
+                    let start_line = selection.start.0.min(self.lines.len().saturating_sub(1));
+                    let end_line = selection.end.0.min(self.lines.len().saturating_sub(1));
+                    let start_col = selection
+                        .start
+                        .1
+                        .min(self.lines[start_line].chars().count());
+                    let end_col = selection.end.1.min(self.lines[end_line].chars().count());
+                    EditorSelection::new((start_line, start_col), (end_line, end_col))
+                })
+                .collect(),
+        );
+        self.extra_cursors = self
+            .extra_cursors
+            .iter()
+            .map(|(line, col)| {
+                let line = (*line).min(self.lines.len().saturating_sub(1));
+                let col = (*col).min(self.lines[line].chars().count());
+                (line, col)
+            })
+            .collect();
+        self.extra_cursors.sort();
+        self.extra_cursors.dedup();
     }
 }
 
@@ -992,6 +1305,8 @@ pub enum CommandAction {
     ReplaceInFile,
     ReplaceAllInFile,
     GotoLine,
+    AddSelectionToNextMatch,
+    SelectAllOccurrences,
     DuplicateLine,
     DeleteLine,
     MoveLineUp,
@@ -1490,6 +1805,10 @@ impl App {
                     self.start_prompt(PromptKind::Search, &initial);
                 }
                 KeyCode::Char('h') => self.start_replace_prompt(false),
+                KeyCode::Char('L') => self.select_all_occurrences_in_active_tab(),
+                KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.select_all_occurrences_in_active_tab()
+                }
                 KeyCode::Char('l') => self.start_prompt(PromptKind::GotoLine, ""),
                 KeyCode::Char(']') => {
                     if let Err(error) = self.go_to_definition_under_cursor() {
@@ -1502,7 +1821,11 @@ impl App {
                     }
                 }
                 KeyCode::Char('/') => self.toggle_active_line_comment(),
-                KeyCode::Char('d') => self.duplicate_active_line(),
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.duplicate_active_line()
+                }
+                KeyCode::Char('D') => self.duplicate_active_line(),
+                KeyCode::Char('d') => self.add_selection_to_next_match(),
                 KeyCode::Char('w') => self.close_active_tab(),
                 KeyCode::Char('z') => self.undo_active_tab(),
                 KeyCode::Char('y') => self.redo_active_tab(),
@@ -1843,6 +2166,60 @@ fn add_signed(value: usize, amount: isize) -> usize {
     }
 }
 
+fn normalize_editor_selections(mut ranges: Vec<EditorSelection>) -> Vec<EditorSelection> {
+    ranges.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
+    let mut normalized = Vec::new();
+    for range in ranges {
+        if range.start == range.end {
+            continue;
+        }
+        if normalized
+            .last()
+            .is_some_and(|previous: &EditorSelection| range.start < previous.end)
+        {
+            continue;
+        }
+        if normalized.last() == Some(&range) {
+            continue;
+        }
+        normalized.push(range);
+    }
+    normalized
+}
+
+fn replacement_end_position(start: (usize, usize), replacement: &str) -> (usize, usize) {
+    let normalized = replacement.replace("\r\n", "\n").replace('\r', "\n");
+    let mut parts = normalized.split('\n').collect::<Vec<_>>();
+    if parts.len() <= 1 {
+        return (start.0, start.1 + normalized.chars().count());
+    }
+    let last = parts.pop().unwrap_or_default();
+    (start.0 + parts.len(), last.chars().count())
+}
+
+fn shift_cursor_positions_for_replacement(
+    cursors: &mut [(usize, usize)],
+    start: (usize, usize),
+    end: (usize, usize),
+    replacement: &str,
+) {
+    if replacement.contains('\n') || start.0 != end.0 {
+        return;
+    }
+
+    let removed = end.1.saturating_sub(start.1);
+    let inserted = replacement.chars().count();
+    for cursor in cursors {
+        if cursor.0 == start.0 && cursor.1 >= end.1 {
+            if inserted >= removed {
+                cursor.1 = cursor.1.saturating_add(inserted - removed);
+            } else {
+                cursor.1 = cursor.1.saturating_sub(removed - inserted);
+            }
+        }
+    }
+}
+
 fn editor_code_width(tab: &EditorTab, editor_width: usize) -> usize {
     editor_width.saturating_sub(editor_gutter_width(tab.lines.len()))
 }
@@ -2138,9 +2515,21 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::GotoLine,
         },
         CommandSpec {
+            label: "Add Selection to Next Match",
+            detail: "Select the next occurrence of the current word or selection in the active file",
+            shortcut: "Ctrl-D",
+            action: CommandAction::AddSelectionToNextMatch,
+        },
+        CommandSpec {
+            label: "Select All Occurrences",
+            detail: "Select every occurrence of the current word or selection in the active file",
+            shortcut: "Ctrl-Shift-L",
+            action: CommandAction::SelectAllOccurrences,
+        },
+        CommandSpec {
             label: "Duplicate Line",
             detail: "Duplicate the current editor line",
-            shortcut: "Ctrl-D",
+            shortcut: "Ctrl-Shift-D",
             action: CommandAction::DuplicateLine,
         },
         CommandSpec {
@@ -3436,6 +3825,40 @@ impl App {
         }
     }
 
+    fn add_selection_to_next_match(&mut self) {
+        let Some(tab) = self.active_tab_mut() else {
+            self.message = Some("no active editor tab".to_owned());
+            return;
+        };
+        match tab.add_next_occurrence_selection() {
+            Some((count, needle)) => {
+                self.search_needle = Some(needle.clone());
+                self.ensure_editor_cursor_visible();
+                self.message = Some(format!("selected {count} occurrence(s) of '{needle}'"));
+            }
+            None => {
+                self.message = Some("no next occurrence for current word or selection".to_owned());
+            }
+        }
+    }
+
+    fn select_all_occurrences_in_active_tab(&mut self) {
+        let Some(tab) = self.active_tab_mut() else {
+            self.message = Some("no active editor tab".to_owned());
+            return;
+        };
+        match tab.select_all_occurrences() {
+            Some((count, needle)) => {
+                self.search_needle = Some(needle.clone());
+                self.ensure_editor_cursor_visible();
+                self.message = Some(format!("selected all {count} occurrence(s) of '{needle}'"));
+            }
+            None => {
+                self.message = Some("no word or single-line selection to select".to_owned());
+            }
+        }
+    }
+
     fn copy_editor_selection(&mut self) {
         let Some(text) = self.active_tab().and_then(EditorTab::selected_text) else {
             self.message = Some("no editor selection to copy".to_owned());
@@ -3789,6 +4212,8 @@ impl App {
             CommandAction::ReplaceInFile => self.start_replace_prompt(false),
             CommandAction::ReplaceAllInFile => self.start_replace_prompt(true),
             CommandAction::GotoLine => self.start_prompt(PromptKind::GotoLine, ""),
+            CommandAction::AddSelectionToNextMatch => self.add_selection_to_next_match(),
+            CommandAction::SelectAllOccurrences => self.select_all_occurrences_in_active_tab(),
             CommandAction::DuplicateLine => self.duplicate_active_line(),
             CommandAction::DeleteLine => self.delete_active_line(),
             CommandAction::MoveLineUp => self.move_active_line_up(),
@@ -4256,6 +4681,67 @@ fn count_tab_matches(tab: &EditorTab, needle: &str) -> usize {
         .iter()
         .map(|line| line.matches(needle).count())
         .sum()
+}
+
+fn occurrence_ranges(lines: &[String], needle: &str, whole_word: bool) -> Vec<EditorSelection> {
+    if needle.is_empty() || needle.contains('\n') {
+        return Vec::new();
+    }
+
+    let mut ranges = Vec::new();
+    for (line_index, line) in lines.iter().enumerate() {
+        for (start, end) in line_occurrence_ranges(line, needle, whole_word) {
+            ranges.push(EditorSelection {
+                start: (line_index, start),
+                end: (line_index, end),
+            });
+        }
+    }
+    ranges
+}
+
+fn find_next_occurrence_after(
+    lines: &[String],
+    needle: &str,
+    after: (usize, usize),
+    whole_word: bool,
+    excluded: &[EditorSelection],
+) -> Option<EditorSelection> {
+    let ranges = occurrence_ranges(lines, needle, whole_word);
+    ranges
+        .iter()
+        .copied()
+        .find(|range| range.start >= after && !excluded.contains(range))
+        .or_else(|| {
+            ranges
+                .iter()
+                .copied()
+                .find(|range| !excluded.contains(range))
+        })
+}
+
+fn line_occurrence_ranges(line: &str, needle: &str, whole_word: bool) -> Vec<(usize, usize)> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ranges = Vec::new();
+    let mut start_byte = 0usize;
+    while start_byte <= line.len() {
+        let Some(found) = line[start_byte..].find(needle) else {
+            break;
+        };
+        let byte = start_byte + found;
+        let end_byte = byte + needle.len();
+        if !whole_word || has_identifier_boundaries(line, byte, needle.len()) {
+            ranges.push((
+                line[..byte].chars().count(),
+                line[..end_byte].chars().count(),
+            ));
+        }
+        start_byte = end_byte;
+    }
+    ranges
 }
 
 fn line_find_from(line: &str, needle: &str, char_col: usize) -> Option<usize> {
@@ -5076,6 +5562,10 @@ fn parse_cargo_edition(text: &str) -> Option<String> {
 }
 
 fn identifier_at_char(line: &str, char_col: usize) -> Option<String> {
+    identifier_range_at_char(line, char_col).map(|(_, _, token)| token)
+}
+
+fn identifier_range_at_char(line: &str, char_col: usize) -> Option<(usize, usize, String)> {
     let chars = line.chars().collect::<Vec<_>>();
     if chars.is_empty() {
         return None;
@@ -5099,7 +5589,7 @@ fn identifier_at_char(line: &str, char_col: usize) -> Option<String> {
         end += 1;
     }
     let token = chars[start..end].iter().collect::<String>();
-    is_identifier_token(&token).then_some(token)
+    is_identifier_token(&token).then_some((start, end, token))
 }
 
 fn is_identifier_token(token: &str) -> bool {
@@ -5634,6 +6124,77 @@ mod tests {
     }
 
     #[test]
+    fn editor_add_next_occurrence_replaces_multiple_selections_and_undoes() {
+        let path = temp_file("multi-select.txt");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "alpha beta alpha alphabet alpha\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.set_cursor(0, 2);
+
+        let (count, needle) = tab.add_next_occurrence_selection().unwrap();
+        assert_eq!(needle, "alpha");
+        assert_eq!(count, 2);
+        assert_eq!(tab.selected_text().as_deref(), Some("alpha\nalpha"));
+        assert_eq!(
+            tab.selection_ranges(),
+            vec![
+                EditorSelection {
+                    start: (0, 0),
+                    end: (0, 5)
+                },
+                EditorSelection {
+                    start: (0, 11),
+                    end: (0, 16)
+                }
+            ]
+        );
+
+        tab.insert_text("gamma");
+        assert_eq!(tab.lines, vec!["gamma beta gamma alphabet alpha"]);
+        assert!(tab.dirty);
+        assert_eq!(tab.selection_count(), 2);
+
+        tab.insert_text("_x");
+        assert_eq!(tab.lines, vec!["gamma_x beta gamma_x alphabet alpha"]);
+        assert_eq!(tab.selection_count(), 2);
+
+        assert!(tab.undo());
+        assert_eq!(tab.lines, vec!["gamma beta gamma alphabet alpha"]);
+        assert_eq!(tab.selection_count(), 2);
+
+        assert!(tab.undo());
+        assert_eq!(tab.lines, vec!["alpha beta alpha alphabet alpha"]);
+        assert_eq!(tab.selection_count(), 2);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn editor_select_all_occurrences_respects_identifier_boundaries() {
+        let path = temp_file("multi-select-all.rs");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "let alpha = alpha + alphabet + alpha;\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.set_cursor(0, 5);
+
+        let (count, needle) = tab.select_all_occurrences().unwrap();
+        assert_eq!(needle, "alpha");
+        assert_eq!(count, 3);
+        assert_eq!(tab.selected_text().as_deref(), Some("alpha\nalpha\nalpha"));
+
+        tab.insert_text("value");
+        assert_eq!(tab.lines, vec!["let value = value + alphabet + value;"]);
+        assert_eq!(tab.selection_count(), 3);
+
+        tab.insert_char('!');
+        assert_eq!(tab.lines, vec!["let value! = value! + alphabet + value!;"]);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn editor_auto_pairs_skip_backspace_and_wrap_selection() {
         let path = temp_file("pairs.rs");
         let _ = fs::remove_file(&path);
@@ -6019,6 +6580,18 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ReplaceAllInFile))
+        );
+        let commands = app.command_palette_items("next match");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::AddSelectionToNextMatch))
+        );
+        let commands = app.command_palette_items("all occurrences");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::SelectAllOccurrences))
         );
         let commands = app.command_palette_items("trim whitespace");
         assert!(
