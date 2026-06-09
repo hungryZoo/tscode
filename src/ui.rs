@@ -7,7 +7,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, FocusPanel, HoverTarget};
+use crate::app::{App, ClipboardAction, FocusPanel, HoverTarget};
 
 const TITLE_BG: Color = Color::Rgb(32, 40, 54);
 const PANEL_BG: Color = Color::Rgb(13, 17, 23);
@@ -96,11 +96,23 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         .as_ref()
         .map(|message| format!("  {message}"))
         .unwrap_or_default();
+    let clipboard = app
+        .explorer_clipboard
+        .as_ref()
+        .map(|clipboard| {
+            let action = match clipboard.action {
+                ClipboardAction::Copy => "copy",
+                ClipboardAction::Cut => "cut",
+            };
+            format!("  clipboard:{action} {}", display_name(&clipboard.path))
+        })
+        .unwrap_or_default();
     let text = format!(
-        " {} tabs:{}  hover:{}{}{} ",
+        " {} tabs:{}  hover:{}{}{}{} ",
         active,
         app.tabs.len(),
         hover_name(&app.hover),
+        clipboard,
         message,
         error
     );
@@ -115,7 +127,7 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Explorer;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Explorer  n file  N dir  e rename  D delete  r refresh ")
+        .title(" Explorer  n/N new  e rename  D delete  c copy  x cut  p paste  y dup  o reveal  r refresh ")
         .border_style(border_style(focused));
     let inner = block.inner(area);
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), area);
@@ -432,4 +444,11 @@ fn take_chars(s: &str, count: usize) -> String {
 
 fn skip_chars(s: &str, count: usize) -> String {
     s.chars().skip(count).collect()
+}
+
+fn display_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| path.to_str().unwrap_or("[path]"))
+        .to_owned()
 }

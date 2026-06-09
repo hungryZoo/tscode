@@ -93,6 +93,19 @@ impl FsTree {
         self.clamp_selection();
     }
 
+    pub fn reveal(&mut self, path: &Path) -> Result<()> {
+        expand_to_path(&mut self.root, path)?;
+        self.clamp_selection();
+        if let Some(index) = self
+            .visible_nodes()
+            .iter()
+            .position(|node| node.path == path)
+        {
+            self.selected = index;
+        }
+        Ok(())
+    }
+
     fn clamp_selection(&mut self) {
         let len = self.visible_nodes().len();
         self.selected = self.selected.min(len.saturating_sub(1));
@@ -133,6 +146,30 @@ fn find_mut<'a>(node: &'a mut FsNode, path: &Path) -> Option<&'a mut FsNode> {
     }
 
     None
+}
+
+fn expand_to_path(node: &mut FsNode, path: &Path) -> Result<bool> {
+    if node.path == path {
+        return Ok(true);
+    }
+    if !node.is_dir || !path.starts_with(&node.path) {
+        return Ok(false);
+    }
+
+    if node.children.is_none() {
+        load_children(node)?;
+    }
+    node.expanded = true;
+
+    if let Some(children) = &mut node.children {
+        for child in children {
+            if expand_to_path(child, path)? {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
 }
 
 fn load_children(node: &mut FsNode) -> Result<()> {

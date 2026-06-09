@@ -375,6 +375,18 @@ pub struct QuickPanel {
     pub scroll: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipboardAction {
+    Copy,
+    Cut,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExplorerClipboard {
+    pub action: ClipboardAction,
+    pub path: PathBuf,
+}
+
 pub struct App {
     pub root: PathBuf,
     pub explorer: FsTree,
@@ -395,6 +407,7 @@ pub struct App {
     pub search_needle: Option<String>,
     pub quick_panel: Option<QuickPanel>,
     pub quick_panel_height: usize,
+    pub explorer_clipboard: Option<ExplorerClipboard>,
 }
 
 impl App {
@@ -417,10 +430,11 @@ impl App {
             terminal_height: 0,
             last_error: None,
             prompt: None,
-            message: Some("Tab focus | Explorer: n file, N dir, e rename, D delete | Editor: Ctrl-S save, Ctrl-Z/Y undo/redo | Terminal: Ctrl-Q quit".to_owned()),
+            message: Some("Tab focus | Explorer: n/N new, c/x/p copy-cut-paste, y duplicate, o reveal | Editor: Ctrl-S save | Terminal: Ctrl-Q quit".to_owned()),
             search_needle: None,
             quick_panel: None,
             quick_panel_height: 0,
+            explorer_clipboard: None,
         })
     }
 
@@ -556,6 +570,11 @@ impl App {
             KeyCode::Char('N') => self.start_prompt(PromptKind::NewDir, ""),
             KeyCode::Char('e') => self.prompt_rename(),
             KeyCode::Char('D') => self.prompt_delete(),
+            KeyCode::Char('c') => self.copy_selected_path(),
+            KeyCode::Char('x') => self.cut_selected_path(),
+            KeyCode::Char('p') => self.paste_into_selected()?,
+            KeyCode::Char('y') => self.duplicate_selected()?,
+            KeyCode::Char('o') => self.reveal_active_file()?,
             _ => {}
         }
 
@@ -959,6 +978,112 @@ impl App {
         self.start_prompt(PromptKind::Delete(node.path), "");
     }
 
+    fn copy_selected_path(&mut self) {
+        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+            return;
+        };
+        self.explorer_clipboard = Some(ExplorerClipboard {
+            action: ClipboardAction::Copy,
+            path: node.path.clone(),
+        });
+        self.message = Some(format!("copied {}", node.path.display()));
+    }
+
+    fn cut_selected_path(&mut self) {
+        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+            return;
+        };
+        if node.path == self.root {
+            self.message = Some("refusing to cut workspace root".to_owned());
+            return;
+        }
+        self.explorer_clipboard = Some(ExplorerClipboard {
+            action: ClipboardAction::Cut,
+            path: node.path.clone(),
+        });
+        self.message = Some(format!("cut {}", node.path.display()));
+    }
+
+    fn paste_into_selected(&mut self) -> Result<()> {
+        let Some(clipboard) = self.explorer_clipboard.clone() else {
+            self.message = Some("clipboard empty".to_owned());
+            return Ok(());
+        };
+        let source = clipboard.path;
+        if !source.exists() {
+            self.message = Some("clipboard source no longer exists".to_owned());
+            self.explorer_clipboard = None;
+            return Ok(());
+        }
+
+        let target_dir = self.selected_base_dir();
+        let Some(name) = source.file_name() else {
+            return Ok(());
+        };
+        let destination = unique_copy_path(&target_dir.join(name));
+        if source.is_dir() && target_dir.starts_with(&source) {
+            self.message = Some("cannot paste a folder into itself".to_owned());
+            return Ok(());
+        }
+
+        let success_message;
+        match clipboard.action {
+            ClipboardAction::Copy => {
+                copy_path_recursive(&source, &destination)?;
+                success_message = format!("copied to {}", destination.display());
+            }
+            ClipboardAction::Cut => {
+                fs::rename(&source, &destination)?;
+                self.update_open_tabs_for_move(&source, &destination);
+                self.explorer_clipboard = None;
+                success_message = format!("moved to {}", destination.display());
+            }
+        }
+
+        self.refresh_explorer()?;
+        self.reveal_path(&destination)?;
+        self.message = Some(success_message);
+        Ok(())
+    }
+
+    fn duplicate_selected(&mut self) -> Result<()> {
+        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+            return Ok(());
+        };
+        if node.path == self.root {
+            self.message = Some("refusing to duplicate workspace root".to_owned());
+            return Ok(());
+        }
+        let Some(parent) = node.path.parent() else {
+            return Ok(());
+        };
+        let destination = unique_copy_path(
+            &parent.join(
+                node.path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(copy_name)
+                    .unwrap_or_else(|| "copy".to_owned()),
+            ),
+        );
+        copy_path_recursive(&node.path, &destination)?;
+        self.refresh_explorer()?;
+        self.reveal_path(&destination)?;
+        self.message = Some(format!("duplicated to {}", destination.display()));
+        Ok(())
+    }
+
+    fn reveal_active_file(&mut self) -> Result<()> {
+        let Some(path) = self.active_tab().map(|tab| tab.path.clone()) else {
+            self.message = Some("no active file to reveal".to_owned());
+            return Ok(());
+        };
+        self.reveal_path(&path)?;
+        self.focus = FocusPanel::Explorer;
+        self.message = Some(format!("revealed {}", path.display()));
+        Ok(())
+    }
+
     fn finish_prompt(&mut self) -> Result<()> {
         let Some(prompt) = self.prompt.take() else {
             return Ok(());
@@ -1040,18 +1165,9 @@ impl App {
             .map(|parent| parent.join(name))
             .unwrap_or_else(|| self.root.join(name));
         fs::rename(&path, &new_path)?;
-        for tab in &mut self.tabs {
-            if let Ok(relative) = tab.path.strip_prefix(&path) {
-                tab.path = new_path.join(relative);
-                tab.title = tab
-                    .path
-                    .file_name()
-                    .and_then(|file_name| file_name.to_str())
-                    .unwrap_or("[file]")
-                    .to_owned();
-            }
-        }
+        self.update_open_tabs_for_move(&path, &new_path);
         self.refresh_explorer()?;
+        self.reveal_path(&new_path)?;
         self.message = Some(format!("renamed to {}", new_path.display()));
         Ok(())
     }
@@ -1067,6 +1183,13 @@ impl App {
             fs::remove_file(&path)?;
         }
         self.tabs.retain(|tab| !tab.path.starts_with(&path));
+        if self
+            .explorer_clipboard
+            .as_ref()
+            .is_some_and(|clipboard| clipboard.path.starts_with(&path))
+        {
+            self.explorer_clipboard = None;
+        }
         if self.tabs.is_empty() {
             self.active_tab = None;
         } else {
@@ -1074,6 +1197,26 @@ impl App {
         }
         self.refresh_explorer()?;
         self.message = Some(format!("deleted {}", path.display()));
+        Ok(())
+    }
+
+    fn update_open_tabs_for_move(&mut self, old_path: &Path, new_path: &Path) {
+        for tab in &mut self.tabs {
+            if let Ok(relative) = tab.path.strip_prefix(old_path) {
+                tab.path = new_path.join(relative);
+                tab.title = tab
+                    .path
+                    .file_name()
+                    .and_then(|file_name| file_name.to_str())
+                    .unwrap_or("[file]")
+                    .to_owned();
+            }
+        }
+    }
+
+    fn reveal_path(&mut self, path: &Path) -> Result<()> {
+        self.explorer.reveal(path)?;
+        self.ensure_explorer_selection_visible();
         Ok(())
     }
 
@@ -1522,6 +1665,72 @@ fn fuzzy_score(candidate: &str, query: &str) -> Option<usize> {
     Some(score.saturating_add(starts_bonus))
 }
 
+fn copy_path_recursive(source: &Path, destination: &Path) -> Result<()> {
+    if source.is_dir() {
+        fs::create_dir_all(destination)?;
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(source)? {
+            entries.push(entry?);
+        }
+        entries.sort_by_key(|entry| entry.file_name());
+
+        for entry in entries {
+            let child_source = entry.path();
+            let child_destination = destination.join(entry.file_name());
+            copy_path_recursive(&child_source, &child_destination)?;
+        }
+    } else {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, destination)?;
+    }
+    Ok(())
+}
+
+fn unique_copy_path(path: &Path) -> PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+
+    let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("copy");
+    let extension = path.extension().and_then(|extension| extension.to_str());
+
+    for index in 1.. {
+        let suffix = if index == 1 {
+            " copy".to_owned()
+        } else {
+            format!(" copy {index}")
+        };
+        let file_name = match extension {
+            Some(extension) => format!("{stem}{suffix}.{extension}"),
+            None => format!("{stem}{suffix}"),
+        };
+        let candidate = parent.join(file_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!()
+}
+
+fn copy_name(name: &str) -> String {
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(name);
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) => format!("{stem} copy.{extension}"),
+        None => format!("{stem} copy"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1599,6 +1808,54 @@ mod tests {
 
         app.open_file(&search_items[0].path);
         assert!(app.active_tab().is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn copy_path_recursive_copies_directories_and_unique_names() {
+        let root = std::env::temp_dir().join(format!("tscode-test-copy-{}", std::process::id()));
+        let source = root.join("src");
+        let nested = source.join("nested");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("file.txt"), "copied").unwrap();
+
+        let destination = root.join("src copy");
+        copy_path_recursive(&source, &destination).unwrap();
+        assert_eq!(
+            fs::read_to_string(destination.join("nested/file.txt")).unwrap(),
+            "copied"
+        );
+
+        assert_eq!(unique_copy_path(&source), root.join("src copy 2"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cut_paste_updates_open_tab_paths() {
+        let root = std::env::temp_dir().join(format!("tscode-test-cut-{}", std::process::id()));
+        let src_dir = root.join("src");
+        let dst_dir = root.join("dst");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&dst_dir).unwrap();
+        fs::write(src_dir.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let source = canonical_root.join("src/main.rs");
+        let destination = canonical_root.join("dst/main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&source);
+        app.explorer_clipboard = Some(ExplorerClipboard {
+            action: ClipboardAction::Cut,
+            path: source.clone(),
+        });
+        app.explorer.reveal(&canonical_root.join("dst")).unwrap();
+        app.paste_into_selected().unwrap();
+
+        assert!(!source.exists());
+        assert!(destination.exists());
+        assert_eq!(app.active_tab().unwrap().path, destination);
         let _ = fs::remove_dir_all(root);
     }
 }
