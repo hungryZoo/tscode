@@ -2770,6 +2770,12 @@ impl App {
         let mut exited = Vec::new();
         for terminal in &mut self.terminals {
             changed |= terminal.shell.drain();
+            if let Some(cwd) = terminal.shell.take_cwd_update()
+                && terminal.cwd != cwd
+            {
+                terminal.cwd = cwd;
+                changed = true;
+            }
             if !terminal.exited && terminal.shell.child_exited() {
                 terminal.exited = true;
                 exited.push(terminal.title.clone());
@@ -11788,6 +11794,33 @@ index 1111111..2222222 100644
 
         app.restart_terminal().unwrap();
         assert_eq!(app.active_terminal().cwd, src.canonicalize().unwrap());
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_osc7_updates_session_cwd() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-terminal-osc7-{}", std::process::id()));
+        let nested = root.join("nested");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&nested).unwrap();
+        let canonical_nested = nested.canonicalize().unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        for _ in 0..10 {
+            app.drain_terminal();
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let sequence = format!("\x1b]7;file://localhost{}\x07", canonical_nested.display());
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(sequence.as_bytes());
+
+        assert!(app.drain_terminal());
+        assert_eq!(app.active_terminal().cwd, canonical_nested);
+
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }

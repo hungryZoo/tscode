@@ -306,7 +306,7 @@ The terminal panel shall show active-session status including terminal title, wo
 
 ### R-304 Working Directory
 
-Commands shall execute with the workspace root as the working directory.
+New terminal sessions shall start with the workspace root as the working directory unless the user explicitly creates them from a selected explorer location or task. The app shall track terminal working-directory changes reported by the child shell through OSC 7 current-directory sequences, shall inject automatic cwd reporting for supported interactive zsh and bash sessions, shall update the terminal header and context-menu details after `cd`, and shall restart that terminal in the latest tracked working directory.
 
 ### R-305 Scrolling
 

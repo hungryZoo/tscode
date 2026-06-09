@@ -57,6 +57,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Tab close support through the tab `x`, middle click, or `Ctrl-W`, with unsaved-buffer protection.
 - File save preserves existing trailing newlines.
 - Bottom integrated terminal panel backed by a real PTY shell with forwarded keyboard input, shell state, `Ctrl-C`, terminal scrollback, clear-terminal, restart-terminal commands, and a live header showing the active session, cwd, live/exited state, scrollback offset, and active terminal modes.
+- Terminal cwd tracking now consumes OSC 7 current-directory reports and automatically hooks zsh/bash sessions so `cd` updates the terminal header, context menus, and restart-terminal working directory.
 - Multiple integrated terminal sessions: `F7` creates a new PTY shell, `F8` switches to the next terminal, `F9` closes the active terminal, terminal tabs switch on click, tab close targets close on click or middle-click, and `+` creates a new terminal.
 - New Terminal Here opens a real PTY shell in the selected explorer folder, or the selected file's parent directory, and restarting that terminal preserves its working directory.
 - Terminal focus and maximize shortcuts now work from inside terminal focus too, so `F6`/``Ctrl-` `` and `F12`/`Ctrl-J` can move in and out of the integrated terminal without trapping the user in the PTY.

@@ -1,9 +1,11 @@
 use std::{
-    env,
+    env, fs,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process,
     sync::mpsc::{self, Receiver},
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -12,6 +14,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 use vt100::{Color as VtColor, MouseProtocolEncoding, MouseProtocolMode};
 
 const SCROLLBACK: usize = 10_000;
+const MAX_OSC_PAYLOAD_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalStyle {
@@ -75,6 +78,8 @@ pub struct ShellPanel {
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<Vec<u8>>,
+    osc7: Osc7Tracker,
+    integration_dir: Option<PathBuf>,
     rows: u16,
     cols: u16,
     user_scrollback: usize,
@@ -92,10 +97,12 @@ impl ShellPanel {
             pixel_height: 0,
         })?;
 
-        let mut command = shell_command();
+        let shell = shell_program();
+        let mut command = CommandBuilder::new(&shell);
         command.cwd(workspace);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        let integration_dir = configure_shell_integration(&shell, &mut command);
 
         let child = pair
             .slave
@@ -127,6 +134,8 @@ impl ShellPanel {
             writer,
             child,
             rx,
+            osc7: Osc7Tracker::default(),
+            integration_dir,
             rows,
             cols,
             user_scrollback: 0,
@@ -136,6 +145,7 @@ impl ShellPanel {
     pub fn drain(&mut self) -> bool {
         let mut changed = false;
         while let Ok(bytes) = self.rx.try_recv() {
+            self.osc7.process(&bytes);
             self.parser.process(&bytes);
             if self.user_scrollback == 0 {
                 self.parser.screen_mut().set_scrollback(0);
@@ -147,7 +157,12 @@ impl ShellPanel {
 
     #[cfg(test)]
     pub fn process_output_for_test(&mut self, bytes: &[u8]) {
+        self.osc7.process(bytes);
         self.parser.process(bytes);
+    }
+
+    pub fn take_cwd_update(&mut self) -> Option<PathBuf> {
+        self.osc7.take_cwd_update()
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -444,6 +459,105 @@ impl ShellPanel {
     }
 }
 
+impl Drop for ShellPanel {
+    fn drop(&mut self) {
+        if let Some(dir) = &self.integration_dir {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OscState {
+    Ground,
+    Esc,
+    Osc,
+    OscEsc,
+}
+
+#[derive(Debug)]
+struct Osc7Tracker {
+    state: OscState,
+    buffer: Vec<u8>,
+    cwd_update: Option<PathBuf>,
+}
+
+impl Default for Osc7Tracker {
+    fn default() -> Self {
+        Self {
+            state: OscState::Ground,
+            buffer: Vec::new(),
+            cwd_update: None,
+        }
+    }
+}
+
+impl Osc7Tracker {
+    fn process(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            match self.state {
+                OscState::Ground => {
+                    if *byte == 0x1b {
+                        self.state = OscState::Esc;
+                    }
+                }
+                OscState::Esc => {
+                    if *byte == b']' {
+                        self.buffer.clear();
+                        self.state = OscState::Osc;
+                    } else if *byte != 0x1b {
+                        self.state = OscState::Ground;
+                    }
+                }
+                OscState::Osc => match *byte {
+                    0x07 => {
+                        self.finish_osc();
+                        self.state = OscState::Ground;
+                    }
+                    0x1b => self.state = OscState::OscEsc,
+                    _ => self.push_osc_byte(*byte),
+                },
+                OscState::OscEsc => {
+                    if *byte == b'\\' {
+                        self.finish_osc();
+                        self.state = OscState::Ground;
+                    } else {
+                        self.push_osc_byte(0x1b);
+                        if *byte == 0x1b {
+                            self.state = OscState::OscEsc;
+                        } else {
+                            self.push_osc_byte(*byte);
+                            self.state = OscState::Osc;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn take_cwd_update(&mut self) -> Option<PathBuf> {
+        self.cwd_update.take()
+    }
+
+    fn push_osc_byte(&mut self, byte: u8) {
+        if self.buffer.len() < MAX_OSC_PAYLOAD_BYTES {
+            self.buffer.push(byte);
+        } else {
+            self.buffer.clear();
+            self.state = OscState::Ground;
+        }
+    }
+
+    fn finish_osc(&mut self) {
+        if let Ok(payload) = std::str::from_utf8(&self.buffer)
+            && let Some(path) = osc7_path(payload)
+        {
+            self.cwd_update = Some(path);
+        }
+        self.buffer.clear();
+    }
+}
+
 fn terminal_line_matches(line: &str, needle: &str) -> Vec<(usize, usize)> {
     if needle.is_empty() {
         return Vec::new();
@@ -465,16 +579,130 @@ fn terminal_line_matches(line: &str, needle: &str) -> Vec<(usize, usize)> {
     matches
 }
 
+fn osc7_path(payload: &str) -> Option<PathBuf> {
+    let url = payload.strip_prefix("7;")?.strip_prefix("file://")?;
+    let path_start = url.find('/')?;
+    let decoded = percent_decode(&url[path_start..])?;
+    let path = PathBuf::from(decoded);
+    if !path.is_absolute() || !path.is_dir() {
+        return None;
+    }
+    Some(path.canonicalize().unwrap_or(path))
+}
+
+fn percent_decode(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hi = *bytes.get(index + 1)?;
+            let lo = *bytes.get(index + 2)?;
+            output.push(hex_value(hi)? * 16 + hex_value(lo)?);
+            index += 3;
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(output).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(windows)]
-fn shell_command() -> CommandBuilder {
-    let shell = env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_owned());
-    CommandBuilder::new(shell)
+fn shell_program() -> String {
+    env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_owned())
 }
 
 #[cfg(not(windows))]
-fn shell_command() -> CommandBuilder {
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
-    CommandBuilder::new(shell)
+fn shell_program() -> String {
+    env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned())
+}
+
+fn configure_shell_integration(shell: &str, command: &mut CommandBuilder) -> Option<PathBuf> {
+    command.env("TSCODE_SHELL_INTEGRATION", "1");
+    let shell_name = Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell);
+
+    match shell_name {
+        "bash" => {
+            configure_bash_cwd_tracking(command);
+            None
+        }
+        "zsh" => configure_zsh_cwd_tracking(command),
+        _ => None,
+    }
+}
+
+fn configure_bash_cwd_tracking(command: &mut CommandBuilder) {
+    let hook = r#"printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$PWD""#;
+    let prompt_command = match env::var("PROMPT_COMMAND") {
+        Ok(existing) if !existing.trim().is_empty() => format!("{hook}; {existing}"),
+        _ => hook.to_owned(),
+    };
+    command.env("PROMPT_COMMAND", prompt_command);
+}
+
+fn configure_zsh_cwd_tracking(command: &mut CommandBuilder) -> Option<PathBuf> {
+    let dir = create_shell_integration_dir("zsh")?;
+    let original_zdotdir = env::var("ZDOTDIR")
+        .ok()
+        .or_else(|| env::var("HOME").ok())
+        .unwrap_or_else(|| ".".to_owned());
+
+    let zshenv = r#"if [ -n "${TSCODE_ORIGINAL_ZDOTDIR:-}" ] && [ -r "${TSCODE_ORIGINAL_ZDOTDIR}/.zshenv" ]; then
+  source "${TSCODE_ORIGINAL_ZDOTDIR}/.zshenv"
+fi
+"#;
+    let zshrc = r#"if [ -n "${TSCODE_ORIGINAL_ZDOTDIR:-}" ] && [ -r "${TSCODE_ORIGINAL_ZDOTDIR}/.zshrc" ]; then
+  source "${TSCODE_ORIGINAL_ZDOTDIR}/.zshrc"
+fi
+
+__tscode_osc7() {
+  printf '\033]7;file://%s%s\007' "${HOST:-localhost}" "$PWD"
+}
+
+autoload -Uz add-zsh-hook 2>/dev/null
+if whence add-zsh-hook >/dev/null 2>&1; then
+  add-zsh-hook precmd __tscode_osc7
+else
+  precmd_functions+=(__tscode_osc7)
+fi
+__tscode_osc7
+"#;
+
+    if fs::write(dir.join(".zshenv"), zshenv)
+        .and_then(|_| fs::write(dir.join(".zshrc"), zshrc))
+        .is_err()
+    {
+        let _ = fs::remove_dir_all(&dir);
+        return None;
+    }
+
+    command.env("TSCODE_ORIGINAL_ZDOTDIR", original_zdotdir);
+    command.env("ZDOTDIR", &dir);
+    Some(dir)
+}
+
+fn create_shell_integration_dir(label: &str) -> Option<PathBuf> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let dir = env::temp_dir().join(format!("tscode-{label}-{}-{now}", process::id()));
+    fs::create_dir_all(&dir).ok()?;
+    Some(dir)
 }
 
 fn key_to_bytes(key: KeyEvent, application_cursor: bool) -> Option<Vec<u8>> {
@@ -690,6 +918,7 @@ fn default_mouse_sequence(code: u16, x: u16, y: u16) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
@@ -731,6 +960,26 @@ mod tests {
         );
         assert_eq!(terminal_line_matches("écho alpha", "alpha"), vec![(5, 10)]);
         assert!(terminal_line_matches("alpha", "").is_empty());
+    }
+
+    #[test]
+    fn osc7_tracker_reads_cwd_from_bel_and_st_sequences() {
+        let root = std::env::temp_dir().join(format!("tscode-test-osc7-{}", std::process::id()));
+        let space_dir = root.join("space dir");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&space_dir).unwrap();
+        let canonical = space_dir.canonicalize().unwrap();
+        let encoded_path = canonical.to_string_lossy().replace(' ', "%20");
+
+        let mut tracker = Osc7Tracker::default();
+        tracker.process(b"ignored\x1b]7;file://localhost");
+        tracker.process(format!("{encoded_path}\x07tail").as_bytes());
+        assert_eq!(tracker.take_cwd_update(), Some(canonical.clone()));
+
+        tracker.process(format!("\x1b]7;file://host{encoded_path}\x1b\\").as_bytes());
+        assert_eq!(tracker.take_cwd_update(), Some(canonical));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
