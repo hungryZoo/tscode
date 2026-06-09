@@ -7,7 +7,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Mouse-first file explorer with real filesystem reads, expand/collapse, file open, hover, and wheel scrolling.
 - Explorer copy, cut, paste, duplicate, and reveal-active-file actions backed by real filesystem operations.
 - File moves keep open editor tab paths in sync and reveal pasted/duplicated targets in the tree.
-- Explorer filtering with `/`, dotfile visibility toggling with `.`, generated-folder visibility toggling with `i`, and file metadata/read-only markers in tree rows.
+- Explorer filtering with `/` scans the real workspace tree, auto-expands collapsed parent folders for nested matches, preserves dotfile/generated-folder visibility rules, and keeps file metadata/read-only markers in tree rows.
 - Explorer rows now show Git working tree badges such as `git:M`, `git:?`, and dirty folder `git:*` when the workspace is inside a Git repository.
 - Command Palette with `F1` or `Ctrl-Shift-P`, fuzzy command matching, and actions for files, editor commands, explorer operations, focus changes, and terminal management.
 - Quick Open overlay with `Ctrl-P` fuzzy matching across workspace file paths.
@@ -39,7 +39,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Explorer collapse-all is available through the command palette.
 - Tab close support through the tab `x`, middle click, or `Ctrl-W`, with unsaved-buffer protection.
 - File save preserves existing trailing newlines.
-- Bottom integrated terminal panel backed by a real PTY shell with forwarded keyboard input, shell state, `Ctrl-C`, terminal scrollback, clear-terminal, and restart-terminal commands.
+- Bottom integrated terminal panel backed by a real PTY shell with forwarded keyboard input, shell state, `Ctrl-C`, terminal scrollback, clear-terminal, restart-terminal commands, and a live header showing the active session, cwd, live/exited state, scrollback offset, and active terminal modes.
 - Multiple integrated terminal sessions: `F7` creates a new PTY shell, `F8` switches to the next terminal, `F9` closes the active terminal, terminal tabs switch on click, tab close targets close on click or middle-click, and `+` creates a new terminal.
 - New Terminal Here opens a real PTY shell in the selected explorer folder, or the selected file's parent directory, and restarting that terminal preserves its working directory.
 - Terminal focus and maximize shortcuts now work from inside terminal focus too, so `F6`/``Ctrl-` `` and `F12`/`Ctrl-J` can move in and out of the integrated terminal without trapping the user in the PTY.

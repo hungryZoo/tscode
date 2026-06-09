@@ -1360,7 +1360,7 @@ pub struct ExplorerClipboard {
 pub struct TerminalSession {
     pub id: usize,
     pub title: String,
-    cwd: PathBuf,
+    pub cwd: PathBuf,
     pub shell: ShellPanel,
     pub exited: bool,
 }
@@ -2312,6 +2312,13 @@ fn explorer_filter_matches(node: &VisibleNode, root: &Path, filter: &str) -> boo
             .contains(filter)
 }
 
+fn explorer_path_filter_matches(path: &Path, root: &Path, filter: &str) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_lowercase().contains(filter))
+        || relative_path(root, path).to_lowercase().contains(filter)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CommandSpec {
     label: &'static str,
@@ -3214,12 +3221,13 @@ impl App {
     }
 
     fn set_explorer_filter(&mut self, input: String) {
-        let filter = input.trim();
+        let filter = input.trim().to_owned();
         let selected_path = self
             .visible_nodes()
             .get(self.explorer.selected)
             .map(|node| node.path.clone());
-        self.explorer_filter = (!filter.is_empty()).then(|| filter.to_owned());
+        self.explorer_filter = (!filter.is_empty()).then_some(filter.clone());
+        self.expand_active_explorer_filter_matches();
         self.restore_explorer_selection(selected_path);
         self.message = match &self.explorer_filter {
             Some(filter) => Some(format!("explorer filter: {filter}")),
@@ -3239,6 +3247,7 @@ impl App {
             .get(self.explorer.selected)
             .map(|node| node.path.clone());
         self.show_hidden = !self.show_hidden;
+        self.expand_active_explorer_filter_matches();
         self.restore_explorer_selection(selected_path);
         self.message = Some(format!(
             "{} hidden files",
@@ -3256,6 +3265,7 @@ impl App {
             .get(self.explorer.selected)
             .map(|node| node.path.clone());
         self.show_ignored = !self.show_ignored;
+        self.expand_active_explorer_filter_matches();
         self.restore_explorer_selection(selected_path);
         self.message = Some(format!(
             "{} generated/ignored folders",
@@ -3265,6 +3275,34 @@ impl App {
                 "hiding"
             }
         ));
+    }
+
+    fn expand_active_explorer_filter_matches(&mut self) {
+        let Some(filter) = self
+            .explorer_filter
+            .as_deref()
+            .map(str::trim)
+            .filter(|filter| !filter.is_empty())
+        else {
+            return;
+        };
+        let filter = filter.to_lowercase();
+
+        let paths = match collect_workspace_paths(&self.root, self.show_hidden, self.show_ignored) {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.last_error = Some(error.to_string());
+                return;
+            }
+        };
+
+        for path in paths
+            .into_iter()
+            .filter(|path| explorer_path_filter_matches(path, &self.root, &filter))
+            .take(MAX_QUICK_ITEMS)
+        {
+            let _ = self.explorer.reveal(&path);
+        }
     }
 
     fn restore_explorer_selection(&mut self, selected_path: Option<PathBuf>) {
@@ -4828,6 +4866,47 @@ fn collect_workspace_files(
     collect_workspace_files_into(root, &mut files, show_hidden, show_ignored)?;
     files.sort();
     Ok(files)
+}
+
+fn collect_workspace_paths(
+    root: &Path,
+    show_hidden: bool,
+    show_ignored: bool,
+) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    collect_workspace_paths_into(root, &mut paths, show_hidden, show_ignored)?;
+    paths.sort();
+    Ok(paths)
+}
+
+fn collect_workspace_paths_into(
+    dir: &Path,
+    paths: &mut Vec<PathBuf>,
+    show_hidden: bool,
+    show_ignored: bool,
+) -> Result<()> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        entries.push(entry?);
+    }
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        let hidden = name.to_str().is_some_and(is_hidden_file_name);
+        if file_type.is_dir() {
+            if (!show_hidden && hidden) || (!show_ignored && should_skip_dir(&path)) {
+                continue;
+            }
+            paths.push(path.clone());
+            let _ = collect_workspace_paths_into(&path, paths, show_hidden, show_ignored);
+        } else if file_type.is_file() && (show_hidden || !hidden) {
+            paths.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn collect_workspace_files_into(
@@ -7203,6 +7282,72 @@ mod tests {
         assert!(!names.contains(&"target".to_owned()));
 
         app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_filter_expands_collapsed_nested_matches_from_filesystem() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-filter-expand-{}",
+            std::process::id()
+        ));
+        let nested = root.join("src/deep/module");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("needle.rs"), "fn needle() {}\n").unwrap();
+        fs::write(root.join("README.md"), "hello\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        assert!(
+            app.visible_nodes()
+                .iter()
+                .all(|node| node.name != "needle.rs")
+        );
+
+        app.set_explorer_filter("needle".to_owned());
+        let visible = app.visible_nodes();
+        let names = visible
+            .iter()
+            .map(|node| node.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"src"));
+        assert!(names.contains(&"deep"));
+        assert!(names.contains(&"module"));
+        assert!(names.contains(&"needle.rs"));
+        assert!(
+            visible
+                .iter()
+                .any(|node| node.path == canonical_root.join("src/deep/module/needle.rs"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_path_scan_includes_directories_and_respects_visibility() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-workspace-path-scan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/.secret")).unwrap();
+        fs::create_dir_all(root.join("target")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn lib() {}\n").unwrap();
+        fs::write(root.join("src/.secret/token.txt"), "hidden\n").unwrap();
+        fs::write(root.join("target/generated.rs"), "generated\n").unwrap();
+
+        let visible = collect_workspace_paths(&root, false, false).unwrap();
+        assert!(visible.contains(&root.join("src")));
+        assert!(visible.contains(&root.join("src/lib.rs")));
+        assert!(!visible.contains(&root.join("src/.secret")));
+        assert!(!visible.contains(&root.join("target")));
+
+        let all = collect_workspace_paths(&root, true, true).unwrap();
+        assert!(all.contains(&root.join("src/.secret/token.txt")));
+        assert!(all.contains(&root.join("target/generated.rs")));
+
         let _ = fs::remove_dir_all(root);
     }
 

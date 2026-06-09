@@ -64,6 +64,8 @@ The explorer shall reveal the active editor file by expanding parent folders and
 
 The explorer shall support a visible-tree text filter, dot-prefixed entry visibility toggling, and generated-folder visibility toggling for common generated directories such as `target`, `dist`, `build`, and `node_modules`.
 
+When an explorer filter is applied, matching nested files or folders shall be discovered from the real workspace filesystem even if their parent folders are currently collapsed, and those parent folders shall be expanded enough to display the matches.
+
 ### R-112 Explorer Metadata
 
 The explorer shall show available file size metadata and read-only markers for filesystem entries.
@@ -243,6 +245,8 @@ Typing while the terminal is focused shall send input bytes to the shell PTY.
 ### R-303 Output Capture
 
 The terminal panel shall parse PTY output and render the resulting terminal screen.
+
+The terminal panel shall show active-session status including terminal title, working directory, live/exited state, nonzero scrollback offset, and active child-requested modes such as alternate screen, bracketed paste, and mouse reporting.
 
 ### R-304 Working Directory
 

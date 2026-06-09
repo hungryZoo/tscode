@@ -238,6 +238,26 @@ impl ShellPanel {
         self.parser.screen().cursor_position()
     }
 
+    pub fn scrollback(&self) -> usize {
+        self.parser.screen().scrollback()
+    }
+
+    pub fn alternate_screen(&self) -> bool {
+        self.parser.screen().alternate_screen()
+    }
+
+    pub fn bracketed_paste(&self) -> bool {
+        self.parser.screen().bracketed_paste()
+    }
+
+    pub fn mouse_protocol_mode(&self) -> MouseProtocolMode {
+        self.parser.screen().mouse_protocol_mode()
+    }
+
+    pub fn hide_cursor(&self) -> bool {
+        self.parser.screen().hide_cursor()
+    }
+
     pub fn send_key(&mut self, key: KeyEvent) -> Result<()> {
         if let Some(bytes) = key_to_bytes(key, self.parser.screen().application_cursor()) {
             self.writer.write_all(&bytes)?;

@@ -51,6 +51,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can copy, cut, paste, and duplicate files or folders from the explorer.
 - As a developer, I can reveal the active editor file in the explorer.
 - As a developer, I can filter the explorer tree, hide or show dot-prefixed entries, hide or show generated folders, and see basic file metadata while browsing.
+- As a developer, explorer filtering finds nested files inside collapsed folders and expands the matching path enough for me to click it.
 - As a developer, I can see Git working tree status badges in the explorer when the workspace is inside a Git repository.
 - As a developer, I can undo and redo edits, paste text, repeat search matches, and close saved tabs without losing unsaved changes.
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
@@ -72,6 +73,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can format the active source file with the language formatter already installed on the machine and review the changed dirty buffer before saving.
 - As a developer, I can revert the active editor tab back to the file currently on disk when I want to discard unsaved edits or reload external changes.
 - As a developer, I can clear the integrated terminal viewport or restart the PTY shell without restarting the whole application.
+- As a developer, I can see which terminal session is active, where it is running, whether it is live, and whether scrollback or terminal child modes are active.
 - As a developer, I can focus the integrated terminal quickly, maximize it when command output needs more space, and resize its normal panel height.
 - As a developer, I can create multiple integrated terminal sessions, switch between them, close them, and keep each shell's state independent.
 - As a developer, I can open a new integrated terminal in the selected explorer folder, or the selected file's parent folder, and keep that working directory when restarting the terminal.

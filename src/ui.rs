@@ -364,9 +364,10 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
 fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     app.hit_regions.terminal_area = Some(area);
     let focused = app.focus == FocusPanel::Terminal;
+    let title = terminal_panel_title(app);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Terminal  real pty shell  F6 focus  F7 new  F8 next  F9 close  F12 max ")
+        .title(title)
         .border_style(border_style(focused));
     let inner = block.inner(area);
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), area);
@@ -419,7 +420,10 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
         body,
     );
 
-    if focused {
+    if focused
+        && !app.active_terminal().shell.hide_cursor()
+        && app.active_terminal().shell.scrollback() == 0
+    {
         let (row, col) = app.active_terminal().shell.cursor();
         let x = body
             .x
@@ -430,6 +434,63 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
             .saturating_add(row)
             .min(body.bottom().saturating_sub(1));
         frame.set_cursor_position((x, y));
+    }
+}
+
+fn terminal_panel_title(app: &App) -> String {
+    let terminal = app.active_terminal();
+    let state = if terminal.exited { "exited" } else { "live" };
+    let cwd = terminal_cwd_label(&terminal.cwd, &app.root);
+    let scroll = terminal.shell.scrollback();
+    let scroll = if scroll == 0 {
+        String::new()
+    } else {
+        format!("  scroll:{scroll}")
+    };
+    let alt = if terminal.shell.alternate_screen() {
+        " alt"
+    } else {
+        ""
+    };
+    let paste = if terminal.shell.bracketed_paste() {
+        " paste"
+    } else {
+        ""
+    };
+    let mouse = terminal_mouse_label(terminal.shell.mouse_protocol_mode());
+    let modes = format!("{alt}{paste}{mouse}");
+    let modes = if modes.is_empty() {
+        String::new()
+    } else {
+        format!("  mode:{}", modes.trim())
+    };
+    format!(
+        " Terminal  {}  cwd:{}  {}{}{}  F6 focus  F7 new  F8 next  F9 close  F12 max ",
+        terminal.title, cwd, state, scroll, modes
+    )
+}
+
+fn terminal_cwd_label(cwd: &std::path::Path, root: &std::path::Path) -> String {
+    if cwd == root {
+        return ".".to_owned();
+    }
+    cwd.strip_prefix(root)
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| {
+            cwd.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("/")
+                .to_owned()
+        })
+}
+
+fn terminal_mouse_label(mode: vt100::MouseProtocolMode) -> &'static str {
+    match mode {
+        vt100::MouseProtocolMode::None => "",
+        vt100::MouseProtocolMode::Press => " mouse:press",
+        vt100::MouseProtocolMode::PressRelease => " mouse:press",
+        vt100::MouseProtocolMode::ButtonMotion => " mouse:drag",
+        vt100::MouseProtocolMode::AnyMotion => " mouse:any",
     }
 }
 

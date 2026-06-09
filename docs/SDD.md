@@ -47,7 +47,7 @@ The top-level state owns:
 
 ### Explorer
 
-The explorer stores a tree of `FsNode` values. Directories are loaded lazily when expanded. Filesystem metadata such as file size and read-only state is captured when entries are loaded. A flattened visible row list is produced after changes and during rendering, then filtered by app-level visibility state so generated folders can stay hidden by default without changing the underlying tree. Explorer reveal expands path ancestors and selects the requested file or folder row.
+The explorer stores a tree of `FsNode` values. Directories are loaded lazily when expanded. Filesystem metadata such as file size and read-only state is captured when entries are loaded. A flattened visible row list is produced after changes and during rendering, then filtered by app-level visibility state so generated folders can stay hidden by default without changing the underlying tree. Explorer reveal expands path ancestors and selects the requested file or folder row. When an explorer filter is applied, the app also scans real workspace paths under the same visibility rules and reveals matching files or folders, which expands collapsed ancestors so nested matches are visible even before the user manually opens each parent directory.
 
 When the workspace is inside a Git repository, `App` shells out to `git status --porcelain=v1 -z --untracked-files=all` at startup, after explorer refreshes, and after editor saves. The parser maps porcelain records to absolute paths and derives dirty parent-directory markers so the renderer can show file-level badges such as `git:M` or `git:?` and folder-level `git:*` badges without mixing Git state into the filesystem tree nodes.
 
@@ -86,7 +86,7 @@ Each integrated terminal session owns:
 - a writer for user input
 - a `vt100::Parser` screen with scrollback
 
-The app stores a vector of terminal sessions, an active terminal index, and a monotonic id used for stable terminal tab titles. Keyboard input while terminal-focused is encoded as terminal byte sequences and written to the active PTY. PTY output is drained from every open terminal session so background terminals keep their screen state up to date.
+The app stores a vector of terminal sessions, an active terminal index, and a monotonic id used for stable terminal tab titles. Keyboard input while terminal-focused is encoded as terminal byte sequences and written to the active PTY. PTY output is drained from every open terminal session so background terminals keep their screen state up to date. The terminal renderer reads parser state for scrollback offset, alternate screen, bracketed paste, mouse reporting, cursor visibility, and cwd/live session state so the terminal header reflects what the child shell or terminal application is doing.
 
 Terminal management commands reset only the active session's `vt100::Parser` for clear-terminal, kill and replace only the active session for restart-terminal, create new independent PTY sessions for new-terminal, and kill/remove terminal sessions for close-terminal. Closing the last terminal restarts it instead of leaving the app without a shell.
 
