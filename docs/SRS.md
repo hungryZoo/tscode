@@ -142,7 +142,7 @@ Saving an edited file shall preserve an existing trailing newline unless the buf
 
 ### R-216 Workspace Text Search
 
-`Ctrl-shift-f` or `Ctrl-g` outside terminal focus shall open a workspace search overlay. The overlay shall scan real workspace files, show file/line previews, and open the selected result at its matching line.
+`Ctrl-shift-f` or `Ctrl-g` outside terminal focus shall open a workspace search overlay. The overlay shall scan real workspace files, scan dirty open editor buffers from their in-memory text instead of stale disk text, show file/line previews, mark dirty-buffer results as unsaved, and open the selected result at its matching line.
 
 ### R-216A Replace in Files
 

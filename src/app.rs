@@ -2643,7 +2643,7 @@ fn command_catalog() -> Vec<CommandSpec> {
         },
         CommandSpec {
             label: "Search Workspace",
-            detail: "Search text across workspace files",
+            detail: "Search text across workspace files and unsaved open buffers",
             shortcut: "Ctrl-Shift-F",
             action: CommandAction::WorkspaceSearch,
         },
@@ -3193,36 +3193,34 @@ impl App {
         }
 
         let needle_lower = needle.to_lowercase();
+        let dirty_paths = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.dirty)
+            .map(|tab| tab.path.clone())
+            .collect::<HashSet<_>>();
         let mut items = Vec::new();
-        for path in collect_workspace_files(&self.root, self.show_hidden, self.show_ignored)? {
+        for file in self.workspace_text_files()? {
             if items.len() >= MAX_QUICK_ITEMS {
                 break;
             }
-            let Ok(metadata) = fs::metadata(&path) else {
-                continue;
-            };
-            if metadata.len() > MAX_FILE_SCAN_BYTES {
-                continue;
-            }
-            let Ok(bytes) = fs::read(&path) else {
-                continue;
-            };
-            if bytes.contains(&0) {
-                continue;
-            }
 
-            let text = String::from_utf8_lossy(&bytes);
-            for (line_index, line) in text.lines().enumerate() {
+            let dirty = dirty_paths.contains(&file.path);
+            let detail = if dirty {
+                format!("{} (unsaved)", file.relative)
+            } else {
+                file.relative.clone()
+            };
+            for (line_index, line) in file.text.lines().enumerate() {
                 let line_lower = line.to_lowercase();
                 let Some(byte_col) = line_lower.find(&needle_lower) else {
                     continue;
                 };
-                let relative = relative_path(&self.root, &path);
                 let col = line[..byte_col].chars().count();
                 items.push(QuickItem {
-                    label: format!("{}:{}", relative, line_index + 1),
-                    detail: relative,
-                    path: path.clone(),
+                    label: format!("{}:{}", file.relative, line_index + 1),
+                    detail: detail.clone(),
+                    path: file.path.clone(),
                     line: Some(line_index),
                     col: Some(col),
                     preview: Some(line.trim().to_owned()),
@@ -9134,6 +9132,50 @@ mod tests {
         assert_ne!(app.terminal_search.as_ref().unwrap().selected, before);
         app.previous_terminal_search_match();
         assert_eq!(app.terminal_search.as_ref().unwrap().selected, before);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_search_uses_dirty_open_buffer_text() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-workspace-search-dirty-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("dirty.txt"), "disk-only needle\n").unwrap();
+        fs::write(root.join("clean.txt"), "clean needle\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let dirty = canonical_root.join("dirty.txt");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&dirty);
+        {
+            let tab = app.active_tab_mut().unwrap();
+            assert!(tab.replace_entire_text_as_edit("memory-only unsaved-needle\n"));
+        }
+
+        let dirty_items = app.workspace_search_items("unsaved-needle").unwrap();
+        assert_eq!(dirty_items.len(), 1);
+        assert_eq!(dirty_items[0].path, dirty);
+        assert_eq!(dirty_items[0].line, Some(0));
+        assert_eq!(dirty_items[0].col, Some("memory-only ".chars().count()));
+        assert!(dirty_items[0].detail.contains("(unsaved)"));
+        assert!(
+            dirty_items[0]
+                .preview
+                .as_deref()
+                .is_some_and(|preview| preview.contains("unsaved-needle"))
+        );
+
+        let stale_items = app.workspace_search_items("disk-only needle").unwrap();
+        assert!(stale_items.is_empty());
+
+        let clean_items = app.workspace_search_items("clean needle").unwrap();
+        assert_eq!(clean_items.len(), 1);
+        assert!(!clean_items[0].detail.contains("(unsaved)"));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

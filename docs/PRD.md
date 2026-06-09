@@ -68,7 +68,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can rely on editor conveniences such as auto-indent on newline, bracket/quote auto-pairs, skip-over of existing closing pairs, and paired deletion with Backspace.
 - As a developer, I can move and select by word in the editor with modified arrow keys.
 - As a developer, I can quickly open files by typing a fuzzy path fragment.
-- As a developer, I can search text across the workspace, see file/line previews, and jump to a matching location.
+- As a developer, I can search text across the workspace, including unsaved edits in open buffers, see file/line previews, and jump to a matching location.
 - As a developer, I can list functions, types, classes, interfaces, modules, and similar code symbols in the active file or across the workspace, then jump to the selected symbol.
 - As a developer, I can jump from the symbol under the editor cursor to a likely workspace definition without leaving the terminal.
 - As a developer, I can list whole-word workspace references for the symbol under the editor cursor and jump to any occurrence.
@@ -124,7 +124,7 @@ Keyboard fallback:
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the terminal clipboard
 - Explorer `/`, `.`, and `i` perform visible-tree filtering, dotfile visibility toggling, and generated-folder visibility toggling
 - `Ctrl-P` opens the quick file picker
-- `Ctrl-Shift-F` and `Ctrl-G` open workspace text search
+- `Ctrl-Shift-F` and `Ctrl-G` open workspace text search, including dirty open buffers from memory
 - `Ctrl-Shift-H` opens replace-in-files; the command palette provides the same action as an SSH-friendly fallback
 - `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, and `Ctrl-R` provide document symbols, workspace symbols, go-to-definition, and find-references code navigation
 - The command palette provides Run Workspace Check and Show Problems actions for project diagnostics
