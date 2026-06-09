@@ -67,6 +67,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can clear the integrated terminal viewport or restart the PTY shell without restarting the whole application.
 - As a developer, I can focus the integrated terminal quickly, maximize it when command output needs more space, and resize its normal panel height.
 - As a developer, I can create multiple integrated terminal sessions, switch between them, close them, and keep each shell's state independent.
+- As a developer, I can open a new integrated terminal in the selected explorer folder, or the selected file's parent folder, and keep that working directory when restarting the terminal.
 - As a developer, I can rename or delete folders and have open tabs update or close consistently with the filesystem change.
 - As a keyboard user, I can navigate, open files, switch focus, edit, scroll, and submit shell input without a mouse.
 
@@ -98,6 +99,7 @@ Keyboard fallback:
 - arrow keys navigate focused panels
 - `Enter` opens files, edits newlines, or submits shell input depending on focus
 - Explorer `c`, `x`, `p`, `y`, and `o` perform copy, cut, paste, duplicate, and reveal-active-file actions
+- Explorer `t` opens a new integrated terminal in the selected folder or selected file's parent folder
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the terminal clipboard
 - Explorer `/`, `.`, and `i` perform visible-tree filtering, dotfile visibility toggling, and generated-folder visibility toggling
 - `Ctrl-P` opens the quick file picker

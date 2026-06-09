@@ -958,6 +958,7 @@ pub enum CommandAction {
     ClearTerminal,
     RestartTerminal,
     NewTerminal,
+    NewTerminalHere,
     CloseTerminal,
     NextTerminal,
     PreviousTerminal,
@@ -991,16 +992,31 @@ pub struct ExplorerClipboard {
 pub struct TerminalSession {
     pub id: usize,
     pub title: String,
+    cwd: PathBuf,
     pub shell: ShellPanel,
     pub exited: bool,
 }
 
 impl TerminalSession {
-    fn new(id: usize, workspace: PathBuf) -> Result<Self> {
+    fn new(id: usize, cwd: PathBuf) -> Result<Self> {
+        Self::with_title(id, format!("term {id}"), cwd)
+    }
+
+    fn here(id: usize, cwd: PathBuf) -> Result<Self> {
+        let title = cwd
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| format!("term {id}: {name}"))
+            .unwrap_or_else(|| format!("term {id}: /"));
+        Self::with_title(id, title, cwd)
+    }
+
+    fn with_title(id: usize, title: String, cwd: PathBuf) -> Result<Self> {
         Ok(Self {
             id,
-            title: format!("term {id}"),
-            shell: ShellPanel::new(workspace)?,
+            title,
+            shell: ShellPanel::new(cwd.clone())?,
+            cwd,
             exited: false,
         })
     }
@@ -1359,6 +1375,7 @@ impl App {
             KeyCode::Char('p') => self.paste_into_selected()?,
             KeyCode::Char('y') => self.duplicate_selected()?,
             KeyCode::Char('o') => self.reveal_active_file()?,
+            KeyCode::Char('t') => self.new_terminal_here()?,
             _ => {}
         }
 
@@ -2110,6 +2127,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Create a new integrated PTY terminal session",
             shortcut: "F7",
             action: CommandAction::NewTerminal,
+        },
+        CommandSpec {
+            label: "New Terminal Here",
+            detail: "Create a new PTY terminal in the selected explorer folder",
+            shortcut: "Explorer t",
+            action: CommandAction::NewTerminalHere,
         },
         CommandSpec {
             label: "Close Terminal",
@@ -3380,6 +3403,7 @@ impl App {
             }
             CommandAction::RestartTerminal => self.restart_terminal()?,
             CommandAction::NewTerminal => self.new_terminal()?,
+            CommandAction::NewTerminalHere => self.new_terminal_here()?,
             CommandAction::CloseTerminal => self.close_active_terminal()?,
             CommandAction::NextTerminal => self.next_terminal(),
             CommandAction::PreviousTerminal => self.previous_terminal(),
@@ -3559,11 +3583,13 @@ impl App {
     fn restart_terminal(&mut self) -> Result<()> {
         let title = self.active_terminal().title.clone();
         let id = self.active_terminal().id;
+        let cwd = self.active_terminal().cwd.clone();
         let _ = self.active_terminal_mut().shell.kill();
         self.terminals[self.active_terminal] = TerminalSession {
             id,
             title: title.clone(),
-            shell: ShellPanel::new(self.root.clone())?,
+            shell: ShellPanel::new(cwd.clone())?,
+            cwd,
             exited: false,
         };
         self.focus = FocusPanel::Terminal;
@@ -3580,6 +3606,22 @@ impl App {
         self.active_terminal = self.terminals.len() - 1;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("new terminal: {title}"));
+        Ok(())
+    }
+
+    fn new_terminal_here(&mut self) -> Result<()> {
+        let cwd = self
+            .selected_base_dir()
+            .canonicalize()
+            .unwrap_or_else(|_| self.selected_base_dir());
+        let id = self.next_terminal_id;
+        self.next_terminal_id += 1;
+        let terminal = TerminalSession::here(id, cwd.clone())?;
+        let title = terminal.title.clone();
+        self.terminals.push(terminal);
+        self.active_terminal = self.terminals.len() - 1;
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(format!("new terminal in {}: {title}", cwd.display()));
         Ok(())
     }
 
@@ -4859,6 +4901,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::NewTerminal))
         );
+        let commands = app.command_palette_items("new terminal here");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::NewTerminalHere))
+        );
         let commands = app.command_palette_items("next terminal");
         assert!(
             commands
@@ -5060,6 +5108,48 @@ mod tests {
         assert_eq!(app.terminals.len(), 1);
         assert_eq!(app.active_terminal, 0);
 
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn new_terminal_here_starts_real_pty_in_selected_explorer_directory() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-terminal-here-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        let canonical_src = src.canonicalize().unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.reveal_path(&canonical_src).unwrap();
+        app.new_terminal_here().unwrap();
+        assert_eq!(app.focus, FocusPanel::Terminal);
+        assert_eq!(app.active_terminal().cwd, canonical_src);
+        assert!(app.active_terminal().title.contains("src"));
+
+        app.active_terminal_mut()
+            .shell
+            .send_text("pwd > ../cwd.txt\r")
+            .unwrap();
+
+        let out = root.join("cwd.txt");
+        for _ in 0..50 {
+            app.drain_terminal();
+            if out.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        assert_eq!(
+            fs::read_to_string(&out).unwrap().trim(),
+            src.canonicalize().unwrap().to_string_lossy()
+        );
+
+        app.restart_terminal().unwrap();
+        assert_eq!(app.active_terminal().cwd, src.canonicalize().unwrap());
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }

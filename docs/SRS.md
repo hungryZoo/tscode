@@ -240,7 +240,7 @@ The command palette shall include a clear-terminal command that resets the rende
 
 ### R-310 Terminal Restart
 
-The command palette shall include a restart-terminal command that terminates the current PTY child and creates a fresh shell session in the workspace root.
+The command palette shall include a restart-terminal command that terminates the current PTY child and creates a fresh shell session in that terminal session's stored working directory.
 
 ### R-311 Terminal ANSI Styles
 
@@ -273,6 +273,10 @@ The integrated terminal shall support multiple PTY shell sessions. The user shal
 ### R-318 Terminal Tab Mouse Controls
 
 The terminal panel shall render terminal session tabs with mouse hover highlighting. Clicking a terminal tab shall activate that session, clicking a close target shall close that session, and clicking the new-terminal target shall create a new PTY session.
+
+### R-319 New Terminal Here
+
+Explorer `t` and the command palette shall create a new integrated PTY terminal whose current working directory is the selected explorer folder, or the selected file's parent folder. Restarting that terminal shall preserve its current working directory instead of resetting it to the workspace root.
 
 ## 6. Mouse Requirements
 

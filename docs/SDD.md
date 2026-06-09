@@ -88,6 +88,8 @@ The app stores a vector of terminal sessions, an active terminal index, and a mo
 
 Terminal management commands reset only the active session's `vt100::Parser` for clear-terminal, kill and replace only the active session for restart-terminal, create new independent PTY sessions for new-terminal, and kill/remove terminal sessions for close-terminal. Closing the last terminal restarts it instead of leaving the app without a shell.
 
+Each terminal session also stores the working directory used to spawn its PTY. Normal new-terminal uses the workspace root, while New Terminal Here derives the selected explorer folder or selected file's parent folder and stores that path on the session. Restart-terminal reuses the active session's stored working directory so per-folder shell context survives a shell restart.
+
 ## 4. Rendering Design
 
 The UI uses a vertical root layout:
