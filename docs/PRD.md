@@ -62,6 +62,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can move and select by word in the editor with modified arrow keys.
 - As a developer, I can quickly open files by typing a fuzzy path fragment.
 - As a developer, I can search text across the workspace, see file/line previews, and jump to a matching location.
+- As a developer, I can list functions, types, classes, interfaces, modules, and similar code symbols in the active file or across the workspace, then jump to the selected symbol.
 - As a developer, I can replace text across real workspace files while clean open tabs stay synchronized and dirty open buffers are not overwritten.
 - As a developer, I can send the current editor selection, or the current line when nothing is selected, directly into the integrated terminal shell.
 - As a developer, I can clean up trailing spaces and tabs in the active file through the command palette, save the cleaned file, and undo the cleanup if needed.

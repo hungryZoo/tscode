@@ -500,6 +500,8 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = match panel.kind {
         crate::app::QuickPanelKind::OpenFile => " Quick Open  Ctrl-P ",
         crate::app::QuickPanelKind::WorkspaceSearch => " Search Workspace  Ctrl-Shift-F ",
+        crate::app::QuickPanelKind::DocumentSymbols => " Go to Symbol in File  Ctrl-Shift-O ",
+        crate::app::QuickPanelKind::WorkspaceSymbols => " Go to Symbol in Workspace  Ctrl-T ",
         crate::app::QuickPanelKind::CommandPalette => " Command Palette  F1 / Ctrl-Shift-P ",
     };
     let block = Block::default()
@@ -522,6 +524,12 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             crate::app::QuickPanelKind::OpenFile => "Type a file name or path fragment.",
             crate::app::QuickPanelKind::WorkspaceSearch => {
                 "Type text to search across workspace files."
+            }
+            crate::app::QuickPanelKind::DocumentSymbols => {
+                "No symbols found in the active editor buffer."
+            }
+            crate::app::QuickPanelKind::WorkspaceSymbols => {
+                "Type a symbol name, or clear the query to list workspace symbols."
             }
             crate::app::QuickPanelKind::CommandPalette => "Type a command name.",
         };

@@ -12,6 +12,8 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Command Palette with `F1` or `Ctrl-Shift-P`, fuzzy command matching, and actions for files, editor commands, explorer operations, focus changes, and terminal management.
 - Quick Open overlay with `Ctrl-P` fuzzy matching across workspace file paths.
 - Workspace text search overlay with `Ctrl-Shift-F` or `Ctrl-G`, real file scanning, result previews, and jump-to-line open.
+- Document Symbols with `Ctrl-Shift-O` lists functions, types, classes, interfaces, modules, and impl blocks from the active editor buffer and jumps to the selected symbol.
+- Workspace Symbols with `Ctrl-T` scans visible workspace text files for code symbols, including dirty open buffers from memory, and jumps directly to the selected file location.
 - Replace in Files with `Ctrl-Shift-H` or the command palette scans real workspace text files, writes replacements to disk, updates clean open tabs, and skips dirty open buffers instead of overwriting unsaved work.
 - Run Selection in Terminal with `Ctrl-Enter` or the command palette sends selected editor text, or the current editor line when there is no selection, to the active PTY shell and focuses the integrated terminal.
 - Editable tabbed code buffers with line numbers, syntax highlighting, dirty markers, cursor movement, paste, save, repeated search, undo, and redo.
@@ -28,6 +30,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Editor line commands for indent/outdent, duplicate, delete, move up/down, and toggle comments now work on selected line ranges as one undoable edit, while still supporting the current line when no selection is active.
 - Command palette Trim Trailing Whitespace removes spaces and tabs at line ends in the active editor buffer as one undoable edit, then saves cleanly to the real file when `Ctrl-S` or Save File is used.
 - Command palette Revert File reloads the active editor tab from disk, discards unsaved buffer edits, clears per-tab edit history, resets the dirty marker, and refreshes Git status markers.
+- Opening files now canonicalizes paths before tab lookup, avoiding duplicate tabs and broken relative-path behavior when the OS exposes aliases such as `/tmp` and `/private/tmp`.
 - File explorer actions for refresh, new file, new folder, rename, and delete with confirmation; folder rename/delete keeps open tabs in sync.
 - Explorer collapse-all is available through the command palette.
 - Tab close support through the tab `x`, middle click, or `Ctrl-W`, with unsaved-buffer protection.

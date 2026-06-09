@@ -921,6 +921,8 @@ pub struct PromptState {
 pub enum QuickPanelKind {
     OpenFile,
     WorkspaceSearch,
+    DocumentSymbols,
+    WorkspaceSymbols,
     CommandPalette,
 }
 
@@ -939,6 +941,8 @@ pub struct QuickItem {
 pub enum CommandAction {
     QuickOpen,
     WorkspaceSearch,
+    DocumentSymbols,
+    WorkspaceSymbols,
     WorkspaceReplace,
     SaveFile,
     SaveAll,
@@ -1222,12 +1226,24 @@ impl App {
                     self.open_quick_panel(QuickPanelKind::CommandPalette)?;
                     return Ok(());
                 }
+                KeyCode::Char('O') => {
+                    self.open_quick_panel(QuickPanelKind::DocumentSymbols)?;
+                    return Ok(());
+                }
                 KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.open_quick_panel(QuickPanelKind::CommandPalette)?;
                     return Ok(());
                 }
+                KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.open_quick_panel(QuickPanelKind::DocumentSymbols)?;
+                    return Ok(());
+                }
                 KeyCode::Char('p') => {
                     self.open_quick_panel(QuickPanelKind::OpenFile)?;
+                    return Ok(());
+                }
+                KeyCode::Char('t') | KeyCode::Char('T') => {
+                    self.open_quick_panel(QuickPanelKind::WorkspaceSymbols)?;
                     return Ok(());
                 }
                 KeyCode::Char('F') | KeyCode::Char('g') => {
@@ -1637,13 +1653,14 @@ impl App {
     }
 
     fn open_file(&mut self, path: &Path) {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         if let Some(index) = self.tabs.iter().position(|tab| tab.path == path) {
             self.active_tab = Some(index);
             self.focus = FocusPanel::Editor;
             return;
         }
 
-        match EditorTab::open(path.to_path_buf()) {
+        match EditorTab::open(path) {
             Ok(tab) => {
                 self.tabs.push(tab);
                 self.active_tab = Some(self.tabs.len() - 1);
@@ -1900,6 +1917,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Search text across workspace files",
             shortcut: "Ctrl-Shift-F",
             action: CommandAction::WorkspaceSearch,
+        },
+        CommandSpec {
+            label: "Document Symbols",
+            detail: "List functions, types, and classes from the active editor buffer",
+            shortcut: "Ctrl-Shift-O",
+            action: CommandAction::DocumentSymbols,
+        },
+        CommandSpec {
+            label: "Workspace Symbols",
+            detail: "Search workspace symbols from functions, types, classes, and modules",
+            shortcut: "Ctrl-T",
+            action: CommandAction::WorkspaceSymbols,
         },
         CommandSpec {
             label: "Replace in Files",
@@ -2254,6 +2283,8 @@ impl App {
         let items = match kind {
             QuickPanelKind::OpenFile => self.quick_open_items(&query)?,
             QuickPanelKind::WorkspaceSearch => self.workspace_search_items(&query)?,
+            QuickPanelKind::DocumentSymbols => self.document_symbol_items(&query),
+            QuickPanelKind::WorkspaceSymbols => self.workspace_symbol_items(&query)?,
             QuickPanelKind::CommandPalette => self.command_palette_items(&query),
         };
 
@@ -2349,6 +2380,64 @@ impl App {
         }
 
         Ok(items)
+    }
+
+    fn document_symbol_items(&self, query: &str) -> Vec<QuickItem> {
+        let Some(tab) = self.active_tab() else {
+            return Vec::new();
+        };
+        let relative = relative_path(&self.root, &tab.path);
+        let items = symbols_to_quick_items(&tab.path, &tab.text(), &relative, query, false);
+        items.into_iter().take(MAX_QUICK_ITEMS).collect()
+    }
+
+    fn workspace_symbol_items(&self, query: &str) -> Result<Vec<QuickItem>> {
+        let open_texts = self
+            .tabs
+            .iter()
+            .map(|tab| (tab.path.clone(), tab.text()))
+            .collect::<HashMap<_, _>>();
+        let mut scored = Vec::new();
+
+        for path in collect_workspace_files(&self.root, self.show_hidden, self.show_ignored)? {
+            let relative = relative_path(&self.root, &path);
+            let text = if let Some(text) = open_texts.get(&path) {
+                text.clone()
+            } else {
+                let Ok(metadata) = fs::metadata(&path) else {
+                    continue;
+                };
+                if metadata.len() > MAX_FILE_SCAN_BYTES {
+                    continue;
+                }
+                let Ok(bytes) = fs::read(&path) else {
+                    continue;
+                };
+                if bytes.contains(&0) {
+                    continue;
+                }
+                String::from_utf8_lossy(&bytes).into_owned()
+            };
+
+            scored.extend(symbols_to_quick_items(&path, &text, &relative, query, true));
+            if query.trim().is_empty() && scored.len() >= MAX_QUICK_ITEMS {
+                break;
+            }
+        }
+
+        if !query.trim().is_empty() {
+            scored.sort_by(|a, b| {
+                fuzzy_score(&format!("{} {}", a.label, a.detail), query)
+                    .unwrap_or(usize::MAX)
+                    .cmp(
+                        &fuzzy_score(&format!("{} {}", b.label, b.detail), query)
+                            .unwrap_or(usize::MAX),
+                    )
+                    .then(a.detail.cmp(&b.detail))
+            });
+        }
+
+        Ok(scored.into_iter().take(MAX_QUICK_ITEMS).collect())
     }
 
     fn command_palette_items(&self, query: &str) -> Vec<QuickItem> {
@@ -3426,6 +3515,12 @@ impl App {
             CommandAction::WorkspaceSearch => {
                 self.open_quick_panel(QuickPanelKind::WorkspaceSearch)?
             }
+            CommandAction::DocumentSymbols => {
+                self.open_quick_panel(QuickPanelKind::DocumentSymbols)?
+            }
+            CommandAction::WorkspaceSymbols => {
+                self.open_quick_panel(QuickPanelKind::WorkspaceSymbols)?
+            }
             CommandAction::WorkspaceReplace => self.start_workspace_replace_prompt(),
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAll => self.save_all_tabs(),
@@ -4219,6 +4314,319 @@ fn fuzzy_score(candidate: &str, query: &str) -> Option<usize> {
         None => 25,
     };
     Some(score.saturating_add(starts_bonus))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodeSymbol {
+    kind: &'static str,
+    name: String,
+    line: usize,
+    col: usize,
+    preview: String,
+}
+
+fn symbols_to_quick_items(
+    path: &Path,
+    text: &str,
+    relative: &str,
+    query: &str,
+    include_path_detail: bool,
+) -> Vec<QuickItem> {
+    let query = query.trim();
+    let mut scored = extract_code_symbols(path, text)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, symbol)| {
+            let haystack = format!("{} {}", symbol.name, symbol.kind);
+            let score = fuzzy_score(&haystack, query)?;
+            let detail = if include_path_detail {
+                format!("{}:{}  {}", relative, symbol.line + 1, symbol.kind)
+            } else {
+                format!("line {}  {}", symbol.line + 1, symbol.kind)
+            };
+            Some((
+                if query.is_empty() { index } else { score },
+                symbol.line,
+                QuickItem {
+                    label: symbol.name,
+                    detail,
+                    path: path.to_path_buf(),
+                    line: Some(symbol.line),
+                    col: Some(symbol.col),
+                    preview: Some(symbol.preview),
+                    command: None,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    scored.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.label.cmp(&b.2.label))
+    });
+    scored.into_iter().map(|(_, _, item)| item).collect()
+}
+
+fn extract_code_symbols(path: &Path, text: &str) -> Vec<CodeSymbol> {
+    text.lines()
+        .enumerate()
+        .filter_map(|(line, text)| symbol_from_line(path, line, text))
+        .collect()
+}
+
+fn symbol_from_line(path: &Path, line: usize, text: &str) -> Option<CodeSymbol> {
+    let trimmed = text.trim_start();
+    if trimmed.is_empty() || is_symbol_comment(trimmed) {
+        return None;
+    }
+
+    let base_col = text.chars().take_while(|c| c.is_whitespace()).count();
+    let stripped = strip_symbol_modifiers(trimmed);
+
+    let parsed = parse_impl_symbol(stripped)
+        .or_else(|| parse_function_symbol(stripped))
+        .or_else(|| parse_type_symbol(stripped))
+        .or_else(|| parse_variable_function_symbol(stripped))
+        .or_else(|| parse_shell_function_symbol(path, stripped))
+        .or_else(|| parse_generic_method_symbol(stripped))?;
+    let col = base_col + trimmed.find(&parsed.1).unwrap_or(0);
+
+    Some(CodeSymbol {
+        kind: parsed.0,
+        name: parsed.1,
+        line,
+        col,
+        preview: trimmed.to_owned(),
+    })
+}
+
+fn is_symbol_comment(line: &str) -> bool {
+    line.starts_with("//")
+        || line.starts_with("/*")
+        || line.starts_with('*')
+        || line.starts_with('#') && !line.starts_with("#!")
+}
+
+fn strip_symbol_modifiers(mut input: &str) -> &str {
+    loop {
+        let before = input;
+        input = input.trim_start();
+        for keyword in [
+            "pub(crate)",
+            "pub(super)",
+            "pub(self)",
+            "pub",
+            "export",
+            "default",
+            "async",
+            "unsafe",
+            "static",
+            "open",
+            "final",
+            "public",
+            "private",
+            "protected",
+            "internal",
+            "abstract",
+            "override",
+            "virtual",
+        ] {
+            if let Some(rest) = strip_leading_word(input, keyword) {
+                input = rest;
+                break;
+            }
+        }
+
+        if let Some(rest) = strip_leading_word(input, "extern") {
+            input = strip_quoted_abi(rest.trim_start());
+        }
+
+        if input == before {
+            return input;
+        }
+    }
+}
+
+fn strip_quoted_abi(input: &str) -> &str {
+    let Some(rest) = input.strip_prefix('"') else {
+        return input;
+    };
+    let Some(index) = rest.find('"') else {
+        return input;
+    };
+    rest[index + 1..].trim_start()
+}
+
+fn strip_leading_word<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
+    let rest = input.strip_prefix(keyword)?;
+    if rest.is_empty() || rest.chars().next().is_some_and(|c| c.is_whitespace()) {
+        Some(rest.trim_start())
+    } else {
+        None
+    }
+}
+
+fn parse_impl_symbol(input: &str) -> Option<(&'static str, String)> {
+    let rest = strip_leading_word(input, "impl")?;
+    let name = rest
+        .split('{')
+        .next()
+        .unwrap_or(rest)
+        .split(" where ")
+        .next()
+        .unwrap_or(rest)
+        .trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(("impl", name.to_owned()))
+}
+
+fn parse_function_symbol(input: &str) -> Option<(&'static str, String)> {
+    if let Some(rest) = strip_leading_word(input, "const") {
+        return parse_function_symbol(rest);
+    }
+    if let Some(rest) = strip_leading_word(input, "fn") {
+        return read_symbol_identifier(rest).map(|(name, _)| ("fn", name));
+    }
+    if let Some(rest) = strip_leading_word(input, "function") {
+        return read_symbol_identifier(rest).map(|(name, _)| ("function", name));
+    }
+    if let Some(rest) = strip_leading_word(input, "def") {
+        return read_symbol_identifier(rest).map(|(name, _)| ("def", name));
+    }
+    if let Some(rest) = strip_leading_word(input, "func") {
+        let rest = skip_receiver(rest.trim_start());
+        return read_symbol_identifier(rest).map(|(name, _)| ("func", name));
+    }
+    None
+}
+
+fn parse_type_symbol(input: &str) -> Option<(&'static str, String)> {
+    for (keyword, kind) in [
+        ("struct", "struct"),
+        ("enum", "enum"),
+        ("trait", "trait"),
+        ("class", "class"),
+        ("interface", "interface"),
+        ("type", "type"),
+        ("mod", "module"),
+        ("module", "module"),
+        ("namespace", "namespace"),
+    ] {
+        if let Some(rest) = strip_leading_word(input, keyword)
+            && let Some((name, _)) = read_symbol_identifier(rest)
+        {
+            return Some((kind, name));
+        }
+    }
+    None
+}
+
+fn parse_variable_function_symbol(input: &str) -> Option<(&'static str, String)> {
+    for keyword in ["const", "let", "var"] {
+        let Some(rest) = strip_leading_word(input, keyword) else {
+            continue;
+        };
+        let Some((name, rest)) = read_symbol_identifier(rest) else {
+            continue;
+        };
+        if rest.contains("=>") || rest.contains("function") {
+            return Some(("function", name));
+        }
+    }
+    None
+}
+
+fn parse_shell_function_symbol(path: &Path, input: &str) -> Option<(&'static str, String)> {
+    if !matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("sh" | "bash" | "zsh" | "fish")
+    ) {
+        return None;
+    }
+
+    if let Some(rest) = strip_leading_word(input, "function") {
+        return read_symbol_identifier(rest).map(|(name, _)| ("function", name));
+    }
+
+    let (name, rest) = read_symbol_identifier(input)?;
+    rest.trim_start()
+        .strip_prefix("()")
+        .map(|_| ("function", name))
+}
+
+fn parse_generic_method_symbol(input: &str) -> Option<(&'static str, String)> {
+    let (name, rest) = read_symbol_identifier(input)?;
+    if is_control_symbol_name(&name) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    if rest.starts_with('(')
+        && (input.contains('{') || input.contains("=>") || input.trim_end().ends_with(':'))
+    {
+        return Some(("method", name));
+    }
+    None
+}
+
+fn skip_receiver(input: &str) -> &str {
+    let input = input.trim_start();
+    let Some(rest) = input.strip_prefix('(') else {
+        return input;
+    };
+    let Some(index) = rest.find(')') else {
+        return input;
+    };
+    rest[index + 1..].trim_start()
+}
+
+fn read_symbol_identifier(input: &str) -> Option<(String, &str)> {
+    let input = input.trim_start();
+    let mut chars = input.char_indices();
+    let (_, first) = chars.next()?;
+    if !is_symbol_ident_start(first) {
+        return None;
+    }
+
+    let mut end = first.len_utf8();
+    for (index, c) in chars {
+        if is_symbol_ident_continue(c) {
+            end = index + c.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    Some((input[..end].to_owned(), &input[end..]))
+}
+
+fn is_symbol_ident_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_' || c == '$'
+}
+
+fn is_symbol_ident_continue(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '#')
+}
+
+fn is_control_symbol_name(name: &str) -> bool {
+    matches!(
+        name,
+        "if" | "for"
+            | "while"
+            | "switch"
+            | "catch"
+            | "match"
+            | "return"
+            | "else"
+            | "do"
+            | "try"
+            | "await"
+    )
 }
 
 fn copy_path_recursive(source: &Path, destination: &Path) -> Result<()> {
@@ -5059,6 +5467,18 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::WorkspaceReplace))
         );
+        let commands = app.command_palette_items("symbol file");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::DocumentSymbols))
+        );
+        let commands = app.command_palette_items("workspace symbol");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::WorkspaceSymbols))
+        );
         let commands = app.command_palette_items("copy relative path");
         assert!(commands.iter().any(|item| {
             item.command == Some(CommandAction::CopyActiveFileRelativePath)
@@ -5400,6 +5820,89 @@ mod tests {
 
         app.open_file(&search_items[0].path);
         assert!(app.active_tab().is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn document_symbol_panel_jumps_inside_active_buffer() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-document-symbols-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(
+            &path,
+            "pub struct App {}\nimpl App {\n    pub fn run(&self) {}\n}\n",
+        )
+        .unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        let items = app.document_symbol_items("run");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "run");
+        assert_eq!(items[0].line, Some(2));
+
+        app.quick_panel = Some(QuickPanel {
+            kind: QuickPanelKind::DocumentSymbols,
+            query: "run".to_owned(),
+            items,
+            selected: 0,
+            scroll: 0,
+        });
+        app.activate_selected_quick_item();
+
+        assert_eq!(app.focus, FocusPanel::Editor);
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (2, 11));
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_symbols_scan_real_files_and_open_dirty_buffer_symbols() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-workspace-symbols-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let target = root.join("target");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn server_start() {}\n").unwrap();
+        fs::write(
+            src.join("web.ts"),
+            "export const makeClient = () => fetch('/');\n",
+        )
+        .unwrap();
+        fs::write(target.join("generated.rs"), "fn generated_symbol() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let web = canonical_root.join("src/web.ts");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        let items = app.workspace_symbol_items("server").unwrap();
+        assert!(items.iter().any(|item| item.label == "server_start"));
+        assert!(
+            !app.workspace_symbol_items("generated")
+                .unwrap()
+                .iter()
+                .any(|item| item.label == "generated_symbol")
+        );
+
+        app.open_file(&web);
+        {
+            let tab = app.active_tab_mut().unwrap();
+            tab.set_cursor(0, tab.lines[0].chars().count());
+            tab.insert_text("\nfunction dirtyOnly() {}\n");
+        }
+        let items = app.workspace_symbol_items("dirty").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "dirtyOnly");
+        assert_eq!(items[0].path, web);
+
+        app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
 

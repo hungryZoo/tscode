@@ -206,6 +206,14 @@ The command palette shall include a trim-trailing-whitespace action for the acti
 
 The command palette shall include a revert-file action for the active editor tab. The action shall reload the active file's current contents from disk, discard unsaved editor-buffer changes, clear selection and undo/redo history for that tab, reset the dirty marker, preserve cursor visibility within the reloaded content, and refresh Git status markers.
 
+### R-233 Document Symbols
+
+`Ctrl-shift-o` or the command palette shall open a quick panel listing code symbols extracted from the active editor buffer. Selecting a symbol shall focus the editor and move the cursor to the symbol's file location. The extractor shall recognize common function, method, type, class, interface, module, namespace, and implementation declarations without requiring a language server.
+
+### R-234 Workspace Symbols
+
+`Ctrl-t` or the command palette shall open a quick panel that scans visible workspace text files for code symbols while applying the same hidden/generated-folder visibility policy as quick open and workspace search. Dirty open editor buffers shall be scanned from their in-memory text so unsaved symbols can be found. Selecting a workspace symbol shall open the owning file and move the editor cursor to that symbol.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
