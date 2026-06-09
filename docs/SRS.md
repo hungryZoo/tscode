@@ -78,6 +78,10 @@ The explorer shall show available file size metadata and read-only markers for f
 
 When the workspace is inside a Git repository, the explorer shall show compact Git status markers for changed files and dirty parent folders. Status markers shall refresh after explorer refreshes and editor saves.
 
+### R-114 External Explorer Refresh
+
+The explorer shall detect externally-created, externally-deleted, renamed, and metadata-changed visible workspace entries while the app is running. When such a change is detected, the explorer shall refresh from the real filesystem without requiring a manual refresh command, preserve expanded folders and the current selection when possible, keep active explorer filters applied, expand newly matching filtered paths, and refresh Git status markers without overwriting unrelated status messages.
+
 ## 4. Editor Requirements
 
 ### R-201 Tabs

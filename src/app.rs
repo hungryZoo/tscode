@@ -4,7 +4,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -24,6 +24,7 @@ const MAX_QUICK_ITEMS: usize = 200;
 const MAX_FILE_SCAN_BYTES: u64 = 1_000_000;
 const MAX_OSC52_CLIPBOARD_BYTES: usize = 512 * 1024;
 const MAX_NAVIGATION_HISTORY: usize = 200;
+const WORKSPACE_TREE_CHECK_INTERVAL: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPanel {
@@ -185,6 +186,17 @@ impl ExternalFileState {
 struct FileStamp {
     len: u64,
     modified: Option<SystemTime>,
+}
+
+type WorkspaceSnapshot = Vec<WorkspaceEntryStamp>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceEntryStamp {
+    path: PathBuf,
+    is_dir: bool,
+    len: u64,
+    modified: Option<SystemTime>,
+    readonly: bool,
 }
 
 impl EditorSelection {
@@ -1704,6 +1716,8 @@ pub struct App {
     pub terminal_search: Option<TerminalSearchState>,
     pub problems: Vec<QuickItem>,
     pending_clipboard_export: Option<String>,
+    workspace_snapshot: Option<WorkspaceSnapshot>,
+    last_workspace_tree_check: Instant,
 }
 
 impl App {
@@ -1721,6 +1735,7 @@ impl App {
         let explorer = FsTree::new(root.clone())?;
         let terminal = TerminalSession::new(1, root.clone())?;
         let (git_statuses, git_dirty_dirs) = load_git_status(&root);
+        let workspace_snapshot = workspace_snapshot(&root, true, false).ok();
         let mut app = Self {
             root: root.clone(),
             explorer,
@@ -1760,6 +1775,8 @@ impl App {
             terminal_search: None,
             problems: Vec::new(),
             pending_clipboard_export: None,
+            workspace_snapshot,
+            last_workspace_tree_check: Instant::now(),
         };
 
         if let Some(file) = initial_file {
@@ -2644,6 +2661,36 @@ impl App {
         }
 
         changed
+    }
+
+    pub fn check_workspace_tree_changes(&mut self) -> bool {
+        if self.last_workspace_tree_check.elapsed() < WORKSPACE_TREE_CHECK_INTERVAL {
+            return false;
+        }
+        self.last_workspace_tree_check = Instant::now();
+        self.force_check_workspace_tree_changes()
+    }
+
+    fn force_check_workspace_tree_changes(&mut self) -> bool {
+        let current = match workspace_snapshot(&self.root, self.show_hidden, self.show_ignored) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.last_error = Some(error.to_string());
+                return false;
+            }
+        };
+
+        if self.workspace_snapshot.as_ref() == Some(&current) {
+            return false;
+        }
+
+        self.workspace_snapshot = Some(current);
+        if let Err(error) = self.refresh_explorer_preserving_selection(false) {
+            self.last_error = Some(error.to_string());
+            return false;
+        }
+
+        true
     }
 
     pub fn active_tab(&self) -> Option<&EditorTab> {
@@ -4259,6 +4306,7 @@ impl App {
         self.show_hidden = !self.show_hidden;
         self.expand_active_explorer_filter_matches();
         self.restore_explorer_selection(selected_path);
+        self.update_workspace_snapshot();
         self.message = Some(format!(
             "{} hidden files",
             if self.show_hidden {
@@ -4277,6 +4325,7 @@ impl App {
         self.show_ignored = !self.show_ignored;
         self.expand_active_explorer_filter_matches();
         self.restore_explorer_selection(selected_path);
+        self.update_workspace_snapshot();
         self.message = Some(format!(
             "{} generated/ignored folders",
             if self.show_ignored {
@@ -4454,12 +4503,18 @@ impl App {
     }
 
     fn refresh_explorer(&mut self) -> Result<()> {
+        self.refresh_explorer_preserving_selection(true)
+    }
+
+    fn refresh_explorer_preserving_selection(&mut self, show_message: bool) -> Result<()> {
         let selected = self
             .visible_nodes()
             .get(self.explorer.selected)
             .map(|node| node.path.clone());
         self.explorer.refresh()?;
         self.refresh_git_status();
+        self.update_workspace_snapshot();
+        self.expand_active_explorer_filter_matches();
         if let Some(path) = selected
             && let Some(index) = self
                 .visible_nodes()
@@ -4469,8 +4524,18 @@ impl App {
             self.explorer.selected = index;
         }
         self.ensure_explorer_selection_visible();
-        self.message = Some("explorer refreshed".to_owned());
+        if show_message {
+            self.message = Some("explorer refreshed".to_owned());
+        }
         Ok(())
+    }
+
+    fn update_workspace_snapshot(&mut self) {
+        match workspace_snapshot(&self.root, self.show_hidden, self.show_ignored) {
+            Ok(snapshot) => self.workspace_snapshot = Some(snapshot),
+            Err(error) => self.last_error = Some(error.to_string()),
+        }
+        self.last_workspace_tree_check = Instant::now();
     }
 
     fn refresh_git_status(&mut self) {
@@ -6562,6 +6627,66 @@ fn collect_workspace_paths(
     collect_workspace_paths_into(root, &mut paths, show_hidden, show_ignored)?;
     paths.sort();
     Ok(paths)
+}
+
+fn workspace_snapshot(
+    root: &Path,
+    show_hidden: bool,
+    show_ignored: bool,
+) -> Result<WorkspaceSnapshot> {
+    let mut snapshot = Vec::new();
+    collect_workspace_snapshot_into(root, &mut snapshot, show_hidden, show_ignored)?;
+    snapshot.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(snapshot)
+}
+
+fn collect_workspace_snapshot_into(
+    path: &Path,
+    snapshot: &mut WorkspaceSnapshot,
+    show_hidden: bool,
+    show_ignored: bool,
+) -> Result<()> {
+    let metadata = fs::metadata(path)?;
+    let is_dir = metadata.is_dir();
+    snapshot.push(WorkspaceEntryStamp {
+        path: path.to_path_buf(),
+        is_dir,
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        readonly: metadata.permissions().readonly(),
+    });
+
+    if !is_dir {
+        return Ok(());
+    }
+
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(path)? {
+        entries.push(entry?);
+    }
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let entry_path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        let name = entry.file_name();
+        let hidden = name.to_str().is_some_and(is_hidden_file_name);
+        if file_type.is_dir() {
+            if (!show_hidden && hidden) || (!show_ignored && should_skip_dir(&entry_path)) {
+                continue;
+            }
+            let _ =
+                collect_workspace_snapshot_into(&entry_path, snapshot, show_hidden, show_ignored);
+        } else if file_type.is_file() && (show_hidden || !hidden) {
+            let _ =
+                collect_workspace_snapshot_into(&entry_path, snapshot, show_hidden, show_ignored);
+        }
+    }
+
+    Ok(())
 }
 
 fn collect_workspace_paths_into(
@@ -11164,6 +11289,118 @@ src/lib.rs:3:1: note: trailing note
         assert!(names.contains(&"deep"));
         assert!(names.contains(&"module"));
         assert!(names.contains(&"needle.rs"));
+        assert!(
+            visible
+                .iter()
+                .any(|node| node.path == canonical_root.join("src/deep/module/needle.rs"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_auto_refreshes_when_external_file_is_created() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-auto-create-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        let src_path = canonical_root.join("src");
+        app.explorer.selected = app
+            .visible_nodes()
+            .iter()
+            .position(|node| node.path == src_path)
+            .unwrap();
+        app.open_or_toggle_selected().unwrap();
+        assert!(
+            app.visible_nodes()
+                .iter()
+                .all(|node| node.name != "created.rs")
+        );
+
+        fs::write(src.join("created.rs"), "fn created() {}\n").unwrap();
+        assert!(app.force_check_workspace_tree_changes());
+
+        let visible = app.visible_nodes();
+        assert!(
+            visible
+                .iter()
+                .any(|node| node.path == canonical_root.join("src/created.rs"))
+        );
+        assert_eq!(
+            visible
+                .get(app.explorer.selected)
+                .map(|node| node.path.clone()),
+            Some(src_path)
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_auto_refreshes_when_external_file_is_deleted() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-auto-delete-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("delete_me.rs");
+        fs::write(&file, "fn doomed() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        let canonical_file = canonical_root.join("delete_me.rs");
+        assert!(
+            app.visible_nodes()
+                .iter()
+                .any(|node| node.path == canonical_file)
+        );
+
+        fs::remove_file(&file).unwrap();
+        assert!(app.force_check_workspace_tree_changes());
+        assert!(
+            app.visible_nodes()
+                .iter()
+                .all(|node| node.path != canonical_file)
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_auto_refresh_expands_new_filtered_matches() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-auto-filter-{}",
+            std::process::id()
+        ));
+        let nested = root.join("src/deep/module");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(root.join("README.md"), "hello\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.set_explorer_filter("needle".to_owned());
+        assert!(
+            app.visible_nodes()
+                .iter()
+                .all(|node| node.name != "needle.rs")
+        );
+
+        fs::write(nested.join("needle.rs"), "fn needle() {}\n").unwrap();
+        assert!(app.force_check_workspace_tree_changes());
+
+        let visible = app.visible_nodes();
+        assert!(visible.iter().any(|node| node.name == "needle.rs"));
         assert!(
             visible
                 .iter()

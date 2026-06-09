@@ -10,6 +10,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Explorer copy, cut, paste, duplicate, and reveal-active-file actions backed by real filesystem operations.
 - File moves keep open editor tab paths in sync and reveal pasted/duplicated targets in the tree.
 - Explorer filtering with `/` scans the real workspace tree, auto-expands collapsed parent folders for nested matches, preserves dotfile/generated-folder visibility rules, and keeps file metadata/read-only markers in tree rows.
+- Explorer now auto-refreshes when visible workspace files or folders are created, deleted, renamed, or have metadata changed by the integrated terminal, Git, build tools, or other external processes; expanded folders, selection, active filters, newly matching filtered paths, and Git badges are preserved/refreshed without a manual `r`.
 - Explorer rows now show Git working tree badges such as `git:M`, `git:?`, and dirty folder `git:*` when the workspace is inside a Git repository.
 - Command Palette with `F1` or `Ctrl-Shift-P`, fuzzy command matching, and actions for files, editor commands, explorer operations, focus changes, and terminal management.
 - Quick Open overlay with `Ctrl-P` fuzzy matching across workspace file paths.
