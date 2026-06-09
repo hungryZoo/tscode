@@ -923,6 +923,8 @@ pub enum QuickPanelKind {
     WorkspaceSearch,
     DocumentSymbols,
     WorkspaceSymbols,
+    Definitions,
+    References,
     CommandPalette,
 }
 
@@ -943,6 +945,8 @@ pub enum CommandAction {
     WorkspaceSearch,
     DocumentSymbols,
     WorkspaceSymbols,
+    GoToDefinition,
+    FindReferences,
     WorkspaceReplace,
     SaveFile,
     SaveAll,
@@ -1462,6 +1466,16 @@ impl App {
                 }
                 KeyCode::Char('h') => self.start_replace_prompt(false),
                 KeyCode::Char('l') => self.start_prompt(PromptKind::GotoLine, ""),
+                KeyCode::Char(']') => {
+                    if let Err(error) = self.go_to_definition_under_cursor() {
+                        self.last_error = Some(error.to_string());
+                    }
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    if let Err(error) = self.find_references_under_cursor() {
+                        self.last_error = Some(error.to_string());
+                    }
+                }
                 KeyCode::Char('/') => self.toggle_active_line_comment(),
                 KeyCode::Char('d') => self.duplicate_active_line(),
                 KeyCode::Char('w') => self.close_active_tab(),
@@ -1931,6 +1945,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::WorkspaceSymbols,
         },
         CommandSpec {
+            label: "Go to Definition",
+            detail: "Jump from the symbol under the editor cursor to its workspace definition",
+            shortcut: "Ctrl-]",
+            action: CommandAction::GoToDefinition,
+        },
+        CommandSpec {
+            label: "Find References",
+            detail: "List whole-word workspace references for the symbol under the editor cursor",
+            shortcut: "Ctrl-R",
+            action: CommandAction::FindReferences,
+        },
+        CommandSpec {
             label: "Replace in Files",
             detail: "Replace text across real workspace files, skipping dirty open buffers",
             shortcut: "Ctrl-Shift-H",
@@ -2264,9 +2290,13 @@ impl App {
     }
 
     fn open_quick_panel(&mut self, kind: QuickPanelKind) -> Result<()> {
+        self.open_quick_panel_with_query(kind, String::new())
+    }
+
+    fn open_quick_panel_with_query(&mut self, kind: QuickPanelKind, query: String) -> Result<()> {
         self.quick_panel = Some(QuickPanel {
             kind,
-            query: String::new(),
+            query,
             items: Vec::new(),
             selected: 0,
             scroll: 0,
@@ -2285,6 +2315,8 @@ impl App {
             QuickPanelKind::WorkspaceSearch => self.workspace_search_items(&query)?,
             QuickPanelKind::DocumentSymbols => self.document_symbol_items(&query),
             QuickPanelKind::WorkspaceSymbols => self.workspace_symbol_items(&query)?,
+            QuickPanelKind::Definitions => self.definition_items(&query)?,
+            QuickPanelKind::References => self.reference_items(&query)?,
             QuickPanelKind::CommandPalette => self.command_palette_items(&query),
         };
 
@@ -2392,12 +2424,106 @@ impl App {
     }
 
     fn workspace_symbol_items(&self, query: &str) -> Result<Vec<QuickItem>> {
+        let mut scored = Vec::new();
+
+        for file in self.workspace_text_files()? {
+            scored.extend(symbols_to_quick_items(
+                &file.path,
+                &file.text,
+                &file.relative,
+                query,
+                true,
+            ));
+            if query.trim().is_empty() && scored.len() >= MAX_QUICK_ITEMS {
+                break;
+            }
+        }
+
+        if !query.trim().is_empty() {
+            scored.sort_by(|a, b| {
+                fuzzy_score(&format!("{} {}", a.label, a.detail), query)
+                    .unwrap_or(usize::MAX)
+                    .cmp(
+                        &fuzzy_score(&format!("{} {}", b.label, b.detail), query)
+                            .unwrap_or(usize::MAX),
+                    )
+                    .then(a.detail.cmp(&b.detail))
+            });
+        }
+
+        Ok(scored.into_iter().take(MAX_QUICK_ITEMS).collect())
+    }
+
+    fn definition_items(&self, query: &str) -> Result<Vec<QuickItem>> {
+        let symbol = query.trim();
+        if symbol.is_empty() {
+            return Ok(Vec::new());
+        }
+        let symbol_lower = symbol.to_lowercase();
+        let mut exact = Vec::new();
+        let mut insensitive = Vec::new();
+
+        for file in self.workspace_text_files()? {
+            for code_symbol in extract_code_symbols(&file.path, &file.text) {
+                if code_symbol.name == symbol {
+                    exact.push(symbol_to_quick_item(
+                        &file.path,
+                        &file.relative,
+                        code_symbol,
+                        true,
+                    ));
+                } else if code_symbol.name.to_lowercase() == symbol_lower {
+                    insensitive.push(symbol_to_quick_item(
+                        &file.path,
+                        &file.relative,
+                        code_symbol,
+                        true,
+                    ));
+                }
+            }
+        }
+
+        if !exact.is_empty() {
+            return Ok(exact.into_iter().take(MAX_QUICK_ITEMS).collect());
+        }
+        Ok(insensitive.into_iter().take(MAX_QUICK_ITEMS).collect())
+    }
+
+    fn reference_items(&self, query: &str) -> Result<Vec<QuickItem>> {
+        let symbol = query.trim();
+        if symbol.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut items = Vec::new();
+        for file in self.workspace_text_files()? {
+            for (line_index, line) in file.text.lines().enumerate() {
+                for col in identifier_occurrences(line, symbol) {
+                    items.push(QuickItem {
+                        label: format!("{}:{}", file.relative, line_index + 1),
+                        detail: format!("col {}", col + 1),
+                        path: file.path.clone(),
+                        line: Some(line_index),
+                        col: Some(col),
+                        preview: Some(line.trim().to_owned()),
+                        command: None,
+                    });
+                    if items.len() >= MAX_QUICK_ITEMS {
+                        return Ok(items);
+                    }
+                }
+            }
+        }
+        Ok(items)
+    }
+
+    fn workspace_text_files(&self) -> Result<Vec<WorkspaceTextFile>> {
         let open_texts = self
             .tabs
             .iter()
             .map(|tab| (tab.path.clone(), tab.text()))
             .collect::<HashMap<_, _>>();
-        let mut scored = Vec::new();
+        let mut files = Vec::new();
 
         for path in collect_workspace_files(&self.root, self.show_hidden, self.show_ignored)? {
             let relative = relative_path(&self.root, &path);
@@ -2418,26 +2544,14 @@ impl App {
                 }
                 String::from_utf8_lossy(&bytes).into_owned()
             };
-
-            scored.extend(symbols_to_quick_items(&path, &text, &relative, query, true));
-            if query.trim().is_empty() && scored.len() >= MAX_QUICK_ITEMS {
-                break;
-            }
-        }
-
-        if !query.trim().is_empty() {
-            scored.sort_by(|a, b| {
-                fuzzy_score(&format!("{} {}", a.label, a.detail), query)
-                    .unwrap_or(usize::MAX)
-                    .cmp(
-                        &fuzzy_score(&format!("{} {}", b.label, b.detail), query)
-                            .unwrap_or(usize::MAX),
-                    )
-                    .then(a.detail.cmp(&b.detail))
+            files.push(WorkspaceTextFile {
+                path,
+                relative,
+                text,
             });
         }
 
-        Ok(scored.into_iter().take(MAX_QUICK_ITEMS).collect())
+        Ok(files)
     }
 
     fn command_palette_items(&self, query: &str) -> Vec<QuickItem> {
@@ -3380,6 +3494,59 @@ impl App {
         }
     }
 
+    fn go_to_definition_under_cursor(&mut self) -> Result<()> {
+        let Some(symbol) = self.active_identifier_under_cursor() else {
+            self.message = Some("no symbol under cursor".to_owned());
+            return Ok(());
+        };
+        let definitions = self.definition_items(&symbol)?;
+
+        match definitions.len() {
+            0 => {
+                self.message = Some(format!("definition not found: {symbol}"));
+            }
+            1 => {
+                let item = definitions.into_iter().next().unwrap();
+                self.open_quick_item(item, None);
+                self.focus = FocusPanel::Editor;
+                self.message = Some(format!("jumped to definition: {symbol}"));
+            }
+            _ => {
+                self.quick_panel = Some(QuickPanel {
+                    kind: QuickPanelKind::Definitions,
+                    query: symbol.clone(),
+                    items: definitions,
+                    selected: 0,
+                    scroll: 0,
+                });
+                self.message = Some(format!("multiple definitions: {symbol}"));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn find_references_under_cursor(&mut self) -> Result<()> {
+        let Some(symbol) = self.active_identifier_under_cursor() else {
+            self.message = Some("no symbol under cursor".to_owned());
+            return Ok(());
+        };
+        self.open_quick_panel_with_query(QuickPanelKind::References, symbol)
+    }
+
+    fn active_identifier_under_cursor(&self) -> Option<String> {
+        let tab = self.active_tab()?;
+        if let Some(selected) = tab.selected_text() {
+            let selected = selected.trim();
+            if is_identifier_token(selected) {
+                return Some(selected.to_owned());
+            }
+        }
+
+        let line = tab.lines.get(tab.cursor_line)?;
+        identifier_at_char(line, tab.cursor_col)
+    }
+
     fn ensure_editor_cursor_visible(&mut self) {
         let height = self.editor_height.max(1);
         let editor_width = self.editor_width;
@@ -3496,6 +3663,10 @@ impl App {
             (panel.kind == QuickPanelKind::WorkspaceSearch).then(|| panel.query.clone())
         });
         self.quick_panel = None;
+        self.open_quick_item(item, search_query);
+    }
+
+    fn open_quick_item(&mut self, item: QuickItem, search_query: Option<String>) {
         self.open_file(&item.path);
         if let Some(line) = item.line
             && let Some(tab) = self.active_tab_mut()
@@ -3521,6 +3692,8 @@ impl App {
             CommandAction::WorkspaceSymbols => {
                 self.open_quick_panel(QuickPanelKind::WorkspaceSymbols)?
             }
+            CommandAction::GoToDefinition => self.go_to_definition_under_cursor()?,
+            CommandAction::FindReferences => self.find_references_under_cursor()?,
             CommandAction::WorkspaceReplace => self.start_workspace_replace_prompt(),
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAll => self.save_all_tabs(),
@@ -4325,6 +4498,13 @@ struct CodeSymbol {
     preview: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceTextFile {
+    path: PathBuf,
+    relative: String,
+    text: String,
+}
+
 fn symbols_to_quick_items(
     path: &Path,
     text: &str,
@@ -4366,6 +4546,28 @@ fn symbols_to_quick_items(
             .then(a.2.label.cmp(&b.2.label))
     });
     scored.into_iter().map(|(_, _, item)| item).collect()
+}
+
+fn symbol_to_quick_item(
+    path: &Path,
+    relative: &str,
+    symbol: CodeSymbol,
+    include_path_detail: bool,
+) -> QuickItem {
+    let detail = if include_path_detail {
+        format!("{}:{}  {}", relative, symbol.line + 1, symbol.kind)
+    } else {
+        format!("line {}  {}", symbol.line + 1, symbol.kind)
+    };
+    QuickItem {
+        label: symbol.name,
+        detail,
+        path: path.to_path_buf(),
+        line: Some(symbol.line),
+        col: Some(symbol.col),
+        preview: Some(symbol.preview),
+        command: None,
+    }
 }
 
 fn extract_code_symbols(path: &Path, text: &str) -> Vec<CodeSymbol> {
@@ -4627,6 +4829,74 @@ fn is_control_symbol_name(name: &str) -> bool {
             | "try"
             | "await"
     )
+}
+
+fn identifier_at_char(line: &str, char_col: usize) -> Option<String> {
+    let chars = line.chars().collect::<Vec<_>>();
+    if chars.is_empty() {
+        return None;
+    }
+
+    let mut index = char_col.min(chars.len().saturating_sub(1));
+    if char_col >= chars.len() || !is_symbol_ident_continue(chars[index]) {
+        if char_col > 0 && is_symbol_ident_continue(chars[char_col - 1]) {
+            index = char_col - 1;
+        } else {
+            return None;
+        }
+    }
+
+    let mut start = index;
+    while start > 0 && is_symbol_ident_continue(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = index + 1;
+    while end < chars.len() && is_symbol_ident_continue(chars[end]) {
+        end += 1;
+    }
+    let token = chars[start..end].iter().collect::<String>();
+    is_identifier_token(&token).then_some(token)
+}
+
+fn is_identifier_token(token: &str) -> bool {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    is_symbol_ident_start(first) && chars.all(is_symbol_ident_continue)
+}
+
+fn identifier_occurrences(line: &str, symbol: &str) -> Vec<usize> {
+    if !is_identifier_token(symbol) {
+        return Vec::new();
+    }
+
+    let mut cols = Vec::new();
+    let mut start_byte = 0usize;
+    while start_byte <= line.len() {
+        let Some(found) = line[start_byte..].find(symbol) else {
+            break;
+        };
+        let byte = start_byte + found;
+        if has_identifier_boundaries(line, byte, symbol.len()) {
+            cols.push(line[..byte].chars().count());
+        }
+        start_byte = byte + symbol.len();
+    }
+    cols
+}
+
+fn has_identifier_boundaries(line: &str, byte: usize, len: usize) -> bool {
+    let before = line[..byte]
+        .chars()
+        .next_back()
+        .is_none_or(|c| !is_symbol_ident_continue(c));
+    let after_byte = byte.saturating_add(len);
+    let after = line[after_byte..]
+        .chars()
+        .next()
+        .is_none_or(|c| !is_symbol_ident_continue(c));
+    before && after
 }
 
 fn copy_path_recursive(source: &Path, destination: &Path) -> Result<()> {
@@ -5479,6 +5749,18 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::WorkspaceSymbols))
         );
+        let commands = app.command_palette_items("go definition");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::GoToDefinition))
+        );
+        let commands = app.command_palette_items("find references");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::FindReferences))
+        );
         let commands = app.command_palette_items("copy relative path");
         assert!(commands.iter().any(|item| {
             item.command == Some(CommandAction::CopyActiveFileRelativePath)
@@ -5901,6 +6183,91 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].label, "dirtyOnly");
         assert_eq!(items[0].path, web);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn go_to_definition_jumps_from_symbol_under_cursor() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-definition-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        let lib = src.join("lib.rs");
+        let main = src.join("main.rs");
+        fs::write(&lib, "pub fn make_client() {}\n").unwrap();
+        fs::write(
+            &main,
+            "fn main() {\n    make_client();\n    make_client_extra();\n}\n",
+        )
+        .unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let lib = canonical_root.join("src/lib.rs");
+        let main = canonical_root.join("src/main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&main);
+        app.active_tab_mut().unwrap().set_cursor(1, 6);
+
+        app.run_command(CommandAction::GoToDefinition).unwrap();
+
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.path, lib);
+        assert_eq!(tab.cursor_position(), (0, 7));
+        assert_eq!(
+            app.message.as_deref(),
+            Some("jumped to definition: make_client")
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn find_references_lists_whole_word_matches_and_opens_selected_reference() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-references-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn make_client() {}\n").unwrap();
+        fs::write(
+            src.join("main.rs"),
+            "fn main() {\n    make_client();\n    make_client_extra();\n}\n",
+        )
+        .unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let main = canonical_root.join("src/main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&main);
+        app.active_tab_mut().unwrap().set_cursor(1, 6);
+
+        app.run_command(CommandAction::FindReferences).unwrap();
+
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.kind, QuickPanelKind::References);
+        assert_eq!(panel.query, "make_client");
+        assert_eq!(panel.items.len(), 2);
+        assert!(panel.items.iter().any(|item| item.label == "src/lib.rs:1"));
+        let main_ref = panel
+            .items
+            .iter()
+            .position(|item| item.label == "src/main.rs:2")
+            .unwrap();
+        assert!(!panel.items.iter().any(|item| {
+            item.preview
+                .as_deref()
+                .is_some_and(|preview| preview.contains("make_client_extra"))
+        }));
+
+        app.quick_panel.as_mut().unwrap().selected = main_ref;
+        app.activate_selected_quick_item();
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.path, main);
+        assert_eq!(tab.cursor_position(), (1, 4));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

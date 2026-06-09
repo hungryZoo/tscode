@@ -214,6 +214,14 @@ The command palette shall include a revert-file action for the active editor tab
 
 `Ctrl-t` or the command palette shall open a quick panel that scans visible workspace text files for code symbols while applying the same hidden/generated-folder visibility policy as quick open and workspace search. Dirty open editor buffers shall be scanned from their in-memory text so unsaved symbols can be found. Selecting a workspace symbol shall open the owning file and move the editor cursor to that symbol.
 
+### R-235 Go To Definition
+
+`Ctrl-]` or the command palette shall use the active editor selection, when it is a valid identifier, or the identifier under the editor cursor to search visible workspace text files for matching code symbol definitions. If one definition is found, the editor shall open that file and move the cursor to the definition. If multiple definitions are found, a quick panel shall list the candidates. Dirty open editor buffers shall be scanned from their in-memory text.
+
+### R-236 Find References
+
+`Ctrl-r` or the command palette shall use the active editor selection, when it is a valid identifier, or the identifier under the editor cursor to open a quick panel listing whole-word workspace references. Selecting a reference shall open its file and move the cursor to the occurrence. Reference scanning shall apply the same visible workspace text-file policy as workspace search and shall use in-memory text for dirty open editor buffers.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
