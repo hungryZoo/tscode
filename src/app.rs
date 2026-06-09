@@ -200,6 +200,26 @@ impl EditorTab {
     }
 
     fn insert_char(&mut self, c: char) {
+        if self.selection_range().is_none() && self.char_at_cursor() == Some(c) && is_pair_close(c)
+        {
+            self.cursor_col += 1;
+            return;
+        }
+
+        if let Some(close) = auto_pair_close(c) {
+            if self.selection_range().is_some() {
+                self.wrap_selection_with(c, close);
+                return;
+            }
+
+            self.push_undo();
+            self.insert_char_raw(c);
+            self.insert_char_raw(close);
+            self.cursor_col = self.cursor_col.saturating_sub(1);
+            self.dirty = true;
+            return;
+        }
+
         if self.selection_range().is_some() {
             self.replace_selection_with(&c.to_string());
             return;
@@ -250,7 +270,7 @@ impl EditorTab {
         }
 
         self.push_undo();
-        self.newline_raw();
+        self.newline_auto_indent_raw();
         self.dirty = true;
     }
 
@@ -264,6 +284,37 @@ impl EditorTab {
         self.lines.insert(self.cursor_line, rest);
     }
 
+    fn newline_auto_indent_raw(&mut self) {
+        let cursor_col = self.cursor_col;
+        let current = self.lines[self.cursor_line].clone();
+        let before = take_chars_owned(&current, cursor_col);
+        let after = skip_chars_owned(&current, cursor_col);
+        let base_indent = leading_whitespace(&current);
+        let indent_unit = indent_unit_for(&base_indent);
+        let open = before.trim_end().chars().last();
+        let should_indent = open.is_some_and(is_auto_indent_open);
+        let inner_indent = if should_indent {
+            format!("{base_indent}{indent_unit}")
+        } else {
+            base_indent.clone()
+        };
+        let should_split_pair = open
+            .and_then(auto_pair_close)
+            .is_some_and(|close| after.trim_start().starts_with(close));
+
+        self.lines[self.cursor_line] = before;
+        self.cursor_line += 1;
+        self.cursor_col = inner_indent.chars().count();
+        if should_split_pair {
+            self.lines.insert(self.cursor_line, inner_indent);
+            self.lines
+                .insert(self.cursor_line + 1, format!("{base_indent}{after}"));
+        } else {
+            self.lines
+                .insert(self.cursor_line, format!("{inner_indent}{after}"));
+        }
+    }
+
     fn backspace(&mut self) {
         if self.delete_selection().is_some() {
             return;
@@ -274,6 +325,19 @@ impl EditorTab {
         }
 
         self.push_undo();
+        if self.cursor_col > 0
+            && self.cursor_line < self.lines.len()
+            && let Some(previous) = self.char_before_cursor()
+            && auto_pair_close(previous) == self.char_at_cursor()
+        {
+            let line = self.cursor_line;
+            let start = self.cursor_col - 1;
+            let end = self.cursor_col + 1;
+            self.delete_range_raw((line, start), (line, end));
+            self.dirty = true;
+            return;
+        }
+
         if self.cursor_col > 0 {
             let cursor_col = self.cursor_col;
             let line = self.current_line_mut();
@@ -475,6 +539,19 @@ impl EditorTab {
         &mut self.lines[self.cursor_line]
     }
 
+    fn char_before_cursor(&self) -> Option<char> {
+        if self.cursor_col == 0 {
+            return None;
+        }
+        self.lines[self.cursor_line]
+            .chars()
+            .nth(self.cursor_col - 1)
+    }
+
+    fn char_at_cursor(&self) -> Option<char> {
+        self.lines[self.cursor_line].chars().nth(self.cursor_col)
+    }
+
     fn clamp_cursor_col(&mut self) {
         let line_len = self.lines[self.cursor_line].chars().count();
         self.cursor_col = self.cursor_col.min(line_len);
@@ -529,6 +606,23 @@ impl EditorTab {
         self.push_undo();
         self.delete_range_raw(start, end);
         self.insert_text_raw(text);
+        self.dirty = true;
+    }
+
+    fn wrap_selection_with(&mut self, open: char, close: char) {
+        let Some((start, end)) = self.selection_range() else {
+            return;
+        };
+        let selected = self.text_in_range(start, end);
+        self.push_undo();
+        self.delete_range_raw(start, end);
+        self.insert_char_raw(open);
+        self.insert_text_raw(&selected);
+        self.insert_char_raw(close);
+        let open_width = open.len_utf8();
+        self.selection_anchor = Some((start.0, start.1 + open_width));
+        self.cursor_line = end.0;
+        self.cursor_col = end.1 + open_width;
         self.dirty = true;
     }
 
@@ -3560,6 +3654,38 @@ fn leading_indent_width(line: &str) -> usize {
     line.chars().take_while(|c| *c == ' ').take(4).count()
 }
 
+fn leading_whitespace(line: &str) -> String {
+    line.chars().take_while(|c| c.is_whitespace()).collect()
+}
+
+fn indent_unit_for(base_indent: &str) -> &'static str {
+    if base_indent.ends_with('\t') {
+        "\t"
+    } else {
+        "    "
+    }
+}
+
+fn auto_pair_close(open: char) -> Option<char> {
+    match open {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '"' => Some('"'),
+        '\'' => Some('\''),
+        '`' => Some('`'),
+        _ => None,
+    }
+}
+
+fn is_auto_indent_open(c: char) -> bool {
+    matches!(c, '(' | '[' | '{')
+}
+
+fn is_pair_close(c: char) -> bool {
+    matches!(c, ')' | ']' | '}' | '"' | '\'' | '`')
+}
+
 fn comment_token_for_path(path: &Path) -> Option<&'static str> {
     let extension = path
         .extension()
@@ -3819,6 +3945,62 @@ mod tests {
 
         tab.insert_text(&cut);
         assert_eq!(tab.lines, vec!["abc", "def", "ghi"]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn editor_auto_pairs_skip_backspace_and_wrap_selection() {
+        let path = temp_file("pairs.rs");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.insert_char('(');
+        assert_eq!(tab.lines, vec!["()"]);
+        assert_eq!(tab.cursor_position(), (0, 1));
+
+        tab.insert_char(')');
+        assert_eq!(tab.lines, vec!["()"]);
+        assert_eq!(tab.cursor_position(), (0, 2));
+
+        tab.set_cursor(0, 1);
+        tab.backspace();
+        assert_eq!(tab.lines, vec![""]);
+        assert_eq!(tab.cursor_position(), (0, 0));
+
+        tab.insert_text("alpha");
+        tab.set_cursor(0, 0);
+        tab.set_cursor_selecting(0, 5);
+        tab.insert_char('"');
+        assert_eq!(tab.lines, vec!["\"alpha\""]);
+        assert_eq!(tab.selected_text().as_deref(), Some("alpha"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn editor_enter_preserves_indent_and_splits_pairs() {
+        let path = temp_file("auto-indent.rs");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "fn main() {}\n    let x = 1;").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.set_cursor(0, "fn main() {".chars().count());
+        tab.newline();
+        assert_eq!(
+            tab.lines,
+            vec!["fn main() {", "    ", "}", "    let x = 1;"]
+        );
+        assert_eq!(tab.cursor_position(), (1, 4));
+
+        tab.set_cursor(3, tab.lines[3].chars().count());
+        tab.newline();
+        assert_eq!(
+            tab.lines,
+            vec!["fn main() {", "    ", "}", "    let x = 1;", "    "]
+        );
+        assert_eq!(tab.cursor_position(), (4, 4));
+
         let _ = fs::remove_file(path);
     }
 

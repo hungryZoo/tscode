@@ -56,6 +56,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can select text with the keyboard or mouse, copy or cut it to both the editor clipboard and a terminal clipboard export where supported, then paste it back into the editor.
 - As a developer, I can copy active-file or selected-explorer absolute and workspace-relative paths for use in shell commands, bug reports, or external tools.
 - As a developer, I can use common line editing actions: indent, outdent, duplicate line, delete line, move line, toggle line comment, and go to line.
+- As a developer, I can rely on editor conveniences such as auto-indent on newline, bracket/quote auto-pairs, skip-over of existing closing pairs, and paired deletion with Backspace.
 - As a developer, I can move and select by word in the editor with modified arrow keys.
 - As a developer, I can quickly open files by typing a fuzzy path fragment.
 - As a developer, I can search text across the workspace, see file/line previews, and jump to a matching location.
@@ -99,6 +100,8 @@ Keyboard fallback:
 - `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor
 - `Shift` with arrow keys and mouse drag select editor text
+- `Enter` preserves indentation and adds one extra indent level after opening braces/brackets/parentheses
+- bracket, quote, apostrophe, and backtick entry provides editor auto-pair insertion, selection wrapping, closing-pair skip-over, and paired Backspace deletion
 - `Ctrl-A`, `Ctrl-C`, `Ctrl-X`, and `Ctrl-V` provide editor select-all, copy, cut, and paste when editor focus is active; copy and cut also export text through OSC52-compatible terminal clipboards
 - `Ctrl-L`, `Ctrl-/`, `Ctrl-D`, `Alt-Up`, `Alt-Down`, `Tab`, and `Shift-Tab` provide editor go-to-line and line editing actions
 - `Esc` clears transient mode or exits when appropriate

@@ -162,23 +162,27 @@ When editor focus is active, `Ctrl-a` shall select the full buffer, `Ctrl-c` sha
 
 Typing, paste events, `Enter`, `Backspace`, or `Delete` with an active editor selection shall replace or remove the selected range as a single undoable edit.
 
-### R-224 Search Highlighting
+### R-224 Editor Auto Pairs and Indentation
+
+The editor shall auto-insert closing pairs for `()`, `[]`, `{}`, double quotes, single quotes, and backticks. Typing an existing closing pair at the cursor shall move over it instead of duplicating it. `Backspace` between an empty pair shall remove both sides. `Enter` shall preserve leading indentation and add one extra indent level after an opening `{`, `[`, or `(`, splitting an immediate closing pair onto its own base-indent line.
+
+### R-225 Search Highlighting
 
 When an active in-file search exists, the editor shall visually highlight visible matches and show the match count in the status bar for the active file.
 
-### R-225 Replace in File
+### R-226 Replace in File
 
 `Ctrl-h` or the command palette shall prompt for a search string and replacement string, then replace the current match when the cursor is on a match or the next match otherwise. The replacement shall be undoable as one edit.
 
-### R-226 Replace All in File
+### R-227 Replace All in File
 
 The command palette shall include a replace-all-in-file action that prompts for a search string and replacement string, then replaces every active-file match as one undoable edit.
 
-### R-227 Word Navigation
+### R-228 Word Navigation
 
 The editor shall support modified-arrow word movement and word selection for `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` when the terminal reports those keys.
 
-### R-228 Path Clipboard Commands
+### R-229 Path Clipboard Commands
 
 The command palette shall expose commands to copy the active editor file path and the selected explorer item path as both absolute and workspace-relative strings. These commands shall queue the same OSC52 terminal clipboard export used by editor copy and cut without modifying explorer copy/cut state.
 
@@ -333,6 +337,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use `Ctrl-l` or the command palette to jump to a line.
 - Select all text, cut it, paste it back, save, and confirm file contents on disk.
 - Drag in the editor or use `Shift` with arrow keys and confirm selected text is highlighted.
+- Type brackets/quotes and press `Enter` inside a brace pair, then confirm auto-pairing, skip-over, paired deletion, and auto-indent behavior.
 - Use line editing commands, save, and confirm file contents on disk.
 - Use `Ctrl-p` to quick-open a file by path fragment.
 - Use workspace search to find text in a different file and jump to the matching line.
