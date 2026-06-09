@@ -68,6 +68,10 @@ The explorer shall support a visible-tree text filter, dot-prefixed entry visibi
 
 The explorer shall show available file size metadata and read-only markers for filesystem entries.
 
+### R-113 Explorer Git Status
+
+When the workspace is inside a Git repository, the explorer shall show compact Git status markers for changed files and dirty parent folders. Status markers shall refresh after explorer refreshes and editor saves.
+
 ## 4. Editor Requirements
 
 ### R-201 Tabs
@@ -252,7 +256,7 @@ When the child terminal application requests xterm mouse events, terminal mouse 
 
 ### R-316 Terminal Layout Controls
 
-The application shall support moving focus in and out of the terminal, maximizing/restoring the terminal panel, and increasing/decreasing the normal terminal panel height through shortcuts such as `F6`/`F12` or command palette actions.
+The application shall support moving focus in and out of the terminal, maximizing/restoring the terminal panel, and increasing/decreasing the normal terminal panel height through shortcuts such as `F6`/``Ctrl-` `` and `F12`/`Ctrl-J` or command palette actions. The terminal focus and maximize shortcuts shall work even when the terminal panel is currently focused.
 
 ### R-317 Multiple Terminal Sessions
 

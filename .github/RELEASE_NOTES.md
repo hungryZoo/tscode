@@ -8,6 +8,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Explorer copy, cut, paste, duplicate, and reveal-active-file actions backed by real filesystem operations.
 - File moves keep open editor tab paths in sync and reveal pasted/duplicated targets in the tree.
 - Explorer filtering with `/`, dotfile visibility toggling with `.`, generated-folder visibility toggling with `i`, and file metadata/read-only markers in tree rows.
+- Explorer rows now show Git working tree badges such as `git:M`, `git:?`, and dirty folder `git:*` when the workspace is inside a Git repository.
 - Command Palette with `F1` or `Ctrl-Shift-P`, fuzzy command matching, and actions for files, editor commands, explorer operations, focus changes, and terminal management.
 - Quick Open overlay with `Ctrl-P` fuzzy matching across workspace file paths.
 - Workspace text search overlay with `Ctrl-Shift-F` or `Ctrl-G`, real file scanning, result previews, and jump-to-line open.
@@ -29,7 +30,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - File save preserves existing trailing newlines.
 - Bottom integrated terminal panel backed by a real PTY shell with forwarded keyboard input, shell state, `Ctrl-C`, terminal scrollback, clear-terminal, and restart-terminal commands.
 - Multiple integrated terminal sessions: `F7` creates a new PTY shell, `F8` switches to the next terminal, `F9` closes the active terminal, terminal tabs switch on click, tab close targets close on click or middle-click, and `+` creates a new terminal.
-- Terminal focus, maximize/restore, and height controls through `F6`, `F12`, optional control-key shortcuts, and command palette actions.
+- Terminal focus and maximize shortcuts now work from inside terminal focus too, so `F6`/``Ctrl-` `` and `F12`/`Ctrl-J` can move in and out of the integrated terminal without trapping the user in the PTY.
 - Terminal ANSI rendering preserves parsed foreground/background colors plus bold, dim, italic, underline, and inverse styles.
 - Terminal paste now honors bracketed paste mode when the child application requests it.
 - Terminal modified navigation keys, function keys, Shift-Tab, null, and application-cursor arrows use xterm-compatible sequences for better shell/editor behavior inside the PTY.

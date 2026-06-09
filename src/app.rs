@@ -1,6 +1,8 @@
 use std::{
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::Result;
@@ -898,6 +900,41 @@ impl TerminalSession {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitStatusKind {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Untracked,
+    Conflicted,
+}
+
+impl GitStatusKind {
+    fn from_porcelain(x: u8, y: u8) -> Option<Self> {
+        match (x, y) {
+            (b'?', b'?') => Some(Self::Untracked),
+            _ if [x, y].contains(&b'U') => Some(Self::Conflicted),
+            _ if [x, y].contains(&b'A') => Some(Self::Added),
+            _ if [x, y].contains(&b'R') || [x, y].contains(&b'C') => Some(Self::Renamed),
+            _ if [x, y].contains(&b'D') => Some(Self::Deleted),
+            _ if [x, y].contains(&b'M') || [x, y].contains(&b'T') => Some(Self::Modified),
+            _ => None,
+        }
+    }
+
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Modified => "git:M",
+            Self::Added => "git:A",
+            Self::Deleted => "git:D",
+            Self::Renamed => "git:R",
+            Self::Untracked => "git:?",
+            Self::Conflicted => "git:!",
+        }
+    }
+}
+
 pub struct App {
     pub root: PathBuf,
     pub explorer: FsTree,
@@ -928,6 +965,8 @@ pub struct App {
     pub quick_panel_height: usize,
     pub explorer_clipboard: Option<ExplorerClipboard>,
     pub editor_clipboard: Option<String>,
+    pub git_statuses: HashMap<PathBuf, GitStatusKind>,
+    pub git_dirty_dirs: HashSet<PathBuf>,
     pending_clipboard_export: Option<String>,
 }
 
@@ -936,6 +975,7 @@ impl App {
         let root = root.canonicalize().unwrap_or(root);
         let explorer = FsTree::new(root.clone())?;
         let terminal = TerminalSession::new(1, root.clone())?;
+        let (git_statuses, git_dirty_dirs) = load_git_status(&root);
         Ok(Self {
             root: root.clone(),
             explorer,
@@ -966,6 +1006,8 @@ impl App {
             quick_panel_height: 0,
             explorer_clipboard: None,
             editor_clipboard: None,
+            git_statuses,
+            git_dirty_dirs,
             pending_clipboard_export: None,
         })
     }
@@ -997,11 +1039,11 @@ impl App {
             self.open_quick_panel(QuickPanelKind::CommandPalette)?;
             return Ok(());
         }
-        if !matches!(self.focus, FocusPanel::Terminal) && key.code == KeyCode::F(6) {
+        if key.code == KeyCode::F(6) {
             self.toggle_terminal_focus();
             return Ok(());
         }
-        if !matches!(self.focus, FocusPanel::Terminal) && key.code == KeyCode::F(12) {
+        if key.code == KeyCode::F(12) {
             self.toggle_terminal_maximized();
             return Ok(());
         }
@@ -1018,9 +1060,7 @@ impl App {
             return Ok(());
         }
 
-        if !matches!(self.focus, FocusPanel::Terminal)
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-        {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('`') => {
                     self.toggle_terminal_focus();
@@ -1030,6 +1070,7 @@ impl App {
                     self.toggle_terminal_maximized();
                     return Ok(());
                 }
+                _ if matches!(self.focus, FocusPanel::Terminal) => {}
                 KeyCode::Char('P') => {
                     self.open_quick_panel(QuickPanelKind::CommandPalette)?;
                     return Ok(());
@@ -2522,6 +2563,7 @@ impl App {
             .get(self.explorer.selected)
             .map(|node| node.path.clone());
         self.explorer.refresh()?;
+        self.refresh_git_status();
         if let Some(path) = selected
             && let Some(index) = self
                 .visible_nodes()
@@ -2535,6 +2577,12 @@ impl App {
         Ok(())
     }
 
+    fn refresh_git_status(&mut self) {
+        let (statuses, dirty_dirs) = load_git_status(&self.root);
+        self.git_statuses = statuses;
+        self.git_dirty_dirs = dirty_dirs;
+    }
+
     fn collapse_explorer(&mut self) {
         self.explorer.collapse_all();
         self.explorer.selected = 0;
@@ -2543,11 +2591,16 @@ impl App {
     }
 
     fn save_active_tab(&mut self) {
-        if let Some(tab) = self.active_tab_mut() {
-            match tab.save() {
-                Ok(()) => self.message = Some(format!("saved {}", tab.path.display())),
-                Err(error) => self.last_error = Some(error.to_string()),
+        let Some(tab) = self.active_tab_mut() else {
+            return;
+        };
+        let path = tab.path.clone();
+        match tab.save() {
+            Ok(()) => {
+                self.refresh_git_status();
+                self.message = Some(format!("saved {}", path.display()));
             }
+            Err(error) => self.last_error = Some(error.to_string()),
         }
     }
 
@@ -2564,6 +2617,9 @@ impl App {
                     return;
                 }
             }
+        }
+        if saved > 0 {
+            self.refresh_git_status();
         }
         self.message = Some(format!("saved {saved} dirty tab(s)"));
     }
@@ -2641,6 +2697,18 @@ impl App {
         self.active_tab()
             .map(|tab| count_tab_matches(tab, needle))
             .filter(|count| *count > 0)
+    }
+
+    pub fn git_status_marker(&self, path: &Path, is_dir: bool) -> Option<&'static str> {
+        if let Some(status) = self.git_statuses.get(path) {
+            return Some(status.marker());
+        }
+
+        if is_dir && self.git_dirty_dirs.contains(path) {
+            return Some("git:*");
+        }
+
+        None
     }
 
     fn find_next(&mut self, forward: bool) {
@@ -3640,6 +3708,91 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+fn load_git_status(root: &Path) -> (HashMap<PathBuf, GitStatusKind>, HashSet<PathBuf>) {
+    let Some(top_level) = git_top_level(root) else {
+        return (HashMap::new(), HashSet::new());
+    };
+
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .output()
+    else {
+        return (HashMap::new(), HashSet::new());
+    };
+    if !output.status.success() {
+        return (HashMap::new(), HashSet::new());
+    }
+
+    let statuses = parse_git_status_z(&output.stdout, &top_level);
+    let dirty_dirs = git_dirty_directories(&statuses, root);
+    (statuses, dirty_dirs)
+}
+
+fn git_top_level(root: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if path.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(path);
+    Some(path.canonicalize().unwrap_or(path))
+}
+
+fn parse_git_status_z(output: &[u8], top_level: &Path) -> HashMap<PathBuf, GitStatusKind> {
+    let mut statuses = HashMap::new();
+    let mut records = output.split(|byte| *byte == 0);
+
+    while let Some(record) = records.next() {
+        if record.is_empty() || record.len() < 4 {
+            continue;
+        }
+        let x = record[0];
+        let y = record[1];
+        let Some(status) = GitStatusKind::from_porcelain(x, y) else {
+            continue;
+        };
+        let path = top_level.join(String::from_utf8_lossy(&record[3..]).as_ref());
+        statuses.insert(path, status);
+
+        if matches!(x, b'R' | b'C') || matches!(y, b'R' | b'C') {
+            let _ = records.next();
+        }
+    }
+
+    statuses
+}
+
+fn git_dirty_directories(
+    statuses: &HashMap<PathBuf, GitStatusKind>,
+    root: &Path,
+) -> HashSet<PathBuf> {
+    let mut dirs = HashSet::new();
+    for path in statuses.keys() {
+        let mut current = path.parent();
+        while let Some(dir) = current {
+            if dir.starts_with(root) {
+                dirs.insert(dir.to_path_buf());
+            }
+            if dir == root {
+                break;
+            }
+            current = dir.parent();
+        }
+    }
+    dirs
+}
+
 fn fuzzy_score(candidate: &str, query: &str) -> Option<usize> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
@@ -4336,6 +4489,67 @@ mod tests {
         );
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_focus_shortcuts_work_from_inside_terminal_focus() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-terminal-focus-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.focus = FocusPanel::Terminal;
+
+        app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.focus, FocusPanel::Explorer);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('`'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.focus, FocusPanel::Terminal);
+
+        app.handle_key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.terminal_maximized);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(!app.terminal_maximized);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn git_status_parser_marks_files_and_dirty_parent_dirs() {
+        let root = std::env::temp_dir().join(format!("tscode-test-git-{}", std::process::id()));
+        let src = root.join("src");
+        let statuses = parse_git_status_z(
+            b" M src/main.rs\0?? src/new.rs\0R  src/lib.rs\0src/old.rs\0UU src/conflict.rs\0",
+            &root,
+        );
+
+        assert_eq!(
+            statuses.get(&src.join("main.rs")),
+            Some(&GitStatusKind::Modified)
+        );
+        assert_eq!(
+            statuses.get(&src.join("new.rs")),
+            Some(&GitStatusKind::Untracked)
+        );
+        assert_eq!(
+            statuses.get(&src.join("lib.rs")),
+            Some(&GitStatusKind::Renamed)
+        );
+        assert_eq!(
+            statuses.get(&src.join("conflict.rs")),
+            Some(&GitStatusKind::Conflicted)
+        );
+
+        let dirty_dirs = git_dirty_directories(&statuses, &root);
+        assert!(dirty_dirs.contains(&root));
+        assert!(dirty_dirs.contains(&src));
     }
 
     #[test]

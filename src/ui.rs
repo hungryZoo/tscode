@@ -203,7 +203,7 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
         };
         let indent = "  ".repeat(node.depth);
         let prefix = format!("{indent}{marker} {}", node.name);
-        let suffix = explorer_node_suffix(node);
+        let suffix = explorer_node_suffix(node, app.git_status_marker(&node.path, node.is_dir));
         let text = fit_with_suffix(&prefix, &suffix, row_area.width as usize);
         frame.render_widget(Paragraph::new(text).style(style), row_area);
     }
@@ -560,19 +560,22 @@ fn border_style(focused: bool) -> Style {
     }
 }
 
-fn explorer_node_suffix(node: &VisibleNode) -> String {
+fn explorer_node_suffix(node: &VisibleNode, git_marker: Option<&str>) -> String {
+    let git = git_marker
+        .map(|marker| format!(" {marker}"))
+        .unwrap_or_default();
     if node.is_dir {
         if node.readonly {
-            " ro".to_owned()
+            format!("{git} ro")
         } else {
-            String::new()
+            git
         }
     } else {
         let size = node.size.map(format_size).unwrap_or_else(|| "?".to_owned());
         if node.readonly {
-            format!(" {size} ro")
+            format!(" {size}{git} ro")
         } else {
-            format!(" {size}")
+            format!(" {size}{git}")
         }
     }
 }

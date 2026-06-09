@@ -51,6 +51,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can copy, cut, paste, and duplicate files or folders from the explorer.
 - As a developer, I can reveal the active editor file in the explorer.
 - As a developer, I can filter the explorer tree, hide or show dot-prefixed entries, hide or show generated folders, and see basic file metadata while browsing.
+- As a developer, I can see Git working tree status badges in the explorer when the workspace is inside a Git repository.
 - As a developer, I can undo and redo edits, paste text, repeat search matches, and close saved tabs without losing unsaved changes.
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
@@ -109,7 +110,7 @@ Keyboard fallback:
 - `Esc` clears transient mode or exits when appropriate
 - `q` exits outside terminal focus; `Ctrl-q` exits globally
 - `Shift-PageUp` and `Shift-PageDown` scroll terminal scrollback when terminal focus is active
-- `F6` or ``Ctrl-` `` focuses the integrated terminal and `F12` or `Ctrl-J` toggles the maximized terminal layout outside terminal focus
+- `F6` or ``Ctrl-` `` moves focus in or out of the integrated terminal and `F12` or `Ctrl-J` toggles the maximized terminal layout from any panel
 - `F7`, `F8`, and `F9` create a new terminal, switch to the next terminal, and close the active terminal
 
 ## 8. Release Requirements

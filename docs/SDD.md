@@ -38,6 +38,7 @@ The top-level state owns:
 - hover target
 - quick panel state for quick open, workspace search, and command palette
 - explorer visibility state for dotfile visibility, generated-folder visibility, and visible-tree filtering
+- cached Git status and dirty-parent-directory markers for explorer badges
 - terminal layout state for normal height and maximized mode
 - integrated terminal sessions and the active terminal index
 - terminal state
@@ -47,6 +48,8 @@ The top-level state owns:
 ### Explorer
 
 The explorer stores a tree of `FsNode` values. Directories are loaded lazily when expanded. Filesystem metadata such as file size and read-only state is captured when entries are loaded. A flattened visible row list is produced after changes and during rendering, then filtered by app-level visibility state so generated folders can stay hidden by default without changing the underlying tree. Explorer reveal expands path ancestors and selects the requested file or folder row.
+
+When the workspace is inside a Git repository, `App` shells out to `git status --porcelain=v1 -z --untracked-files=all` at startup, after explorer refreshes, and after editor saves. The parser maps porcelain records to absolute paths and derives dirty parent-directory markers so the renderer can show file-level badges such as `git:M` or `git:?` and folder-level `git:*` badges without mixing Git state into the filesystem tree nodes.
 
 Explorer clipboard state stores copy/cut intent and the source path. Paste performs real filesystem copy or move operations, recursively copies directories, creates non-conflicting copy names, and updates open editor tab paths after moves.
 
@@ -130,7 +133,7 @@ Vertical wheel events route to the hovered panel if known, otherwise to the focu
 
 ### Keyboard
 
-Keyboard events map to panel-specific actions. Quick-panel input handles query editing, result movement, and activation before normal panel shortcuts. `F1` opens the command palette because many terminal sessions cannot reliably distinguish `Ctrl-P` from `Ctrl-Shift-P`. Explorer-focused input supports tree filtering and visibility toggles in addition to file operations. Editor-focused input supports save, search, go-to-line, repeated search, undo, redo, selection, word movement, internal clipboard operations, terminal clipboard export, line commands, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
+Keyboard events map to panel-specific actions. Quick-panel input handles query editing, result movement, and activation before normal panel shortcuts. `F1` opens the command palette because many terminal sessions cannot reliably distinguish `Ctrl-P` from `Ctrl-Shift-P`. Explorer-focused input supports tree filtering and visibility toggles in addition to file operations. Editor-focused input supports save, search, go-to-line, repeated search, undo, redo, selection, word movement, internal clipboard operations, terminal clipboard export, line commands, and saved-tab close shortcuts. Terminal focus and maximize shortcuts are handled before PTY forwarding so `F6`, ``Ctrl-` ``, `F12`, and `Ctrl-J` can move in and out of the integrated terminal even while the shell is focused. Other terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
 
 ### Editor Clipboard
 
