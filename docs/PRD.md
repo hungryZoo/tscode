@@ -64,6 +64,8 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can save the active editor buffer as a new relative or absolute path, have missing parent folders created, and keep editing the newly saved file.
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
+- As a developer, I can right-click inside the editor and run common editing, navigation, formatting, path-copy, terminal-send, revert, and tab actions from a mouse-selectable context menu.
+- As a developer, I can right-click the integrated terminal and run terminal copy/paste/search/session-management actions from a mouse-selectable context menu when the shell application is not owning mouse input.
 - As a developer, I can select text with the keyboard or mouse, copy or cut it to both the editor clipboard and a terminal clipboard export where supported, then paste it back into the editor.
 - As a developer, I can `Alt`+click inside the editor to place multiple cursors and type the same edit at every clicked location.
 - As a developer, I can use `Ctrl-D` and `Ctrl-Shift-L` to select the next or all active-file occurrences of the current word or selection, then replace the selected occurrences together as one undoable edit.
@@ -115,6 +117,7 @@ Mouse input is first-class:
 
 - hover updates visual state
 - left click changes focus or activates items
+- right click opens explorer, editor, or terminal context menus backed by the same commands as keyboard shortcuts and the command palette
 - `Alt`+click in the editor toggles mouse-placed extra cursors
 - mouse wheel scrolls the hovered/focused panel
 - horizontal wheel gestures pan long editor lines
@@ -127,6 +130,7 @@ Keyboard fallback:
 - `Enter` opens files, edits newlines, or submits shell input depending on focus
 - Terminal `Ctrl-Shift-C` copies the active terminal text selection; terminal `Ctrl-Shift-V` pastes the internal clipboard to the PTY shell
 - Terminal `Ctrl-F` searches terminal scrollback; terminal `F3` and `Shift-F3` move to next and previous terminal search matches
+- Terminal right-click opens a context menu for copy, paste, search, clear, restart, terminal session switching/creation/closing, maximize, resize, and focus actions when the child app is not using terminal mouse reporting
 - Explorer `c`, `x`, `p`, `y`, and `o` perform copy, cut, paste, duplicate, and reveal-active-file actions
 - Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
 - Explorer `t` opens a new integrated terminal in the selected folder or selected file's parent folder
@@ -144,6 +148,7 @@ Keyboard fallback:
 - `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
 - The command palette provides Save As for writing the active editor buffer to a new path and retargeting the tab
 - `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions
+- Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, definition/references/rename/suggest, format, comments, send-to-terminal, path-copy, revert, and close-tab actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor
 - `Shift` with arrow keys and mouse drag select editor text
 - `Enter` preserves indentation and adds one extra indent level after opening braces/brackets/parentheses

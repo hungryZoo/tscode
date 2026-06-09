@@ -124,6 +124,10 @@ Tabs shall visually highlight on mouse hover.
 
 The command palette shall include a Save As action for the active editor tab. The action shall accept a relative path resolved under the workspace root or an absolute path, create missing parent directories, write the current in-memory editor buffer to the target path, retarget the active tab's path and title to the saved file, clear dirty state, refresh explorer and Git status markers, and reveal the saved path when it is inside the workspace. The action shall refuse to overwrite a target that is already open in another dirty editor tab.
 
+### R-208B Editor Context Menu
+
+Right-clicking the editor body or an editor tab shall focus the editor and open a mouse-selectable context menu. Right-clicking the editor body shall update the editor cursor to the clicked buffer location before opening the menu. The menu shall expose actions for save, copy, cut, paste, select all, find, replace, go to line, go to definition, find references, rename symbol, trigger suggest, format document, toggle line comment, run selection/current line in terminal, copy absolute file path, copy relative file path, revert file, and close active tab. Activating a menu item shall call the same editor, workspace, terminal, or clipboard command used by keyboard shortcuts and the command palette.
+
 ### R-209 Search
 
 `Ctrl-f` in editor focus shall prompt for text and move the cursor to the next match when found.
@@ -377,6 +381,10 @@ When terminal focus is active, `Ctrl-f` or the command palette shall prompt for 
 ### R-323 Terminal Child Keyboard Ownership
 
 When the active terminal child has entered alternate-screen mode or requested terminal mouse reporting, terminal-focused app conveniences that would otherwise intercept shell input, including terminal search, terminal search navigation, terminal tab management shortcuts, terminal maximize shortcuts, and terminal scrollback shortcuts, shall be forwarded to the PTY instead. `F6` and ``Ctrl-` `` shall remain available to move focus out of the terminal, and `Ctrl-Shift-C`/`Ctrl-Shift-V` shall remain terminal selection copy and clipboard paste shortcuts.
+
+### R-324 Terminal Context Menu
+
+Right-clicking the terminal body or terminal tabs shall focus the terminal and open a mouse-selectable context menu when the active child application has not requested terminal mouse reporting. Right-clicking a terminal tab shall first select that terminal session. The menu shall expose actions for copy, paste, terminal search, clear terminal, restart terminal, new terminal, close terminal, next terminal, previous terminal, toggle terminal maximize, increase terminal height, decrease terminal height, focus editor, and focus explorer. When the child application has requested terminal mouse reporting, right-click mouse events over the terminal body shall be forwarded to the PTY instead of opening the app-owned context menu.
 
 ## 6. Mouse Requirements
 

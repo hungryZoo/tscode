@@ -627,6 +627,8 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         crate::app::QuickPanelKind::OpenFile => " Quick Open  Ctrl-P ",
         crate::app::QuickPanelKind::Completions => " Suggestions  Ctrl-Space ",
         crate::app::QuickPanelKind::ExplorerContextMenu => " Explorer Context Menu  Right Click ",
+        crate::app::QuickPanelKind::EditorContextMenu => " Editor Context Menu  Right Click ",
+        crate::app::QuickPanelKind::TerminalContextMenu => " Terminal Context Menu  Right Click ",
         crate::app::QuickPanelKind::WorkspaceSearch => " Search Workspace  Ctrl-Shift-F ",
         crate::app::QuickPanelKind::DocumentSymbols => " Go to Symbol in File  Ctrl-Shift-O ",
         crate::app::QuickPanelKind::WorkspaceSymbols => " Go to Symbol in Workspace  Ctrl-T ",
@@ -660,6 +662,12 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             crate::app::QuickPanelKind::ExplorerContextMenu => {
                 "No explorer actions match the current query."
+            }
+            crate::app::QuickPanelKind::EditorContextMenu => {
+                "No editor actions match the current query."
+            }
+            crate::app::QuickPanelKind::TerminalContextMenu => {
+                "No terminal actions match the current query."
             }
             crate::app::QuickPanelKind::WorkspaceSearch => {
                 "Type text to search across workspace files."

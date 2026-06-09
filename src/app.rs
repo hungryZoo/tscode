@@ -1386,6 +1386,8 @@ pub enum QuickPanelKind {
     OpenFile,
     Completions,
     ExplorerContextMenu,
+    EditorContextMenu,
+    TerminalContextMenu,
     WorkspaceSearch,
     DocumentSymbols,
     WorkspaceSymbols,
@@ -2029,6 +2031,27 @@ impl App {
             HoverTarget::Explorer => {
                 self.focus = FocusPanel::Explorer;
                 self.open_quick_panel(QuickPanelKind::ExplorerContextMenu)?;
+            }
+            HoverTarget::Editor => {
+                self.focus = FocusPanel::Editor;
+                self.set_editor_cursor_from_mouse(false);
+                self.open_quick_panel(QuickPanelKind::EditorContextMenu)?;
+            }
+            HoverTarget::Tab(index) | HoverTarget::TabClose(index) => {
+                if index < self.tabs.len() {
+                    self.active_tab = Some(index);
+                }
+                self.focus = FocusPanel::Editor;
+                self.open_quick_panel(QuickPanelKind::EditorContextMenu)?;
+            }
+            HoverTarget::Terminal | HoverTarget::TerminalInput => {
+                self.focus = FocusPanel::Terminal;
+                self.open_quick_panel(QuickPanelKind::TerminalContextMenu)?;
+            }
+            HoverTarget::TerminalTab(index) | HoverTarget::TerminalTabClose(index) => {
+                self.select_terminal(index);
+                self.focus = FocusPanel::Terminal;
+                self.open_quick_panel(QuickPanelKind::TerminalContextMenu)?;
             }
             _ => {}
         }
@@ -2990,11 +3013,58 @@ struct CommandSpec {
 }
 
 #[derive(Debug, Clone)]
-struct ExplorerContextAction {
+struct ContextMenuAction {
     label: &'static str,
     detail: String,
     shortcut: &'static str,
     action: CommandAction,
+}
+
+fn context_menu_items(path: PathBuf, specs: Vec<ContextMenuAction>, query: &str) -> Vec<QuickItem> {
+    let query = query.trim();
+    if query.is_empty() {
+        return specs
+            .into_iter()
+            .take(MAX_QUICK_ITEMS)
+            .map(|spec| QuickItem {
+                label: spec.label.to_owned(),
+                detail: spec.detail,
+                path: path.clone(),
+                line: None,
+                col: None,
+                preview: (!spec.shortcut.is_empty()).then(|| spec.shortcut.to_owned()),
+                command: Some(spec.action),
+            })
+            .collect();
+    }
+
+    let mut scored = specs
+        .into_iter()
+        .filter_map(|spec| {
+            let haystack = format!("{} {}", spec.label, spec.detail);
+            fuzzy_score(&haystack, query).map(|score| {
+                (
+                    score,
+                    QuickItem {
+                        label: spec.label.to_owned(),
+                        detail: spec.detail,
+                        path: path.clone(),
+                        line: None,
+                        col: None,
+                        preview: (!spec.shortcut.is_empty()).then(|| spec.shortcut.to_owned()),
+                        command: Some(spec.action),
+                    },
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.label.cmp(&b.1.label)));
+    scored
+        .into_iter()
+        .take(MAX_QUICK_ITEMS)
+        .map(|(_, item)| item)
+        .collect()
 }
 
 fn command_catalog() -> Vec<CommandSpec> {
@@ -3524,6 +3594,8 @@ impl App {
             QuickPanelKind::OpenFile => self.quick_open_items(&query)?,
             QuickPanelKind::Completions => self.completion_items(&query)?,
             QuickPanelKind::ExplorerContextMenu => self.explorer_context_menu_items(&query),
+            QuickPanelKind::EditorContextMenu => self.editor_context_menu_items(&query),
+            QuickPanelKind::TerminalContextMenu => self.terminal_context_menu_items(&query),
             QuickPanelKind::WorkspaceSearch => self.workspace_search_items(&query)?,
             QuickPanelKind::DocumentSymbols => self.document_symbol_items(&query),
             QuickPanelKind::WorkspaceSymbols => self.workspace_symbol_items(&query)?,
@@ -3617,73 +3689,73 @@ impl App {
             .unwrap_or_else(|| "Paste the explorer clipboard into the selected folder".to_owned());
 
         let mut specs = vec![
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: open_label,
                 detail: format!("{} {}", open_label.to_lowercase(), relative),
                 shortcut: "Enter",
                 action: CommandAction::OpenSelectedExplorerItem,
             },
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: "New File",
                 detail: format!("Create a file under {base}"),
                 shortcut: "n",
                 action: CommandAction::NewFile,
             },
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: "New Folder",
                 detail: format!("Create a folder under {base}"),
                 shortcut: "N",
                 action: CommandAction::NewFolder,
             },
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: "New Terminal Here",
                 detail: format!("Open a PTY shell in this {target_kind}'s directory"),
                 shortcut: "t",
                 action: CommandAction::NewTerminalHere,
             },
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: "Copy Path",
                 detail: "Copy the absolute path to the terminal clipboard".to_owned(),
                 shortcut: "",
                 action: CommandAction::CopySelectedExplorerPath,
             },
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: "Copy Relative Path",
                 detail: "Copy the workspace-relative path to the terminal clipboard".to_owned(),
                 shortcut: "",
                 action: CommandAction::CopySelectedExplorerRelativePath,
             },
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: "Copy",
                 detail: format!("Copy {relative} to the explorer clipboard"),
                 shortcut: "c",
                 action: CommandAction::CopySelectedExplorerItem,
             },
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: "Paste",
                 detail: paste_detail,
                 shortcut: "p",
                 action: CommandAction::PasteIntoSelectedExplorerItem,
             },
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: "Refresh Explorer",
                 detail: "Reload the workspace file tree from disk".to_owned(),
                 shortcut: "r",
                 action: CommandAction::RefreshExplorer,
             },
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: "Collapse Explorer Folders",
                 detail: "Collapse all expanded explorer folders".to_owned(),
                 shortcut: "",
                 action: CommandAction::CollapseExplorer,
             },
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: "Toggle Hidden Files",
                 detail: "Show or hide dot-prefixed files and folders".to_owned(),
                 shortcut: ".",
                 action: CommandAction::ToggleHiddenFiles,
             },
-            ExplorerContextAction {
+            ContextMenuAction {
                 label: "Toggle Generated Folders",
                 detail: "Show or hide target, dist, build, node_modules, and similar folders"
                     .to_owned(),
@@ -3696,25 +3768,25 @@ impl App {
             specs.splice(
                 8..8,
                 [
-                    ExplorerContextAction {
+                    ContextMenuAction {
                         label: "Cut",
                         detail: format!("Move {relative} through the explorer clipboard"),
                         shortcut: "x",
                         action: CommandAction::CutSelectedExplorerItem,
                     },
-                    ExplorerContextAction {
+                    ContextMenuAction {
                         label: "Duplicate",
                         detail: format!("Create a copy next to {relative}"),
                         shortcut: "y",
                         action: CommandAction::DuplicateSelectedExplorerItem,
                     },
-                    ExplorerContextAction {
+                    ContextMenuAction {
                         label: "Rename",
                         detail: format!("Rename {relative}"),
                         shortcut: "e",
                         action: CommandAction::RenameSelected,
                     },
-                    ExplorerContextAction {
+                    ContextMenuAction {
                         label: "Delete",
                         detail: format!("Delete {relative} after confirmation"),
                         shortcut: "D",
@@ -3724,50 +3796,237 @@ impl App {
             );
         }
 
-        let query = query.trim();
-        if query.is_empty() {
-            return specs
-                .into_iter()
-                .take(MAX_QUICK_ITEMS)
-                .map(|spec| QuickItem {
-                    label: spec.label.to_owned(),
-                    detail: spec.detail,
-                    path: node.path.clone(),
-                    line: None,
-                    col: None,
-                    preview: (!spec.shortcut.is_empty()).then(|| spec.shortcut.to_owned()),
-                    command: Some(spec.action),
-                })
-                .collect();
-        }
+        context_menu_items(node.path, specs, query)
+    }
 
-        let mut scored = specs
-            .into_iter()
-            .filter_map(|spec| {
-                let haystack = format!("{} {}", spec.label, spec.detail);
-                fuzzy_score(&haystack, query).map(|score| {
-                    (
-                        score,
-                        QuickItem {
-                            label: spec.label.to_owned(),
-                            detail: spec.detail,
-                            path: node.path.clone(),
-                            line: None,
-                            col: None,
-                            preview: (!spec.shortcut.is_empty()).then(|| spec.shortcut.to_owned()),
-                            command: Some(spec.action),
-                        },
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
+    fn editor_context_menu_items(&self, query: &str) -> Vec<QuickItem> {
+        let Some(tab) = self.active_tab() else {
+            return Vec::new();
+        };
+        let relative = relative_path(&self.root, &tab.path);
+        let selection_detail = tab
+            .selected_text()
+            .map(|text| format!("{} selected char(s)", text.chars().count()))
+            .unwrap_or_else(|| "current editor selection".to_owned());
+        let symbol = self
+            .active_identifier_under_cursor()
+            .unwrap_or_else(|| "symbol under cursor".to_owned());
+        let specs = vec![
+            ContextMenuAction {
+                label: "Save File",
+                detail: format!("Write {relative} to disk"),
+                shortcut: "Ctrl-S",
+                action: CommandAction::SaveFile,
+            },
+            ContextMenuAction {
+                label: "Copy",
+                detail: format!("Copy {selection_detail}"),
+                shortcut: "Ctrl-C",
+                action: CommandAction::CopySelection,
+            },
+            ContextMenuAction {
+                label: "Cut",
+                detail: format!("Cut {selection_detail}"),
+                shortcut: "Ctrl-X",
+                action: CommandAction::CutSelection,
+            },
+            ContextMenuAction {
+                label: "Paste",
+                detail: "Paste the internal editor clipboard at the cursor".to_owned(),
+                shortcut: "Ctrl-V",
+                action: CommandAction::PasteClipboard,
+            },
+            ContextMenuAction {
+                label: "Select All",
+                detail: "Select the entire active editor buffer".to_owned(),
+                shortcut: "Ctrl-A",
+                action: CommandAction::SelectAll,
+            },
+            ContextMenuAction {
+                label: "Find in File",
+                detail: format!("Search inside {relative}"),
+                shortcut: "Ctrl-F",
+                action: CommandAction::FindInFile,
+            },
+            ContextMenuAction {
+                label: "Replace in File",
+                detail: format!("Replace text inside {relative}"),
+                shortcut: "Ctrl-H",
+                action: CommandAction::ReplaceInFile,
+            },
+            ContextMenuAction {
+                label: "Go to Line",
+                detail: "Jump to a line or line:column in the active file".to_owned(),
+                shortcut: "Ctrl-L",
+                action: CommandAction::GotoLine,
+            },
+            ContextMenuAction {
+                label: "Go to Definition",
+                detail: format!("Jump to definition for {symbol}"),
+                shortcut: "Ctrl-]",
+                action: CommandAction::GoToDefinition,
+            },
+            ContextMenuAction {
+                label: "Find References",
+                detail: format!("List references for {symbol}"),
+                shortcut: "Ctrl-R",
+                action: CommandAction::FindReferences,
+            },
+            ContextMenuAction {
+                label: "Rename Symbol",
+                detail: format!("Rename {symbol} across workspace files"),
+                shortcut: "F2",
+                action: CommandAction::RenameSymbol,
+            },
+            ContextMenuAction {
+                label: "Trigger Suggest",
+                detail: "Open workspace symbol and keyword suggestions".to_owned(),
+                shortcut: "Ctrl-Space",
+                action: CommandAction::TriggerSuggest,
+            },
+            ContextMenuAction {
+                label: "Format Document",
+                detail: "Format the active buffer with an installed formatter".to_owned(),
+                shortcut: "Shift-Alt-F",
+                action: CommandAction::FormatDocument,
+            },
+            ContextMenuAction {
+                label: "Toggle Line Comment",
+                detail: "Comment or uncomment the current line or selected lines".to_owned(),
+                shortcut: "Ctrl-/",
+                action: CommandAction::ToggleLineComment,
+            },
+            ContextMenuAction {
+                label: "Run Selection in Terminal",
+                detail: "Send the selection or current line to the active PTY shell".to_owned(),
+                shortcut: "Ctrl-Enter",
+                action: CommandAction::RunSelectionInTerminal,
+            },
+            ContextMenuAction {
+                label: "Copy File Path",
+                detail: "Copy the active file absolute path to the terminal clipboard".to_owned(),
+                shortcut: "",
+                action: CommandAction::CopyActiveFilePath,
+            },
+            ContextMenuAction {
+                label: "Copy Relative File Path",
+                detail: "Copy the active file path relative to the workspace".to_owned(),
+                shortcut: "",
+                action: CommandAction::CopyActiveFileRelativePath,
+            },
+            ContextMenuAction {
+                label: "Revert File",
+                detail: "Reload the active file from disk and discard in-memory edits".to_owned(),
+                shortcut: "",
+                action: CommandAction::RevertFile,
+            },
+            ContextMenuAction {
+                label: "Close Active Tab",
+                detail: "Close the active tab when it has no unsaved edits".to_owned(),
+                shortcut: "Ctrl-W",
+                action: CommandAction::CloseActiveTab,
+            },
+        ];
 
-        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.label.cmp(&b.1.label)));
-        scored
-            .into_iter()
-            .take(MAX_QUICK_ITEMS)
-            .map(|(_, item)| item)
-            .collect()
+        context_menu_items(tab.path.clone(), specs, query)
+    }
+
+    fn terminal_context_menu_items(&self, query: &str) -> Vec<QuickItem> {
+        let terminal = self.active_terminal();
+        let cwd = terminal_cwd_detail(&terminal.cwd, &self.root);
+        let selection_detail = if self.terminal_selection_for_active().is_some() {
+            "Copy the active terminal selection".to_owned()
+        } else {
+            "Copy selected terminal text after dragging a selection".to_owned()
+        };
+        let specs = vec![
+            ContextMenuAction {
+                label: "Copy",
+                detail: selection_detail,
+                shortcut: "Ctrl-Shift-C",
+                action: CommandAction::CopyTerminalSelection,
+            },
+            ContextMenuAction {
+                label: "Paste",
+                detail: "Paste the internal clipboard into the PTY shell".to_owned(),
+                shortcut: "Ctrl-Shift-V",
+                action: CommandAction::PasteClipboardToTerminal,
+            },
+            ContextMenuAction {
+                label: "Find in Terminal",
+                detail: "Search the active terminal viewport and scrollback".to_owned(),
+                shortcut: "Ctrl-F",
+                action: CommandAction::FindInTerminal,
+            },
+            ContextMenuAction {
+                label: "Clear Terminal",
+                detail: "Clear the active terminal viewport and scrollback".to_owned(),
+                shortcut: "",
+                action: CommandAction::ClearTerminal,
+            },
+            ContextMenuAction {
+                label: "Restart Terminal",
+                detail: format!("Restart the shell in {cwd}"),
+                shortcut: "",
+                action: CommandAction::RestartTerminal,
+            },
+            ContextMenuAction {
+                label: "New Terminal",
+                detail: "Create a new workspace-root PTY terminal session".to_owned(),
+                shortcut: "F7",
+                action: CommandAction::NewTerminal,
+            },
+            ContextMenuAction {
+                label: "Close Terminal",
+                detail: "Close the active integrated terminal session".to_owned(),
+                shortcut: "F9",
+                action: CommandAction::CloseTerminal,
+            },
+            ContextMenuAction {
+                label: "Next Terminal",
+                detail: "Switch to the next integrated terminal session".to_owned(),
+                shortcut: "F8",
+                action: CommandAction::NextTerminal,
+            },
+            ContextMenuAction {
+                label: "Previous Terminal",
+                detail: "Switch to the previous integrated terminal session".to_owned(),
+                shortcut: "",
+                action: CommandAction::PreviousTerminal,
+            },
+            ContextMenuAction {
+                label: "Toggle Terminal Maximize",
+                detail: "Expand or restore the integrated terminal panel".to_owned(),
+                shortcut: "F12",
+                action: CommandAction::ToggleTerminalMaximized,
+            },
+            ContextMenuAction {
+                label: "Increase Terminal Height",
+                detail: "Give the terminal panel more rows".to_owned(),
+                shortcut: "",
+                action: CommandAction::IncreaseTerminalHeight,
+            },
+            ContextMenuAction {
+                label: "Decrease Terminal Height",
+                detail: "Give the editor more rows by shrinking the terminal".to_owned(),
+                shortcut: "",
+                action: CommandAction::DecreaseTerminalHeight,
+            },
+            ContextMenuAction {
+                label: "Focus Editor",
+                detail: "Move focus back to the editor".to_owned(),
+                shortcut: "",
+                action: CommandAction::FocusEditor,
+            },
+            ContextMenuAction {
+                label: "Focus Explorer",
+                detail: "Move focus to the file explorer".to_owned(),
+                shortcut: "",
+                action: CommandAction::FocusExplorer,
+            },
+        ];
+
+        context_menu_items(terminal.cwd.clone(), specs, query)
     }
 
     fn completion_items(&self, query: &str) -> Result<Vec<QuickItem>> {
@@ -7047,6 +7306,14 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+fn terminal_cwd_detail(cwd: &Path, root: &Path) -> String {
+    if cwd == root {
+        ".".to_owned()
+    } else {
+        relative_path(root, cwd)
+    }
+}
+
 fn resolve_prompt_path(root: &Path, input: &str) -> Option<PathBuf> {
     let input = input.trim();
     if input.is_empty() {
@@ -9176,6 +9443,87 @@ mod tests {
         app.run_command(CommandAction::DuplicateSelectedExplorerItem)
             .unwrap();
         assert!(canonical_root.join("main copy.rs").is_file());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_right_click_context_menu_runs_real_editor_command() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-editor-context-menu-{}",
+            std::process::id()
+        ));
+        let file = root.join("main.rs");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        let mut app = App::new(file.clone()).unwrap();
+        app.hit_regions.editor_area = Some(Rect::new(0, 0, 80, 12));
+        app.hit_regions.editor_body = Some(Rect::new(0, 0, 80, 12));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 8,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        assert_eq!(app.focus, FocusPanel::Editor);
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.kind, QuickPanelKind::EditorContextMenu);
+        let toggle_index = panel
+            .items
+            .iter()
+            .position(|item| item.command == Some(CommandAction::ToggleLineComment))
+            .unwrap();
+
+        app.activate_quick_row(toggle_index);
+        assert_eq!(app.active_tab().unwrap().lines[0], "// fn main() {}");
+        assert!(app.active_tab().unwrap().dirty);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_right_click_opens_context_menu_with_real_terminal_commands() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-terminal-context-menu-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.hit_regions.terminal_area = Some(Rect::new(0, 0, 80, 12));
+        app.hit_regions.terminal_body = Some(Rect::new(0, 1, 80, 11));
+        app.hit_regions.terminal_input = Some(Rect::new(0, 1, 80, 11));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 5,
+            row: 2,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        assert_eq!(app.focus, FocusPanel::Terminal);
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.kind, QuickPanelKind::TerminalContextMenu);
+        assert!(panel.items.iter().any(|item| item.label == "Paste"
+            && item.command == Some(CommandAction::PasteClipboardToTerminal)));
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "Restart Terminal"
+                    && item.command == Some(CommandAction::RestartTerminal))
+        );
+        assert!(panel.items.iter().any(|item| item.label == "Clear Terminal"
+            && item.command == Some(CommandAction::ClearTerminal)));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
