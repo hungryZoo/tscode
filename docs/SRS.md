@@ -248,6 +248,10 @@ The app shall record the current editor file, line, and column before quick-pane
 
 The command palette shall include Run Workspace Check and Show Problems actions. Run Workspace Check shall detect supported project roots, run the matching external checker in the workspace root, collect parseable file diagnostics from checker output, and open a Problems quick panel. Selecting a problem shall open the referenced file and move the editor cursor to the diagnostic line and column. The Problems panel shall be filterable with the same quick-panel query input and shall report when no supported checker is detected or no parseable diagnostics are found. If dirty editor buffers exist, the completion message shall indicate that unsaved buffers were not checked.
 
+### R-242 Source Control
+
+The command palette shall include a Source Control action. When the workspace is inside a Git repository, the action shall refresh Git status, open a quick panel listing changed files, include diff hunk entries parsed from `git diff --unified=0`, support filtering those entries with the quick-panel query, and open an existing changed file at the selected hunk line. Deleted or otherwise missing files shall remain visible as changed-file entries without crashing when selected.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
@@ -418,6 +422,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use `Ctrl-p` to quick-open a file by path fragment.
 - Use workspace search to find text in a different file and jump to the matching line.
 - Run Workspace Check in a broken Cargo, Go, or Python project and confirm the Problems panel opens with clickable diagnostics.
+- Modify a tracked Git file, open Source Control, and confirm changed-file and hunk rows appear and the hunk row opens the file at the changed line.
 - Use the command palette to clear and restart the integrated terminal.
 - Use the mouse wheel over explorer/editor/terminal and confirm scroll changes.
 - Type `pwd` in the terminal panel and confirm the output points at the workspace.

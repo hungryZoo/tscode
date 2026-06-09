@@ -1298,6 +1298,7 @@ pub enum QuickPanelKind {
     Definitions,
     References,
     Problems,
+    SourceControl,
     CommandPalette,
 }
 
@@ -1333,6 +1334,7 @@ pub enum CommandAction {
     WorkspaceReplace,
     RunWorkspaceCheck,
     ShowProblems,
+    ShowSourceControl,
     SaveFile,
     SaveAll,
     RevertFile,
@@ -1483,6 +1485,28 @@ impl GitStatusKind {
             Self::Renamed => "git:R",
             Self::Untracked => "git:?",
             Self::Conflicted => "git:!",
+        }
+    }
+
+    fn short_label(self) -> &'static str {
+        match self {
+            Self::Modified => "M",
+            Self::Added => "A",
+            Self::Deleted => "D",
+            Self::Renamed => "R",
+            Self::Untracked => "?",
+            Self::Conflicted => "!",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Modified => "Modified",
+            Self::Added => "Added",
+            Self::Deleted => "Deleted",
+            Self::Renamed => "Renamed",
+            Self::Untracked => "Untracked",
+            Self::Conflicted => "Conflicted",
         }
     }
 }
@@ -2638,6 +2662,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::ShowProblems,
         },
         CommandSpec {
+            label: "Source Control",
+            detail: "Show Git changed files and diff hunks",
+            shortcut: "",
+            action: CommandAction::ShowSourceControl,
+        },
+        CommandSpec {
             label: "Save File",
             detail: "Write the active editor tab to disk",
             shortcut: "Ctrl-S",
@@ -3023,6 +3053,7 @@ impl App {
             QuickPanelKind::Definitions => self.definition_items(&query)?,
             QuickPanelKind::References => self.reference_items(&query)?,
             QuickPanelKind::Problems => self.problem_items(&query),
+            QuickPanelKind::SourceControl => self.source_control_items(&query)?,
             QuickPanelKind::CommandPalette => self.command_palette_items(&query),
         };
 
@@ -3256,6 +3287,80 @@ impl App {
             });
         }
         items.into_iter().take(MAX_QUICK_ITEMS).collect()
+    }
+
+    fn source_control_items(&self, query: &str) -> Result<Vec<QuickItem>> {
+        let Some(top_level) = git_top_level(&self.root) else {
+            return Ok(Vec::new());
+        };
+
+        let (statuses, _) = load_git_status(&self.root);
+        let mut items = Vec::new();
+        let mut changed_files = statuses.into_iter().collect::<Vec<_>>();
+        changed_files.sort_by(|(left, _), (right, _)| {
+            relative_path(&top_level, left).cmp(&relative_path(&top_level, right))
+        });
+
+        for (path, status) in changed_files {
+            let relative = relative_path(&top_level, &path);
+            let preview = (!path.is_file()).then(|| "not available in working tree".to_owned());
+            items.push(QuickItem {
+                label: format!("{} {relative}", status.short_label()),
+                detail: status.description().to_owned(),
+                path,
+                line: None,
+                col: None,
+                preview,
+                command: None,
+            });
+        }
+
+        for hunk in load_git_diff_hunks(&self.root, &top_level) {
+            let relative = relative_path(&top_level, &hunk.path);
+            let line = hunk.new_start.max(1);
+            items.push(QuickItem {
+                label: format!("~ {relative}:{line}"),
+                detail: format!("+{} -{}", hunk.new_count, hunk.old_count),
+                path: hunk.path,
+                line: Some(line.saturating_sub(1)),
+                col: Some(0),
+                preview: (!hunk.preview.is_empty()).then_some(hunk.preview),
+                command: None,
+            });
+        }
+
+        let query = query.trim();
+        if !query.is_empty() {
+            items.retain(|item| {
+                let haystack = format!(
+                    "{} {} {}",
+                    item.label,
+                    item.detail,
+                    item.preview.as_deref().unwrap_or_default()
+                );
+                fuzzy_score(&haystack, query).is_some()
+            });
+            items.sort_by(|a, b| {
+                let a_haystack = format!(
+                    "{} {} {}",
+                    a.label,
+                    a.detail,
+                    a.preview.as_deref().unwrap_or_default()
+                );
+                let b_haystack = format!(
+                    "{} {} {}",
+                    b.label,
+                    b.detail,
+                    b.preview.as_deref().unwrap_or_default()
+                );
+                fuzzy_score(&a_haystack, query)
+                    .unwrap_or(usize::MAX)
+                    .cmp(&fuzzy_score(&b_haystack, query).unwrap_or(usize::MAX))
+                    .then(a.label.cmp(&b.label))
+            });
+        }
+
+        Ok(items.into_iter().take(MAX_QUICK_ITEMS).collect())
     }
 
     fn workspace_text_files(&self) -> Result<Vec<WorkspaceTextFile>> {
@@ -4702,6 +4807,11 @@ impl App {
     }
 
     fn open_quick_item(&mut self, item: QuickItem, search_query: Option<String>) {
+        if !item.path.is_file() {
+            self.message = Some(format!("{} is not available on disk", item.path.display()));
+            return;
+        }
+
         self.push_navigation_location_for_jump(&item.path, item.line, item.col);
         self.open_file(&item.path);
         if let Some(line) = item.line
@@ -4736,6 +4846,13 @@ impl App {
             CommandAction::WorkspaceReplace => self.start_workspace_replace_prompt(),
             CommandAction::RunWorkspaceCheck => self.run_workspace_check()?,
             CommandAction::ShowProblems => self.open_quick_panel(QuickPanelKind::Problems)?,
+            CommandAction::ShowSourceControl => {
+                self.refresh_git_status();
+                if git_top_level(&self.root).is_none() {
+                    self.message = Some("not a git repository".to_owned());
+                }
+                self.open_quick_panel(QuickPanelKind::SourceControl)?;
+            }
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAll => self.save_all_tabs(),
             CommandAction::RevertFile => self.revert_active_tab()?,
@@ -5737,6 +5854,132 @@ fn git_dirty_directories(
         }
     }
     dirs
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitDiffHunk {
+    path: PathBuf,
+    old_count: usize,
+    new_start: usize,
+    new_count: usize,
+    preview: String,
+}
+
+fn load_git_diff_hunks(root: &Path, top_level: &Path) -> Vec<GitDiffHunk> {
+    let with_head = [
+        "diff",
+        "--unified=0",
+        "--no-ext-diff",
+        "--no-color",
+        "--find-renames",
+        "HEAD",
+        "--",
+    ];
+    let without_head = [
+        "diff",
+        "--unified=0",
+        "--no-ext-diff",
+        "--no-color",
+        "--find-renames",
+        "--",
+    ];
+
+    for args in [&with_head[..], &without_head[..]] {
+        let Ok(output) = Command::new("git").arg("-C").arg(root).args(args).output() else {
+            continue;
+        };
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            return parse_git_diff_hunks(&text, top_level);
+        }
+    }
+
+    Vec::new()
+}
+
+fn parse_git_diff_hunks(output: &str, top_level: &Path) -> Vec<GitDiffHunk> {
+    let mut hunks = Vec::new();
+    let mut current_path: Option<PathBuf> = None;
+    let mut current_hunk: Option<usize> = None;
+
+    for line in output.lines() {
+        if let Some(path) = line.strip_prefix("+++ ") {
+            current_path = git_diff_file_path(path, top_level);
+            current_hunk = None;
+            continue;
+        }
+
+        if line.starts_with("diff --git ") {
+            current_path = None;
+            current_hunk = None;
+            continue;
+        }
+
+        if let Some(header) = line.strip_prefix("@@ ") {
+            let Some(path) = current_path.clone() else {
+                current_hunk = None;
+                continue;
+            };
+            let Some((old_count, new_start, new_count)) = parse_git_hunk_header(header) else {
+                current_hunk = None;
+                continue;
+            };
+            hunks.push(GitDiffHunk {
+                path,
+                old_count,
+                new_start,
+                new_count,
+                preview: String::new(),
+            });
+            current_hunk = Some(hunks.len() - 1);
+            continue;
+        }
+
+        let Some(index) = current_hunk else {
+            continue;
+        };
+        if hunks[index].preview.is_empty()
+            && (line.starts_with('+') || line.starts_with('-'))
+            && !line.starts_with("+++")
+            && !line.starts_with("---")
+        {
+            hunks[index].preview = line.to_owned();
+        }
+    }
+
+    hunks
+}
+
+fn git_diff_file_path(path: &str, top_level: &Path) -> Option<PathBuf> {
+    let path = path.trim();
+    if path == "/dev/null" {
+        return None;
+    }
+    let path = path
+        .strip_prefix("b/")
+        .or_else(|| path.strip_prefix("a/"))
+        .unwrap_or(path)
+        .trim_matches('"');
+    (!path.is_empty()).then(|| top_level.join(path))
+}
+
+fn parse_git_hunk_header(header: &str) -> Option<(usize, usize, usize)> {
+    let mut parts = header.split_whitespace();
+    let old_range = parts.next()?;
+    let new_range = parts.next()?;
+    let (_, old_count) = parse_git_hunk_range(old_range.strip_prefix('-')?)?;
+    let (new_start, new_count) = parse_git_hunk_range(new_range.strip_prefix('+')?)?;
+    Some((old_count, new_start, new_count))
+}
+
+fn parse_git_hunk_range(range: &str) -> Option<(usize, usize)> {
+    let mut parts = range.splitn(2, ',');
+    let start = parts.next()?.parse::<usize>().ok()?;
+    let count = parts
+        .next()
+        .and_then(|part| part.parse::<usize>().ok())
+        .unwrap_or(1);
+    Some((start, count))
 }
 
 fn fuzzy_score(candidate: &str, query: &str) -> Option<usize> {
@@ -7761,6 +8004,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ShowProblems))
         );
+        let commands = app.command_palette_items("source control");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ShowSourceControl))
+        );
         let commands = app.command_palette_items("symbol file");
         assert!(
             commands
@@ -8103,6 +8352,134 @@ mod tests {
         let dirty_dirs = git_dirty_directories(&statuses, &root);
         assert!(dirty_dirs.contains(&root));
         assert!(dirty_dirs.contains(&src));
+    }
+
+    #[test]
+    fn git_diff_parser_reads_unified_zero_hunks() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-git-diff-parser-{}",
+            std::process::id()
+        ));
+        let diff = "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -2 +2 @@ pub fn value() -> i32 {
+-    1
++    2
+@@ -5,0 +6,2 @@
++pub fn added() {}
++pub fn added_two() {}
+";
+
+        let hunks = parse_git_diff_hunks(diff, &root);
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(hunks[0].path, root.join("src/lib.rs"));
+        assert_eq!(hunks[0].new_start, 2);
+        assert_eq!(hunks[0].new_count, 1);
+        assert_eq!(hunks[0].old_count, 1);
+        assert_eq!(hunks[0].preview, "-    1");
+        assert_eq!(hunks[1].new_start, 6);
+        assert_eq!(hunks[1].new_count, 2);
+        assert_eq!(hunks[1].old_count, 0);
+        assert_eq!(hunks[1].preview, "+pub fn added() {}");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn source_control_panel_lists_git_changes_and_diff_hunks() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-source-control-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    1\n}\n").unwrap();
+
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["init", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["config", "user.email", "tscode@example.invalid"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["config", "user.name", "tscode test"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["add", "src/lib.rs"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "initial"
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    2\n}\n").unwrap();
+        fs::write(root.join("new.txt"), "new file\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let lib = canonical_root.join("src/lib.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.run_command(CommandAction::ShowSourceControl).unwrap();
+
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.kind, QuickPanelKind::SourceControl);
+        assert!(panel.items.iter().any(|item| item.label == "M src/lib.rs"));
+        assert!(panel.items.iter().any(|item| item.label == "? new.txt"));
+        let hunk_index = panel
+            .items
+            .iter()
+            .position(|item| item.label == "~ src/lib.rs:2")
+            .unwrap();
+        assert_eq!(panel.items[hunk_index].preview.as_deref(), Some("-    1"));
+
+        app.quick_panel.as_mut().unwrap().selected = hunk_index;
+        app.activate_selected_quick_item();
+        assert_eq!(app.focus, FocusPanel::Editor);
+        assert_eq!(app.active_tab().unwrap().path, lib);
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (1, 0));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -569,6 +569,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         crate::app::QuickPanelKind::Definitions => " Go to Definition  Ctrl-] ",
         crate::app::QuickPanelKind::References => " Find References  Ctrl-R ",
         crate::app::QuickPanelKind::Problems => " Problems ",
+        crate::app::QuickPanelKind::SourceControl => " Source Control ",
         crate::app::QuickPanelKind::CommandPalette => " Command Palette  F1 / Ctrl-Shift-P ",
     };
     let block = Block::default()
@@ -604,6 +605,9 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             crate::app::QuickPanelKind::Problems => {
                 "No problems collected. Run Workspace Check from the command palette."
+            }
+            crate::app::QuickPanelKind::SourceControl => {
+                "No Git changes found, or this workspace is not inside a Git repository."
             }
             crate::app::QuickPanelKind::CommandPalette => "Type a command name.",
         };

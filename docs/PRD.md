@@ -54,6 +54,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can filter the explorer tree, hide or show dot-prefixed entries, hide or show generated folders, and see basic file metadata while browsing.
 - As a developer, explorer filtering finds nested files inside collapsed folders and expands the matching path enough for me to click it.
 - As a developer, I can see Git working tree status badges in the explorer when the workspace is inside a Git repository.
+- As a developer, I can open a Source Control panel, inspect changed Git files and diff hunks, filter that list, and jump directly from a hunk to the changed source line.
 - As a developer, I can undo and redo edits, paste text, repeat search matches, and close saved tabs without losing unsaved changes.
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
@@ -123,6 +124,7 @@ Keyboard fallback:
 - `Ctrl-Shift-H` opens replace-in-files; the command palette provides the same action as an SSH-friendly fallback
 - `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, and `Ctrl-R` provide document symbols, workspace symbols, go-to-definition, and find-references code navigation
 - The command palette provides Run Workspace Check and Show Problems actions for project diagnostics
+- The command palette provides a Source Control action for Git changed files and diff hunks
 - `F2` or the command palette renames the identifier under the editor cursor across visible workspace text files
 - `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
 - `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions

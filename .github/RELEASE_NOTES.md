@@ -16,6 +16,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Workspace Symbols with `Ctrl-T` scans visible workspace text files for code symbols, including dirty open buffers from memory, and jumps directly to the selected file location.
 - Go to Definition with `Ctrl-]` or the command palette jumps from the editor cursor symbol to a matching workspace symbol definition, or lists multiple definition candidates when needed.
 - Find References with `Ctrl-R` or the command palette lists whole-word workspace references for the editor cursor symbol and jumps directly to the selected occurrence.
+- Source Control from the command palette lists Git changed files and parsed diff hunks, supports fuzzy filtering, and jumps from a hunk row to the changed source line.
 - Editor navigation history: `Alt-Left`, `Alt-Right`, or the command palette move backward and forward after quick-open, search, symbol, definition, reference, go-to-line, or terminal `path:line:column` jumps.
 - Rename Symbol with `F2` or the command palette renames the identifier under the cursor across visible workspace text files, updates open buffers as undoable dirty edits, writes closed files to disk, and respects identifier boundaries so `make_client` does not rewrite `make_client_extra`.
 - Replace in Files with `Ctrl-Shift-H` or the command palette scans real workspace text files, writes replacements to disk, updates clean open tabs, and skips dirty open buffers instead of overwriting unsaved work.
