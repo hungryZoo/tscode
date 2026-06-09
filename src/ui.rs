@@ -401,15 +401,14 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
         .shell
         .resize(body.height, body.width);
 
-    let lines = app
-        .active_terminal()
-        .shell
-        .styled_rows()
+    let terminal_rows = app.active_terminal().shell.styled_rows();
+    let lines = terminal_rows
         .into_iter()
         .enumerate()
         .map(|(row_index, row)| {
             let selection = app.terminal_selection_columns_for_row(row_index as u16);
-            Line::from(terminal_row_spans(row, selection))
+            let search_ranges = app.terminal_search_ranges_for_row(row_index as u16);
+            Line::from(terminal_row_spans(row, selection, &search_ranges))
         })
         .collect::<Vec<_>>();
 
@@ -462,9 +461,13 @@ fn terminal_panel_title(app: &App) -> String {
     } else {
         format!("  mode:{}", modes.trim())
     };
+    let search = app
+        .active_terminal_search_summary()
+        .map(|(selected, count)| format!("  find:{selected}/{count}"))
+        .unwrap_or_default();
     format!(
-        " Terminal  {}  cwd:{}  {}{}{}  F6 focus  F7 new  F8 next  F9 close  F12 max ",
-        terminal.title, cwd, state, scroll, modes
+        " Terminal  {}  cwd:{}  {}{}{}{}  F6 focus  F7 new  F8 next  F9 close  F12 max ",
+        terminal.title, cwd, state, scroll, modes, search
     )
 }
 
@@ -740,53 +743,46 @@ fn row_style(selected: bool, hovered: bool) -> Style {
 fn terminal_row_spans(
     row: Vec<TerminalSpan>,
     selection: Option<(usize, usize)>,
+    search_ranges: &[(usize, usize, bool)],
 ) -> Vec<Span<'static>> {
-    let Some((selection_start, selection_end)) = selection else {
+    if selection.is_none() && search_ranges.is_empty() {
         return row
             .into_iter()
             .map(|span| Span::styled(span.text, terminal_style(span.style)))
             .collect();
     };
 
+    let selection = selection.filter(|(start, end)| end > start);
     let mut spans = Vec::new();
     let mut col = 0usize;
     for span in row {
         let chars = span.text.chars().collect::<Vec<_>>();
-        let len = chars.len();
-        let span_start = col;
-        let span_end = col + len;
         let base_style = terminal_style(span.style);
+        let mut current_text = String::new();
+        let mut current_style = None::<Style>;
 
-        if selection_end <= span_start || selection_start >= span_end {
-            spans.push(Span::styled(span.text, base_style));
-            col = span_end;
-            continue;
+        for ch in chars {
+            let style = terminal_cell_overlay_style(base_style, col, selection, search_ranges);
+            if current_style == Some(style) {
+                current_text.push(ch);
+            } else {
+                if let Some(style) = current_style {
+                    spans.push(Span::styled(std::mem::take(&mut current_text), style));
+                }
+                current_style = Some(style);
+                current_text.push(ch);
+            }
+            col += 1;
         }
 
-        let selected_from = selection_start.max(span_start) - span_start;
-        let selected_to = selection_end.min(span_end) - span_start;
-        if selected_from > 0 {
-            spans.push(Span::styled(
-                chars[..selected_from].iter().collect::<String>(),
-                base_style,
-            ));
+        if let Some(style) = current_style {
+            spans.push(Span::styled(current_text, style));
         }
-        if selected_to > selected_from {
-            spans.push(Span::styled(
-                chars[selected_from..selected_to].iter().collect::<String>(),
-                terminal_selection_style(base_style),
-            ));
-        }
-        if selected_to < len {
-            spans.push(Span::styled(
-                chars[selected_to..].iter().collect::<String>(),
-                base_style,
-            ));
-        }
-        col = span_end;
     }
 
-    if selection_end > col {
+    if let Some((selection_start, selection_end)) = selection
+        && selection_end > col
+    {
         let start = selection_start.max(col);
         if selection_end > start {
             spans.push(Span::styled(
@@ -799,8 +795,37 @@ fn terminal_row_spans(
     spans
 }
 
+fn terminal_cell_overlay_style(
+    base_style: Style,
+    col: usize,
+    selection: Option<(usize, usize)>,
+    search_ranges: &[(usize, usize, bool)],
+) -> Style {
+    let mut style = if selection.is_some_and(|(start, end)| col >= start && col < end) {
+        terminal_selection_style(base_style)
+    } else {
+        base_style
+    };
+
+    for (start, end, active) in search_ranges {
+        if col >= *start && col < *end {
+            style = terminal_search_style(style, *active);
+        }
+    }
+
+    style
+}
+
 fn terminal_selection_style(style: Style) -> Style {
     style.fg(Color::Black).bg(ACCENT)
+}
+
+fn terminal_search_style(style: Style, active: bool) -> Style {
+    if active {
+        style.fg(Color::Black).bg(SEARCH_ACTIVE_BG)
+    } else {
+        style.fg(Color::White).bg(SEARCH_BG)
+    }
 }
 
 fn terminal_style(style: TerminalStyle) -> Style {
@@ -903,6 +928,7 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::WorkspaceReplaceWith { .. } => "replace files: with",
         crate::app::PromptKind::RenameSymbol { .. } => "rename symbol",
         crate::app::PromptKind::SaveAs => "save as",
+        crate::app::PromptKind::TerminalSearch => "find terminal",
         crate::app::PromptKind::GotoLine => "go to line",
         crate::app::PromptKind::QuitDirty => "unsaved: type quit",
     }

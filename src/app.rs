@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use crate::{
     fs_tree::{FsTree, VisibleNode},
-    shell::ShellPanel,
+    shell::{ShellPanel, TerminalSearchMatch},
     syntax::SyntaxHighlighter,
 };
 
@@ -1281,6 +1281,7 @@ pub enum PromptKind {
     WorkspaceReplaceWith { needle: String },
     RenameSymbol { old: String },
     SaveAs,
+    TerminalSearch,
     GotoLine,
     QuitDirty,
 }
@@ -1382,6 +1383,9 @@ pub enum CommandAction {
     RunSelectionInTerminal,
     CopyTerminalSelection,
     PasteClipboardToTerminal,
+    FindInTerminal,
+    TerminalSearchNext,
+    TerminalSearchPrevious,
     FocusExplorer,
     FocusEditor,
     FocusTerminal,
@@ -1424,6 +1428,14 @@ pub struct TerminalSelection {
     pub terminal_id: usize,
     pub anchor: (u16, u16),
     pub head: (u16, u16),
+}
+
+#[derive(Debug, Clone)]
+pub struct TerminalSearchState {
+    pub terminal_id: usize,
+    pub needle: String,
+    pub matches: Vec<TerminalSearchMatch>,
+    pub selected: usize,
 }
 
 pub struct TerminalSession {
@@ -1551,6 +1563,7 @@ pub struct App {
     pub navigation_back: Vec<EditorLocation>,
     pub navigation_forward: Vec<EditorLocation>,
     pub terminal_selection: Option<TerminalSelection>,
+    pub terminal_search: Option<TerminalSearchState>,
     pub problems: Vec<QuickItem>,
     pending_clipboard_export: Option<String>,
 }
@@ -1596,6 +1609,7 @@ impl App {
             navigation_back: Vec::new(),
             navigation_forward: Vec::new(),
             terminal_selection: None,
+            terminal_search: None,
             problems: Vec::new(),
             pending_clipboard_export: None,
         })
@@ -1991,6 +2005,25 @@ impl App {
     }
 
     fn handle_terminal_key(&mut self, key: KeyEvent) -> Result<()> {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F'))
+        {
+            self.start_terminal_search_prompt();
+            return Ok(());
+        }
+
+        match key.code {
+            KeyCode::F(3) if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.previous_terminal_search_match();
+                return Ok(());
+            }
+            KeyCode::F(3) => {
+                self.next_terminal_search_match();
+                return Ok(());
+            }
+            _ => {}
+        }
+
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && key.modifiers.contains(KeyModifiers::SHIFT)
         {
@@ -2945,6 +2978,24 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::PasteClipboardToTerminal,
         },
         CommandSpec {
+            label: "Find in Terminal",
+            detail: "Search the active terminal viewport and scrollback",
+            shortcut: "Terminal Ctrl-F",
+            action: CommandAction::FindInTerminal,
+        },
+        CommandSpec {
+            label: "Next Terminal Search Match",
+            detail: "Jump to the next match in the active terminal scrollback",
+            shortcut: "Terminal F3",
+            action: CommandAction::TerminalSearchNext,
+        },
+        CommandSpec {
+            label: "Previous Terminal Search Match",
+            detail: "Jump to the previous match in the active terminal scrollback",
+            shortcut: "Terminal Shift-F3",
+            action: CommandAction::TerminalSearchPrevious,
+        },
+        CommandSpec {
             label: "Focus Explorer",
             detail: "Move focus to the file explorer",
             shortcut: "",
@@ -3699,6 +3750,7 @@ impl App {
                 self.rename_symbol_from_prompt(old, prompt.input)?;
             }
             PromptKind::SaveAs => self.save_as_from_prompt(prompt.input)?,
+            PromptKind::TerminalSearch => self.terminal_search_from_prompt(prompt.input),
             PromptKind::GotoLine => self.goto_line_from_prompt(prompt.input),
             PromptKind::QuitDirty => {
                 if prompt.input == "quit" {
@@ -5105,6 +5157,9 @@ impl App {
             CommandAction::RunSelectionInTerminal => self.run_selection_in_terminal()?,
             CommandAction::CopyTerminalSelection => self.copy_terminal_selection(),
             CommandAction::PasteClipboardToTerminal => self.paste_clipboard_to_terminal()?,
+            CommandAction::FindInTerminal => self.start_terminal_search_prompt(),
+            CommandAction::TerminalSearchNext => self.next_terminal_search_match(),
+            CommandAction::TerminalSearchPrevious => self.previous_terminal_search_match(),
             CommandAction::FocusExplorer => self.focus = FocusPanel::Explorer,
             CommandAction::FocusEditor => self.focus = FocusPanel::Editor,
             CommandAction::FocusTerminal => self.focus = FocusPanel::Terminal,
@@ -5279,6 +5334,138 @@ impl App {
             text.chars().count()
         ));
         Ok(())
+    }
+
+    fn start_terminal_search_prompt(&mut self) {
+        let active_id = self.active_terminal().id;
+        let initial = self
+            .terminal_search
+            .as_ref()
+            .filter(|search| search.terminal_id == active_id)
+            .map(|search| search.needle.clone())
+            .unwrap_or_default();
+        self.start_prompt(PromptKind::TerminalSearch, &initial);
+    }
+
+    fn terminal_search_from_prompt(&mut self, input: String) {
+        let needle = input.trim().to_owned();
+        self.focus = FocusPanel::Terminal;
+        self.terminal_selection = None;
+        if needle.is_empty() {
+            self.terminal_search = None;
+            self.message = Some("terminal search cleared".to_owned());
+            return;
+        }
+
+        let terminal_id = self.active_terminal().id;
+        let matches = self.active_terminal_mut().shell.search_matches(&needle);
+        if matches.is_empty() {
+            self.terminal_search = None;
+            self.message = Some(format!("terminal search: no matches for {needle:?}"));
+            return;
+        }
+
+        let selected = matches.len().saturating_sub(1);
+        self.terminal_search = Some(TerminalSearchState {
+            terminal_id,
+            needle,
+            matches,
+            selected,
+        });
+        self.jump_to_terminal_search_selected();
+    }
+
+    fn next_terminal_search_match(&mut self) {
+        let active_id = self.active_terminal().id;
+        let moved = if let Some(search) = &mut self.terminal_search {
+            if search.terminal_id == active_id && !search.matches.is_empty() {
+                search.selected = (search.selected + 1) % search.matches.len();
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if moved {
+            self.jump_to_terminal_search_selected();
+        } else {
+            self.message = Some("no active terminal search".to_owned());
+        }
+    }
+
+    fn previous_terminal_search_match(&mut self) {
+        let active_id = self.active_terminal().id;
+        let moved = if let Some(search) = &mut self.terminal_search {
+            if search.terminal_id == active_id && !search.matches.is_empty() {
+                search.selected =
+                    (search.selected + search.matches.len() - 1) % search.matches.len();
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if moved {
+            self.jump_to_terminal_search_selected();
+        } else {
+            self.message = Some("no active terminal search".to_owned());
+        }
+    }
+
+    fn jump_to_terminal_search_selected(&mut self) {
+        let Some((row, selected, count, needle)) =
+            self.terminal_search.as_ref().and_then(|search| {
+                let item = search.matches.get(search.selected)?;
+                Some((
+                    item.row,
+                    search.selected,
+                    search.matches.len(),
+                    search.needle.clone(),
+                ))
+            })
+        else {
+            return;
+        };
+        let height = self.terminal_height.max(1);
+        let top = row.saturating_sub(height / 2);
+        self.active_terminal_mut().shell.scroll_to_global_row(top);
+        self.focus = FocusPanel::Terminal;
+        self.terminal_selection = None;
+        self.message = Some(format!(
+            "terminal find {}/{} for {:?}",
+            selected + 1,
+            count,
+            needle
+        ));
+    }
+
+    pub fn active_terminal_search_summary(&self) -> Option<(usize, usize)> {
+        let search = self.terminal_search.as_ref()?;
+        (search.terminal_id == self.active_terminal().id && !search.matches.is_empty())
+            .then_some((search.selected + 1, search.matches.len()))
+    }
+
+    pub fn terminal_search_ranges_for_row(&mut self, row: u16) -> Vec<(usize, usize, bool)> {
+        let active_id = self.active_terminal().id;
+        let visible_top = self.active_terminal_mut().shell.visible_top_row();
+        let Some(search) = self.terminal_search.as_ref() else {
+            return Vec::new();
+        };
+        if search.terminal_id != active_id {
+            return Vec::new();
+        }
+        let global_row = visible_top + row as usize;
+        search
+            .matches
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.row == global_row)
+            .map(|(index, item)| (item.start, item.end, index == search.selected))
+            .collect()
     }
 
     fn open_terminal_reference(&mut self, row: u16, col: u16) -> bool {
@@ -8700,6 +8887,18 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::PasteClipboardToTerminal))
         );
+        let commands = app.command_palette_items("find terminal");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::FindInTerminal))
+        );
+        let commands = app.command_palette_items("next terminal search");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::TerminalSearchNext))
+        );
         let commands = app.command_palette_items("new terminal");
         assert!(
             commands
@@ -8869,6 +9068,73 @@ mod tests {
         }
 
         assert_eq!(fs::read_to_string(&out).unwrap(), "run-ok");
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn terminal_search_finds_scrollback_and_moves_between_matches() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-terminal-search-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.focus = FocusPanel::Terminal;
+        app.active_terminal_mut()
+            .shell
+            .send_text("printf 'alpha-one\\nbeta\\nalpha-two\\n'\r")
+            .unwrap();
+
+        for _ in 0..50 {
+            app.drain_terminal();
+            if app
+                .active_terminal_mut()
+                .shell
+                .search_matches("alpha")
+                .len()
+                >= 2
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        app.terminal_search_from_prompt("alpha".to_owned());
+        let Some((selected, count)) = app.active_terminal_search_summary() else {
+            panic!("terminal search summary missing");
+        };
+        assert!(count >= 2);
+        assert_eq!(selected, count);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("terminal find"))
+        );
+
+        let active_row = app.terminal_search.as_ref().unwrap().matches
+            [app.terminal_search.as_ref().unwrap().selected]
+            .row;
+        let top = app.active_terminal_mut().shell.visible_top_row();
+        let (height, _) = app.active_terminal().shell.size();
+        assert!(active_row >= top);
+        assert!(active_row < top + height as usize);
+        let local_row = (active_row - top) as u16;
+        assert!(
+            app.terminal_search_ranges_for_row(local_row)
+                .iter()
+                .any(|(_, _, active)| *active)
+        );
+
+        let before = app.terminal_search.as_ref().unwrap().selected;
+        app.next_terminal_search_match();
+        assert_ne!(app.terminal_search.as_ref().unwrap().selected, before);
+        app.previous_terminal_search_match();
+        assert_eq!(app.terminal_search.as_ref().unwrap().selected, before);
+
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }

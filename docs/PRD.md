@@ -48,6 +48,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can see ANSI-colored command output such as compiler errors, `git status`, and `ls --color` without losing terminal styling.
 - As a developer, I can click a `path:line:column` reference printed by the shell and jump to that source location in the editor.
 - As a developer, I can drag across visible terminal output, see the selected cells highlighted, copy that text, and paste it back into the active shell with terminal-safe shortcuts.
+- As a developer, I can search the integrated terminal's visible output and scrollback, see matches highlighted, and jump between matches without losing the PTY session.
 - As a developer, I can edit text, save files, create files/folders, rename, delete, and refresh the explorer.
 - As a developer, I can copy, cut, paste, and duplicate files or folders from the explorer.
 - As a developer, I can reveal the active editor file in the explorer.
@@ -117,6 +118,7 @@ Keyboard fallback:
 - arrow keys navigate focused panels
 - `Enter` opens files, edits newlines, or submits shell input depending on focus
 - Terminal `Ctrl-Shift-C` copies the active terminal text selection; terminal `Ctrl-Shift-V` pastes the internal clipboard to the PTY shell
+- Terminal `Ctrl-F` searches terminal scrollback; terminal `F3` and `Shift-F3` move to next and previous terminal search matches
 - Explorer `c`, `x`, `p`, `y`, and `o` perform copy, cut, paste, duplicate, and reveal-active-file actions
 - Explorer `t` opens a new integrated terminal in the selected folder or selected file's parent folder
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the terminal clipboard

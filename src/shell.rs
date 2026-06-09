@@ -62,6 +62,13 @@ pub struct TerminalSpan {
     pub style: TerminalStyle,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalSearchMatch {
+    pub row: usize,
+    pub start: usize,
+    pub end: usize,
+}
+
 pub struct ShellPanel {
     parser: vt100::Parser,
     master: Box<dyn MasterPty + Send>,
@@ -234,6 +241,35 @@ impl ShellPanel {
         self.parser.screen().rows(0, self.cols).nth(row as usize)
     }
 
+    pub fn visible_top_row(&mut self) -> usize {
+        let max_scrollback = self.max_scrollback();
+        max_scrollback.saturating_sub(self.parser.screen().scrollback())
+    }
+
+    pub fn scroll_to_global_row(&mut self, row: usize) {
+        let max_scrollback = self.max_scrollback();
+        let offset = max_scrollback.saturating_sub(row);
+        self.user_scrollback = offset;
+        self.parser.screen_mut().set_scrollback(offset);
+        self.user_scrollback = self.parser.screen().scrollback();
+    }
+
+    pub fn search_matches(&mut self, needle: &str) -> Vec<TerminalSearchMatch> {
+        if needle.is_empty() {
+            return Vec::new();
+        }
+
+        self.all_row_text()
+            .into_iter()
+            .enumerate()
+            .flat_map(|(row, text)| {
+                terminal_line_matches(&text, needle)
+                    .into_iter()
+                    .map(move |(start, end)| TerminalSearchMatch { row, start, end })
+            })
+            .collect()
+    }
+
     pub fn cursor(&self) -> (u16, u16) {
         self.parser.screen().cursor_position()
     }
@@ -365,9 +401,63 @@ impl ShellPanel {
         self.user_scrollback = self.parser.screen().scrollback();
     }
 
+    fn max_scrollback(&mut self) -> usize {
+        let current = self.parser.screen().scrollback();
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let max = self.parser.screen().scrollback();
+        self.parser.screen_mut().set_scrollback(current);
+        max
+    }
+
+    fn all_row_text(&mut self) -> Vec<String> {
+        let current = self.parser.screen().scrollback();
+        let max_scrollback = self.max_scrollback();
+        let (rows, cols) = self.parser.screen().size();
+        let total_rows = max_scrollback + rows as usize;
+        let mut output = Vec::with_capacity(total_rows);
+
+        for global_row in 0..total_rows {
+            let top_row = global_row.min(max_scrollback);
+            let offset = max_scrollback.saturating_sub(top_row);
+            self.parser.screen_mut().set_scrollback(offset);
+            let local_row = global_row.saturating_sub(top_row);
+            let text = self
+                .parser
+                .screen()
+                .rows(0, cols)
+                .nth(local_row)
+                .unwrap_or_default();
+            output.push(text);
+        }
+
+        self.parser.screen_mut().set_scrollback(current);
+        output
+    }
+
     pub fn child_exited(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(Some(_)))
     }
+}
+
+fn terminal_line_matches(line: &str, needle: &str) -> Vec<(usize, usize)> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+
+    let mut matches = Vec::new();
+    let mut byte_start = 0usize;
+    while byte_start <= line.len() {
+        let Some(found) = line[byte_start..].find(needle) else {
+            break;
+        };
+        let start_byte = byte_start + found;
+        let end_byte = start_byte + needle.len();
+        let start = line[..start_byte].chars().count();
+        let end = start + needle.chars().count();
+        matches.push((start, end));
+        byte_start = end_byte;
+    }
+    matches
 }
 
 #[cfg(windows)]
@@ -626,6 +716,16 @@ mod tests {
             key_to_bytes(key(KeyCode::BackTab, KeyModifiers::SHIFT), false),
             Some(b"\x1b[Z".to_vec())
         );
+    }
+
+    #[test]
+    fn terminal_line_matches_return_character_columns() {
+        assert_eq!(
+            terminal_line_matches("alpha beta alpha", "alpha"),
+            vec![(0, 5), (11, 16)]
+        );
+        assert_eq!(terminal_line_matches("écho alpha", "alpha"), vec![(5, 10)]);
+        assert!(terminal_line_matches("alpha", "").is_empty());
     }
 
     #[test]

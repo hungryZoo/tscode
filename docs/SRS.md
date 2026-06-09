@@ -350,6 +350,10 @@ The terminal panel shall render terminal session tabs with mouse hover highlight
 
 Explorer `t` and the command palette shall create a new integrated PTY terminal whose current working directory is the selected explorer folder, or the selected file's parent folder. Restarting that terminal shall preserve its current working directory instead of resetting it to the workspace root.
 
+### R-322 Terminal Search
+
+When terminal focus is active, `Ctrl-f` or the command palette shall prompt for a literal search string for the active terminal session. The search shall scan the active terminal's current visible screen and scrollback retained by the terminal parser, highlight all visible matches, show the selected match count in the terminal header, and scroll the terminal viewport to the selected match. `F3` shall move to the next terminal match and `Shift-F3` shall move to the previous terminal match without sending those keys to the PTY while terminal search is active.
+
 ## 6. Mouse Requirements
 
 ### R-401 Mouse Capture
@@ -433,6 +437,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Run Workspace Check in a broken Cargo, Go, or Python project and confirm the Problems panel opens with clickable diagnostics.
 - Modify a tracked Git file, open Source Control, and confirm changed-file and hunk rows appear and the hunk row opens the file at the changed line.
 - Use `Ctrl-shift-b` or the command palette in a project with task metadata and confirm detected tasks appear, filtering works, and selecting one starts a new PTY terminal running that command.
+- Print repeated text in the terminal, use terminal `Ctrl-f`, confirm matches are highlighted and counted, and use `F3`/`Shift-F3` to move between matches in scrollback.
 - Use the command palette to clear and restart the integrated terminal.
 - Use the mouse wheel over explorer/editor/terminal and confirm scroll changes.
 - Type `pwd` in the terminal panel and confirm the output points at the workspace.
