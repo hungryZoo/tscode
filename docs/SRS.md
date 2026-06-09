@@ -92,7 +92,7 @@ The editor shall apply syntax highlighting based on file extension or filename w
 
 ### R-206 Scrolling
 
-Mouse wheel and keyboard shortcuts shall vertically scroll the active file.
+Mouse wheel and keyboard shortcuts shall vertically scroll the active file. Long lines shall support horizontal scrolling, cursor tracking, and mouse coordinate mapping against the current horizontal offset.
 
 ### R-207 Hover
 
@@ -294,7 +294,7 @@ Dirty editor buffers shall require an explicit `quit` confirmation before the ap
 
 ### R-503 Editor Scroll
 
-`PageUp`, `PageDown`, `Up`, and `Down` shall scroll the focused editor.
+`PageUp`, `PageDown`, `Up`, and `Down` shall scroll or move through the focused editor. Horizontal wheel gestures shall pan long editor lines.
 
 ### R-504 Terminal Editing
 

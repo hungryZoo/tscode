@@ -228,6 +228,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), chunks[1]);
 
     app.editor_height = inner.height as usize;
+    app.editor_width = inner.width as usize;
     let Some(active_index) = app.active_tab else {
         frame.render_widget(
             Paragraph::new("Click a file in Explorer to open it.")
@@ -251,6 +252,11 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let start = tab.scroll;
     let end = (start + height).min(tab.lines.len());
     let number_width = tab.lines.len().max(1).to_string().len().max(3);
+    let gutter_width = editor_gutter_width(tab.lines.len());
+    let code_width = inner.width as usize;
+    let code_width = code_width.saturating_sub(gutter_width);
+    let max_horizontal_scroll = max_horizontal_scroll(tab, code_width);
+    tab.horizontal_scroll = tab.horizontal_scroll.min(max_horizontal_scroll);
     let highlighted = app
         .syntax
         .highlight_visible(&tab.path, &tab.lines, start, end);
@@ -264,33 +270,39 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             Span::raw(" "),
         ];
+        let mut code_spans = Vec::new();
         if let Some((selection_start, selection_end)) = line_selection_range(tab, line_index) {
             let source = &tab.lines[line_index];
-            spans.push(Span::raw(take_chars(source, selection_start)));
-            spans.push(Span::styled(
+            code_spans.push(Span::raw(take_chars(source, selection_start)));
+            code_spans.push(Span::styled(
                 slice_chars(source, selection_start, selection_end),
                 Style::default().fg(Color::White).bg(ACTIVE_BG),
             ));
-            spans.push(Span::raw(skip_chars(source, selection_end)));
+            code_spans.push(Span::raw(skip_chars(source, selection_end)));
         } else if let Some(needle) = &search_needle
             && let Some(search_spans) = search_line_spans(tab, line_index, needle, focused)
         {
-            spans.extend(search_spans);
+            code_spans.extend(search_spans);
         } else if focused && line_index == tab.cursor_line {
             let cursor_col = tab.cursor_col;
             let source = &tab.lines[line_index];
             let before = take_chars(source, cursor_col);
             let cursor = source.chars().nth(cursor_col).unwrap_or(' ');
             let after = skip_chars(source, cursor_col.saturating_add(1));
-            spans.push(Span::raw(before));
-            spans.push(Span::styled(
+            code_spans.push(Span::raw(before));
+            code_spans.push(Span::styled(
                 cursor.to_string(),
                 Style::default().fg(Color::Black).bg(ACCENT),
             ));
-            spans.push(Span::raw(after));
+            code_spans.push(Span::raw(after));
         } else if let Some(parts) = highlighted.get(offset) {
-            spans.extend(parts.clone());
+            code_spans.extend(parts.clone());
         }
+        spans.extend(crop_spans_by_chars(
+            code_spans,
+            tab.horizontal_scroll,
+            code_width,
+        ));
         rendered.push(Line::from(spans));
     }
 
@@ -731,6 +743,63 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::GotoLine => "go to line",
         crate::app::PromptKind::QuitDirty => "unsaved: type quit",
     }
+}
+
+fn editor_gutter_width(line_count: usize) -> usize {
+    line_count.max(1).to_string().len().max(3) + 2
+}
+
+fn max_horizontal_scroll(tab: &crate::app::EditorTab, code_width: usize) -> usize {
+    if code_width == 0 {
+        return 0;
+    }
+    tab.lines
+        .iter()
+        .map(|line| line.chars().count().saturating_sub(code_width))
+        .max()
+        .unwrap_or(0)
+}
+
+fn crop_spans_by_chars(
+    spans: Vec<Span<'static>>,
+    start: usize,
+    max_chars: usize,
+) -> Vec<Span<'static>> {
+    if max_chars == 0 {
+        return Vec::new();
+    }
+
+    let mut skipped = 0usize;
+    let mut taken = 0usize;
+    let mut cropped = Vec::new();
+
+    for span in spans {
+        if taken >= max_chars {
+            break;
+        }
+
+        let span_len = span.content.chars().count();
+        if skipped + span_len <= start {
+            skipped += span_len;
+            continue;
+        }
+
+        let local_start = start.saturating_sub(skipped);
+        let remaining = max_chars - taken;
+        let text = span
+            .content
+            .chars()
+            .skip(local_start)
+            .take(remaining)
+            .collect::<String>();
+        if !text.is_empty() {
+            taken += text.chars().count();
+            cropped.push(Span::styled(text, span.style));
+        }
+        skipped += span_len;
+    }
+
+    cropped
 }
 
 fn take_chars(s: &str, count: usize) -> String {

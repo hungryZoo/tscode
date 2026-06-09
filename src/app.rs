@@ -149,6 +149,7 @@ pub struct EditorTab {
     pub title: String,
     pub lines: Vec<String>,
     pub scroll: usize,
+    pub horizontal_scroll: usize,
     pub cursor_line: usize,
     pub cursor_col: usize,
     pub selection_anchor: Option<(usize, usize)>,
@@ -179,6 +180,7 @@ impl EditorTab {
             title,
             lines,
             scroll: 0,
+            horizontal_scroll: 0,
             cursor_line: 0,
             cursor_col: 0,
             selection_anchor: None,
@@ -911,6 +913,7 @@ pub struct App {
     pub should_quit: bool,
     pub explorer_height: usize,
     pub editor_height: usize,
+    pub editor_width: usize,
     pub terminal_height: usize,
     pub terminal_rows: u16,
     pub terminal_maximized: bool,
@@ -948,6 +951,7 @@ impl App {
             should_quit: false,
             explorer_height: 0,
             editor_height: 0,
+            editor_width: 0,
             terminal_height: 0,
             terminal_rows: 10,
             terminal_maximized: false,
@@ -1117,7 +1121,8 @@ impl App {
             }
             MouseEventKind::ScrollUp => self.handle_scroll(target, -3, true)?,
             MouseEventKind::ScrollDown => self.handle_scroll(target, 3, false)?,
-            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {}
+            MouseEventKind::ScrollLeft => self.scroll_target_horizontal(target, -8),
+            MouseEventKind::ScrollRight => self.scroll_target_horizontal(target, 8),
             MouseEventKind::Drag(_) | MouseEventKind::Up(_) => {}
             MouseEventKind::Down(_) => {}
         }
@@ -1531,6 +1536,27 @@ impl App {
         }
     }
 
+    fn scroll_target_horizontal(&mut self, target: HoverTarget, amount: isize) {
+        match target {
+            HoverTarget::Editor | HoverTarget::Tab(_) | HoverTarget::TabClose(_) => {
+                self.scroll_editor_horizontal(amount)
+            }
+            HoverTarget::None if self.focus == FocusPanel::Editor => {
+                self.scroll_editor_horizontal(amount)
+            }
+            _ => {}
+        }
+    }
+
+    fn scroll_editor_horizontal(&mut self, amount: isize) {
+        let editor_width = self.editor_width;
+        if let Some(tab) = self.active_tab_mut() {
+            let code_width = editor_code_width(tab, editor_width);
+            let max_scroll = max_editor_horizontal_scroll(tab, code_width);
+            tab.horizontal_scroll = add_signed(tab.horizontal_scroll, amount).min(max_scroll);
+        }
+    }
+
     fn scroll_terminal(&mut self, amount: isize) {
         self.active_terminal_mut().shell.scroll(amount);
     }
@@ -1557,6 +1583,25 @@ fn add_signed(value: usize, amount: isize) -> usize {
     } else {
         value.saturating_add(amount as usize)
     }
+}
+
+fn editor_code_width(tab: &EditorTab, editor_width: usize) -> usize {
+    editor_width.saturating_sub(editor_gutter_width(tab.lines.len()))
+}
+
+fn editor_gutter_width(line_count: usize) -> usize {
+    line_count.max(1).to_string().len().max(3) + 2
+}
+
+fn max_editor_horizontal_scroll(tab: &EditorTab, code_width: usize) -> usize {
+    if code_width == 0 {
+        return 0;
+    }
+    tab.lines
+        .iter()
+        .map(|line| line.chars().count().saturating_sub(code_width))
+        .max()
+        .unwrap_or(0)
 }
 
 fn focus_label(focus: FocusPanel) -> &'static str {
@@ -2816,11 +2861,24 @@ impl App {
 
     fn ensure_editor_cursor_visible(&mut self) {
         let height = self.editor_height.max(1);
+        let editor_width = self.editor_width;
         if let Some(tab) = self.active_tab_mut() {
             if tab.cursor_line < tab.scroll {
                 tab.scroll = tab.cursor_line;
             } else if tab.cursor_line >= tab.scroll + height {
                 tab.scroll = tab.cursor_line.saturating_sub(height - 1);
+            }
+
+            let code_width = editor_code_width(tab, editor_width);
+            if code_width > 0 {
+                if tab.cursor_col < tab.horizontal_scroll {
+                    tab.horizontal_scroll = tab.cursor_col;
+                } else if tab.cursor_col >= tab.horizontal_scroll.saturating_add(code_width) {
+                    tab.horizontal_scroll = tab.cursor_col.saturating_sub(code_width - 1);
+                }
+                tab.horizontal_scroll = tab
+                    .horizontal_scroll
+                    .min(max_editor_horizontal_scroll(tab, code_width));
             }
         }
     }
@@ -2838,9 +2896,12 @@ impl App {
             let line_number_width = tab.lines.len().max(1).to_string().len().max(3) + 2;
             let x = body.x;
             let y = body.y;
-            let col = mouse_x
-                .saturating_sub(x)
-                .saturating_sub(line_number_width as u16) as usize;
+            let local_x = mouse_x.saturating_sub(x) as usize;
+            let col = if local_x < line_number_width {
+                0
+            } else {
+                local_x.saturating_sub(line_number_width) + tab.horizontal_scroll
+            };
             let line = tab.scroll + mouse_y.saturating_sub(y) as usize;
             if selecting {
                 tab.set_cursor_selecting(line, col);
@@ -4024,6 +4085,47 @@ mod tests {
         assert_eq!(tab.cursor_position(), (4, 4));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn editor_horizontal_scroll_tracks_cursor_wheel_and_mouse() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-horizontal-scroll-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("long.rs");
+        fs::write(&path, "abcdefghijklmnopqrstuvwxyz0123456789\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.focus = FocusPanel::Editor;
+        app.editor_height = 5;
+        app.editor_width = 12;
+
+        {
+            let tab = app.active_tab_mut().unwrap();
+            tab.set_cursor(0, 20);
+        }
+        app.ensure_editor_cursor_visible();
+        assert_eq!(app.active_tab().unwrap().horizontal_scroll, 14);
+
+        app.scroll_editor_horizontal(100);
+        assert_eq!(app.active_tab().unwrap().horizontal_scroll, 29);
+
+        app.hit_regions.editor_body = Some(Rect::new(0, 0, 12, 5));
+        app.hit_regions.last_mouse_x = 8;
+        app.hit_regions.last_mouse_y = 0;
+        app.hover = HoverTarget::Editor;
+        app.set_editor_cursor_from_mouse(false);
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (0, 32));
+
+        app.hit_regions.last_mouse_x = 2;
+        app.set_editor_cursor_from_mouse(false);
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (0, 0));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

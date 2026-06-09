@@ -41,6 +41,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can click files to open them in editor tabs.
 - As a developer, I can click editor tabs to switch files.
 - As a developer, I can scroll the tree, code view, and terminal output with the mouse wheel.
+- As a developer, I can keep editing long source lines because the code view pans horizontally and keeps the cursor visible.
 - As a developer, I can see hover highlights for clickable rows, tabs, and panel controls.
 - As a developer, I can run shell commands from the bottom terminal panel and see real output.
 - As a developer, I can type into a real shell session, use `Ctrl-c`, and keep session state between commands.
@@ -85,6 +86,7 @@ Mouse input is first-class:
 - hover updates visual state
 - left click changes focus or activates items
 - mouse wheel scrolls the hovered/focused panel
+- horizontal wheel gestures pan long editor lines
 
 Keyboard fallback:
 

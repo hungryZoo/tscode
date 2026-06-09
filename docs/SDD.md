@@ -58,13 +58,14 @@ Each opened file tab stores:
 - display name
 - decoded lines
 - vertical scroll offset
+- horizontal scroll offset
 - cursor line and column
 - optional selection anchor
 - dirty state
 - trailing-newline state
 - bounded undo and redo stacks
 
-Editor buffers support insertion, deletion, newline, paste, cursor movement, word movement, selection, save, undo, redo, in-file search, go-to-line, and active-line commands. Selection is stored as an anchor plus the current cursor position and normalized when copying, cutting, deleting, rendering, or replacing ranges. Copy and cut update the internal editor clipboard and queue an OSC52 terminal clipboard export when the selection is small enough for terminal-safe transmission. Smart editing lives inside `EditorTab`: printable pair-open characters insert matching closing pairs, selected text can be wrapped by pair characters, existing closing pairs can be skipped over, paired Backspace deletes both sides, and newline insertion preserves or increases indentation depending on surrounding code. Line commands include indent, outdent, duplicate, delete, move up/down, and file-type-aware line-comment toggling. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
+Editor buffers support insertion, deletion, newline, paste, cursor movement, word movement, selection, save, undo, redo, in-file search, go-to-line, and active-line commands. Selection is stored as an anchor plus the current cursor position and normalized when copying, cutting, deleting, rendering, or replacing ranges. Copy and cut update the internal editor clipboard and queue an OSC52 terminal clipboard export when the selection is small enough for terminal-safe transmission. Smart editing lives inside `EditorTab`: printable pair-open characters insert matching closing pairs, selected text can be wrapped by pair characters, existing closing pairs can be skipped over, paired Backspace deletes both sides, and newline insertion preserves or increases indentation depending on surrounding code. Long-line navigation tracks a horizontal scroll offset derived from the editor body width after the line-number gutter is removed; rendering crops styled spans after syntax/search/cursor/selection styling so horizontal scrolling does not discard visual metadata. Line commands include indent, outdent, duplicate, delete, move up/down, and file-type-aware line-comment toggling. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
 
 ### Quick Panel
 
@@ -125,7 +126,7 @@ Mouse clicks use the current coordinate to:
 
 ### Mouse Wheel
 
-Wheel events route to the hovered panel if known, otherwise to the focused panel.
+Vertical wheel events route to the hovered panel if known, otherwise to the focused panel. Horizontal wheel events over the editor pan the active tab's long-line viewport.
 
 ### Keyboard
 
