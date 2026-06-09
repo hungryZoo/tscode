@@ -56,11 +56,12 @@ Each opened file tab stores:
 - decoded lines
 - vertical scroll offset
 - cursor line and column
+- optional selection anchor
 - dirty state
 - trailing-newline state
 - bounded undo and redo stacks
 
-Editor buffers support insertion, deletion, newline, paste, cursor movement, save, undo, redo, in-file search, go-to-line, and active-line commands. Line commands include indent, outdent, duplicate, delete, move up/down, and file-type-aware line-comment toggling. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
+Editor buffers support insertion, deletion, newline, paste, cursor movement, selection, save, undo, redo, in-file search, go-to-line, and active-line commands. Selection is stored as an anchor plus the current cursor position and normalized when copying, cutting, deleting, rendering, or replacing ranges. Line commands include indent, outdent, duplicate, delete, move up/down, and file-type-aware line-comment toggling. The first prerelease still does not attempt full VS Code parity such as multi-cursor editing or LSP rename.
 
 ### Quick Panel
 
@@ -123,7 +124,11 @@ Wheel events route to the hovered panel if known, otherwise to the focused panel
 
 ### Keyboard
 
-Keyboard events map to panel-specific actions. Quick-panel input handles query editing, result movement, and activation before normal panel shortcuts. `F1` opens the command palette because many terminal sessions cannot reliably distinguish `Ctrl-P` from `Ctrl-Shift-P`. Editor-focused input supports save, search, go-to-line, repeated search, undo, redo, line commands, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
+Keyboard events map to panel-specific actions. Quick-panel input handles query editing, result movement, and activation before normal panel shortcuts. `F1` opens the command palette because many terminal sessions cannot reliably distinguish `Ctrl-P` from `Ctrl-Shift-P`. Editor-focused input supports save, search, go-to-line, repeated search, undo, redo, selection, internal clipboard operations, line commands, and saved-tab close shortcuts. Terminal-focused input is forwarded to the PTY. The app-level exit shortcut is `Ctrl-Q` so `Ctrl-C` can be delivered to the shell when terminal focus is active. Dirty editor buffers trigger an explicit quit confirmation instead of exiting immediately.
+
+### Editor Clipboard
+
+The editor clipboard is an in-memory application clipboard used by `Ctrl-C`, `Ctrl-X`, and `Ctrl-V` in editor focus. It is deliberately separate from explorer copy/cut state and from terminal `Ctrl-C`, which remains a PTY signal when terminal focus is active. Range deletion and replacement are performed as single undoable edits.
 
 ## 6. Syntax Highlighting
 

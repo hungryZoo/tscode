@@ -142,6 +142,18 @@ The editor shall support jumping to one-based `line` or `line:column` input thro
 
 The command palette shall include a save-all command that writes every dirty editor tab to disk.
 
+### R-221 Editor Selection
+
+The editor shall support text selection with `Shift` plus arrow keys and with mouse drag inside the editor body. Selected text shall be visually highlighted.
+
+### R-222 Editor Clipboard
+
+When editor focus is active, `Ctrl-a` shall select the full buffer, `Ctrl-c` shall copy the selected text to an internal editor clipboard, `Ctrl-x` shall cut the selected text to that clipboard, and `Ctrl-v` shall paste that clipboard at the cursor or replace the active selection.
+
+### R-223 Selection Replacement
+
+Typing, paste events, `Enter`, `Backspace`, or `Delete` with an active editor selection shall replace or remove the selected range as a single undoable edit.
+
 ## 5. Integrated Terminal Requirements
 
 ### R-301 Command Input
@@ -171,6 +183,8 @@ Terminal panel controls and focusable areas shall visually react to hover/focus.
 ### R-307 Interactive Signals
 
 When the terminal is focused, `Ctrl-c` shall be forwarded to the PTY shell rather than exiting the application.
+
+Editor `Ctrl-c` shall copy selected editor text instead of sending a terminal signal because the terminal is not focused.
 
 ### R-308 Terminal Paste
 
@@ -252,6 +266,8 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use `Ctrl-f` and `F3` to move through search matches.
 - Use `F1` to open the command palette and execute an editor command.
 - Use `Ctrl-l` or the command palette to jump to a line.
+- Select all text, cut it, paste it back, save, and confirm file contents on disk.
+- Drag in the editor or use `Shift` with arrow keys and confirm selected text is highlighted.
 - Use line editing commands, save, and confirm file contents on disk.
 - Use `Ctrl-p` to quick-open a file by path fragment.
 - Use workspace search to find text in a different file and jump to the matching line.

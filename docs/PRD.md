@@ -49,6 +49,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can reveal the active editor file in the explorer.
 - As a developer, I can undo and redo edits, paste text, repeat search matches, and close saved tabs without losing unsaved changes.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
+- As a developer, I can select text with the keyboard or mouse, then copy, cut, and paste through an editor clipboard.
 - As a developer, I can use common line editing actions: indent, outdent, duplicate line, delete line, move line, toggle line comment, and go to line.
 - As a developer, I can quickly open files by typing a fuzzy path fragment.
 - As a developer, I can search text across the workspace, see file/line previews, and jump to a matching location.
@@ -86,6 +87,8 @@ Keyboard fallback:
 - `Ctrl-P` opens the quick file picker
 - `Ctrl-Shift-F` and `Ctrl-G` open workspace text search
 - `Ctrl-S`, `Ctrl-F`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/history/tab-close actions
+- `Shift` with arrow keys and mouse drag select editor text
+- `Ctrl-A`, `Ctrl-C`, `Ctrl-X`, and `Ctrl-V` provide editor select-all, copy, cut, and paste when editor focus is active
 - `Ctrl-L`, `Ctrl-/`, `Ctrl-D`, `Alt-Up`, `Alt-Down`, `Tab`, and `Shift-Tab` provide editor go-to-line and line editing actions
 - `Esc` clears transient mode or exits when appropriate
 - `q` exits outside terminal focus; `Ctrl-q` exits globally

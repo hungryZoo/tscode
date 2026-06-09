@@ -11,6 +11,8 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Quick Open overlay with `Ctrl-P` fuzzy matching across workspace file paths.
 - Workspace text search overlay with `Ctrl-Shift-F` or `Ctrl-G`, real file scanning, result previews, and jump-to-line open.
 - Editable tabbed code buffers with line numbers, syntax highlighting, dirty markers, cursor movement, paste, save, repeated search, undo, and redo.
+- Editor text selection with `Shift`+arrow keys and mouse drag, visual selection highlighting, and selection counts in the status bar.
+- Internal editor clipboard support for `Ctrl-A`, `Ctrl-C`, `Ctrl-X`, and `Ctrl-V`, including replacing selected ranges as single undoable edits.
 - Editor line commands for indent/outdent, duplicate line, delete line, move line up/down, toggle line comment, go to line, and save all.
 - File explorer actions for refresh, new file, new folder, rename, and delete with confirmation; folder rename/delete keeps open tabs in sync.
 - Explorer collapse-all is available through the command palette.
