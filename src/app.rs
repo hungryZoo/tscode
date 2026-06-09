@@ -823,8 +823,8 @@ impl App {
                     self.close_tab(index);
                 }
             }
-            MouseEventKind::ScrollUp => self.scroll_target(target, -3),
-            MouseEventKind::ScrollDown => self.scroll_target(target, 3),
+            MouseEventKind::ScrollUp => self.handle_scroll(target, -3, true)?,
+            MouseEventKind::ScrollDown => self.handle_scroll(target, 3, false)?,
             MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {}
             MouseEventKind::Drag(_) | MouseEventKind::Up(_) => {}
             MouseEventKind::Down(_) => {}
@@ -955,6 +955,20 @@ impl App {
     }
 
     fn handle_terminal_key(&mut self, key: KeyEvent) -> Result<()> {
+        if key.modifiers.contains(KeyModifiers::SHIFT) {
+            match key.code {
+                KeyCode::PageUp => {
+                    self.scroll_terminal(-(self.terminal_height.max(1) as isize));
+                    return Ok(());
+                }
+                KeyCode::PageDown => {
+                    self.scroll_terminal(self.terminal_height.max(1) as isize);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         self.terminal.send_key(key)
     }
 
@@ -1034,7 +1048,7 @@ impl App {
                     self.ensure_editor_cursor_visible();
                 }
             }
-            FocusPanel::Terminal => self.terminal.send_text(&text)?,
+            FocusPanel::Terminal => self.terminal.send_paste(&text)?,
             FocusPanel::Explorer => {}
         }
         Ok(())
@@ -1114,6 +1128,17 @@ impl App {
 
     pub fn active_tab_mut(&mut self) -> Option<&mut EditorTab> {
         self.active_tab.and_then(|index| self.tabs.get_mut(index))
+    }
+
+    fn handle_scroll(&mut self, target: HoverTarget, amount: isize, up: bool) -> Result<()> {
+        if matches!(target, HoverTarget::Terminal | HoverTarget::TerminalInput)
+            && self.send_terminal_mouse_wheel(up)?
+        {
+            return Ok(());
+        }
+
+        self.scroll_target(target, amount);
+        Ok(())
     }
 
     fn scroll_target(&mut self, target: HoverTarget, amount: isize) {
@@ -2202,7 +2227,41 @@ impl App {
         };
         let row = self.hit_regions.last_mouse_y.saturating_sub(body.y);
         let col = self.hit_regions.last_mouse_x.saturating_sub(body.x);
-        let _ = self.terminal.send_mouse_click(row, col);
+        match self.terminal.send_mouse_click(row, col) {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = self.open_terminal_reference(row, col);
+            }
+            Err(error) => self.last_error = Some(error.to_string()),
+        }
+    }
+
+    fn send_terminal_mouse_wheel(&mut self, up: bool) -> Result<bool> {
+        let Some(body) = self.hit_regions.terminal_body else {
+            return Ok(false);
+        };
+        let row = self.hit_regions.last_mouse_y.saturating_sub(body.y);
+        let col = self.hit_regions.last_mouse_x.saturating_sub(body.x);
+        self.terminal.send_mouse_wheel(row, col, up)
+    }
+
+    fn open_terminal_reference(&mut self, row: u16, col: u16) -> bool {
+        let Some(line) = self.terminal.row_text(row) else {
+            return false;
+        };
+        let Some(reference) = terminal_file_reference_at(&line, col as usize, &self.root) else {
+            return false;
+        };
+
+        self.open_file(&reference.path);
+        if let Some(line) = reference.line
+            && let Some(tab) = self.active_tab_mut()
+        {
+            tab.set_cursor(line, reference.col.unwrap_or(0));
+            self.ensure_editor_cursor_visible();
+        }
+        self.message = Some(format!("opened {}", reference.path.display()));
+        true
     }
 
     fn next_tab(&mut self) {
@@ -2601,6 +2660,142 @@ fn parse_line_col(input: &str) -> Option<(usize, usize)> {
     Some((line - 1, col.saturating_sub(1)))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileReference {
+    path: PathBuf,
+    line: Option<usize>,
+    col: Option<usize>,
+}
+
+fn terminal_file_reference_at(line: &str, char_col: usize, root: &Path) -> Option<FileReference> {
+    let chars = line.chars().collect::<Vec<_>>();
+    if chars.is_empty() {
+        return None;
+    }
+
+    let col = char_col.min(chars.len().saturating_sub(1));
+    let mut start = col;
+    while start > 0 && !is_terminal_reference_delimiter(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end < chars.len() && !is_terminal_reference_delimiter(chars[end]) {
+        end += 1;
+    }
+    if start >= end {
+        return None;
+    }
+
+    let token = chars[start..end].iter().collect::<String>();
+    parse_terminal_reference_token(&token, root)
+}
+
+fn parse_terminal_reference_token(token: &str, root: &Path) -> Option<FileReference> {
+    let token = clean_terminal_reference_token(token)?;
+    parse_trailing_terminal_reference(&token, root)
+        .or_else(|| parse_embedded_terminal_reference(&token, root))
+        .or_else(|| file_reference_from_parts(&token, None, None, root))
+}
+
+fn clean_terminal_reference_token(token: &str) -> Option<String> {
+    let token = token
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
+            )
+        })
+        .trim_end_matches(['.', ',', ';', ':']);
+    let token = token.strip_prefix("file://").unwrap_or(token);
+    (!token.is_empty()).then(|| token.to_owned())
+}
+
+fn parse_trailing_terminal_reference(token: &str, root: &Path) -> Option<FileReference> {
+    let mut path_part = token;
+    let mut numbers = Vec::new();
+
+    for _ in 0..2 {
+        let Some((before, number)) = path_part.rsplit_once(':') else {
+            break;
+        };
+        if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
+            break;
+        }
+        numbers.push(number.parse::<usize>().ok()?);
+        path_part = before;
+    }
+
+    let line = numbers.last().copied().map(|line| line.saturating_sub(1));
+    let col = (numbers.len() == 2).then(|| numbers[0].saturating_sub(1));
+    file_reference_from_parts(path_part, line, col, root)
+}
+
+fn parse_embedded_terminal_reference(token: &str, root: &Path) -> Option<FileReference> {
+    for (colon_index, _) in token.match_indices(':') {
+        let after_colon = &token[colon_index + 1..];
+        let line_digits = leading_ascii_digits(after_colon);
+        if line_digits.is_empty() {
+            continue;
+        }
+
+        let line = line_digits.parse::<usize>().ok()?.saturating_sub(1);
+        let mut col = None;
+        let after_line = &after_colon[line_digits.len()..];
+        if let Some(after_col) = after_line.strip_prefix(':') {
+            let col_digits = leading_ascii_digits(after_col);
+            if !col_digits.is_empty() {
+                col = Some(col_digits.parse::<usize>().ok()?.saturating_sub(1));
+            }
+        }
+
+        let path_part = &token[..colon_index];
+        if let Some(reference) = file_reference_from_parts(path_part, Some(line), col, root) {
+            return Some(reference);
+        }
+    }
+
+    None
+}
+
+fn leading_ascii_digits(input: &str) -> &str {
+    let end = input
+        .char_indices()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .map(|(index, c)| index + c.len_utf8())
+        .last()
+        .unwrap_or(0);
+    &input[..end]
+}
+
+fn file_reference_from_parts(
+    path_part: &str,
+    line: Option<usize>,
+    col: Option<usize>,
+    root: &Path,
+) -> Option<FileReference> {
+    let path_part = path_part.trim();
+    if path_part.is_empty() {
+        return None;
+    }
+
+    let raw = Path::new(path_part);
+    let candidate = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        root.join(raw)
+    };
+    let path = candidate.canonicalize().unwrap_or(candidate);
+    path.is_file().then_some(FileReference { path, line, col })
+}
+
+fn is_terminal_reference_delimiter(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '|'
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2771,6 +2966,44 @@ mod tests {
         assert_eq!(parse_line_col("12:4"), Some((11, 3)));
         assert_eq!(parse_line_col("0"), None);
         assert_eq!(parse_line_col(""), None);
+    }
+
+    #[test]
+    fn terminal_file_reference_opens_existing_paths_with_line_columns() {
+        let root = std::env::temp_dir().join(format!("tscode-test-termref-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join("README.md"), "# docs\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let main = root.join("src/main.rs");
+        let readme = root.join("README.md");
+
+        let cargo_line = "error: here --> src/main.rs:12:5";
+        let cargo_ref =
+            terminal_file_reference_at(cargo_line, cargo_line.find("main.rs").unwrap(), &root)
+                .unwrap();
+        assert_eq!(cargo_ref.path, main);
+        assert_eq!(cargo_ref.line, Some(11));
+        assert_eq!(cargo_ref.col, Some(4));
+
+        let grep_line = "src/main.rs:7:fn main()";
+        let grep_ref =
+            terminal_file_reference_at(grep_line, grep_line.find("7").unwrap(), &root).unwrap();
+        assert_eq!(grep_ref.path, root.join("src/main.rs"));
+        assert_eq!(grep_ref.line, Some(6));
+        assert_eq!(grep_ref.col, None);
+
+        let simple_line = "open README.md";
+        let simple_ref =
+            terminal_file_reference_at(simple_line, simple_line.find("README").unwrap(), &root)
+                .unwrap();
+        assert_eq!(simple_ref.path, readme);
+        assert_eq!(simple_ref.line, None);
+
+        assert!(terminal_file_reference_at("missing.rs:1:1", 2, &root).is_none());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

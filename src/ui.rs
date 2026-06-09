@@ -7,7 +7,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, ClipboardAction, FocusPanel, HoverTarget};
+use crate::{
+    app::{App, ClipboardAction, FocusPanel, HoverTarget},
+    shell::TerminalStyle,
+};
 
 const TITLE_BG: Color = Color::Rgb(32, 40, 54);
 const PANEL_BG: Color = Color::Rgb(13, 17, 23);
@@ -320,9 +323,15 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let lines = app
         .terminal
-        .rows()
+        .styled_rows()
         .into_iter()
-        .map(|line| Line::from(Span::raw(line.clone())))
+        .map(|row| {
+            Line::from(
+                row.into_iter()
+                    .map(|span| Span::styled(span.text, terminal_style(span.style)))
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect::<Vec<_>>();
 
     frame.render_widget(
@@ -423,6 +432,55 @@ fn row_style(selected: bool, hovered: bool) -> Style {
         Style::default().fg(Color::White).bg(HOVER_BG)
     } else {
         Style::default().fg(TEXT).bg(PANEL_BG)
+    }
+}
+
+fn terminal_style(style: TerminalStyle) -> Style {
+    let mut fg = terminal_color(style.fg).unwrap_or(TEXT);
+    let mut bg = terminal_color(style.bg).unwrap_or(PANEL_BG);
+    if style.inverse {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+
+    let mut rendered = Style::default().fg(fg).bg(bg);
+    if style.bold {
+        rendered = rendered.add_modifier(Modifier::BOLD);
+    }
+    if style.dim {
+        rendered = rendered.add_modifier(Modifier::DIM);
+    }
+    if style.italic {
+        rendered = rendered.add_modifier(Modifier::ITALIC);
+    }
+    if style.underline {
+        rendered = rendered.add_modifier(Modifier::UNDERLINED);
+    }
+    rendered
+}
+
+fn terminal_color(color: vt100::Color) -> Option<Color> {
+    match color {
+        vt100::Color::Default => None,
+        vt100::Color::Rgb(red, green, blue) => Some(Color::Rgb(red, green, blue)),
+        vt100::Color::Idx(index) => Some(match index {
+            0 => Color::Black,
+            1 => Color::Red,
+            2 => Color::Green,
+            3 => Color::Yellow,
+            4 => Color::Blue,
+            5 => Color::Magenta,
+            6 => Color::Cyan,
+            7 => Color::Gray,
+            8 => Color::DarkGray,
+            9 => Color::LightRed,
+            10 => Color::LightGreen,
+            11 => Color::LightYellow,
+            12 => Color::LightBlue,
+            13 => Color::LightMagenta,
+            14 => Color::LightCyan,
+            15 => Color::White,
+            index => Color::Indexed(index),
+        }),
     }
 }
 
