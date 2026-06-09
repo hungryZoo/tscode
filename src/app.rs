@@ -30,6 +30,7 @@ pub enum HoverTarget {
     ExplorerRow(usize),
     Editor,
     Tab(usize),
+    TabClose(usize),
     Terminal,
     TerminalInput,
 }
@@ -44,6 +45,7 @@ pub struct HitRegions {
     pub terminal_input: Option<Rect>,
     pub explorer_rows: Vec<(Rect, usize)>,
     pub tabs: Vec<(Rect, usize)>,
+    pub tab_closes: Vec<(Rect, usize)>,
     pub last_mouse_x: u16,
     pub last_mouse_y: u16,
 }
@@ -54,6 +56,12 @@ impl HitRegions {
     }
 
     pub fn target_at(&self, x: u16, y: u16) -> HoverTarget {
+        for (rect, index) in &self.tab_closes {
+            if contains(*rect, x, y) {
+                return HoverTarget::TabClose(*index);
+            }
+        }
+
         for (rect, index) in &self.tabs {
             if contains(*rect, x, y) {
                 return HoverTarget::Tab(*index);
@@ -94,6 +102,14 @@ fn contains(rect: Rect, x: u16, y: u16) -> bool {
 }
 
 #[derive(Debug, Clone)]
+struct EditorSnapshot {
+    lines: Vec<String>,
+    cursor_line: usize,
+    cursor_col: usize,
+    trailing_newline: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct EditorTab {
     pub path: PathBuf,
     pub title: String,
@@ -102,12 +118,16 @@ pub struct EditorTab {
     pub cursor_line: usize,
     pub cursor_col: usize,
     pub dirty: bool,
+    trailing_newline: bool,
+    undo_stack: Vec<EditorSnapshot>,
+    redo_stack: Vec<EditorSnapshot>,
 }
 
 impl EditorTab {
     fn open(path: PathBuf) -> Result<Self> {
         let bytes = std::fs::read(&path)?;
         let text = String::from_utf8_lossy(&bytes);
+        let trailing_newline = text.ends_with('\n');
         let mut lines = text.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
         if lines.is_empty() {
             lines.push(String::new());
@@ -127,26 +147,59 @@ impl EditorTab {
             cursor_line: 0,
             cursor_col: 0,
             dirty: false,
+            trailing_newline,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         })
     }
 
     fn save(&mut self) -> Result<()> {
-        let text = self.lines.join("\n");
+        let mut text = self.lines.join("\n");
+        if self.trailing_newline && !text.ends_with('\n') {
+            text.push('\n');
+        }
         fs::write(&self.path, text)?;
         self.dirty = false;
         Ok(())
     }
 
     fn insert_char(&mut self, c: char) {
+        self.push_undo();
+        self.insert_char_raw(c);
+        self.dirty = true;
+    }
+
+    fn insert_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+
+        self.push_undo();
+        for c in text.chars() {
+            match c {
+                '\r' => {}
+                '\n' => self.newline_raw(),
+                c => self.insert_char_raw(c),
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn insert_char_raw(&mut self, c: char) {
         let cursor_col = self.cursor_col;
         let line = self.current_line_mut();
         let byte = byte_index_for_char(line, cursor_col);
         line.insert(byte, c);
         self.cursor_col += 1;
-        self.dirty = true;
     }
 
     fn newline(&mut self) {
+        self.push_undo();
+        self.newline_raw();
+        self.dirty = true;
+    }
+
+    fn newline_raw(&mut self) {
         let cursor_col = self.cursor_col;
         let line = self.current_line_mut();
         let byte = byte_index_for_char(line, cursor_col);
@@ -154,10 +207,14 @@ impl EditorTab {
         self.cursor_line += 1;
         self.cursor_col = 0;
         self.lines.insert(self.cursor_line, rest);
-        self.dirty = true;
     }
 
     fn backspace(&mut self) {
+        if self.cursor_col == 0 && self.cursor_line == 0 {
+            return;
+        }
+
+        self.push_undo();
         if self.cursor_col > 0 {
             let cursor_col = self.cursor_col;
             let line = self.current_line_mut();
@@ -176,18 +233,22 @@ impl EditorTab {
 
     fn delete(&mut self) {
         let line_len = self.lines[self.cursor_line].chars().count();
+        if self.cursor_col >= line_len && self.cursor_line + 1 >= self.lines.len() {
+            return;
+        }
+
+        self.push_undo();
         if self.cursor_col < line_len {
             let cursor_col = self.cursor_col;
             let line = self.current_line_mut();
             let start = byte_index_for_char(line, cursor_col);
             let end = byte_index_for_char(line, cursor_col + 1);
             line.replace_range(start..end, "");
-            self.dirty = true;
         } else if self.cursor_line + 1 < self.lines.len() {
             let next = self.lines.remove(self.cursor_line + 1);
             self.lines[self.cursor_line].push_str(&next);
-            self.dirty = true;
         }
+        self.dirty = true;
     }
 
     fn move_cursor(&mut self, line_delta: isize, col_delta: isize) {
@@ -211,6 +272,55 @@ impl EditorTab {
         let line_len = self.lines[self.cursor_line].chars().count();
         self.cursor_col = self.cursor_col.min(line_len);
     }
+
+    fn undo(&mut self) -> bool {
+        let Some(snapshot) = self.undo_stack.pop() else {
+            return false;
+        };
+        self.redo_stack.push(self.snapshot());
+        self.restore_snapshot(snapshot);
+        self.dirty = true;
+        true
+    }
+
+    fn redo(&mut self) -> bool {
+        let Some(snapshot) = self.redo_stack.pop() else {
+            return false;
+        };
+        self.undo_stack.push(self.snapshot());
+        self.restore_snapshot(snapshot);
+        self.dirty = true;
+        true
+    }
+
+    fn snapshot(&self) -> EditorSnapshot {
+        EditorSnapshot {
+            lines: self.lines.clone(),
+            cursor_line: self.cursor_line,
+            cursor_col: self.cursor_col,
+            trailing_newline: self.trailing_newline,
+        }
+    }
+
+    fn restore_snapshot(&mut self, snapshot: EditorSnapshot) {
+        self.lines = if snapshot.lines.is_empty() {
+            vec![String::new()]
+        } else {
+            snapshot.lines
+        };
+        self.trailing_newline = snapshot.trailing_newline;
+        self.cursor_line = snapshot.cursor_line.min(self.lines.len().saturating_sub(1));
+        self.cursor_col = snapshot.cursor_col;
+        self.clamp_cursor_col();
+    }
+
+    fn push_undo(&mut self) {
+        self.undo_stack.push(self.snapshot());
+        if self.undo_stack.len() > 200 {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,6 +330,7 @@ pub enum PromptKind {
     Rename(PathBuf),
     Delete(PathBuf),
     Search,
+    QuitDirty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +356,7 @@ pub struct App {
     pub last_error: Option<String>,
     pub prompt: Option<PromptState>,
     pub message: Option<String>,
+    pub search_needle: Option<String>,
 }
 
 impl App {
@@ -267,7 +379,8 @@ impl App {
             terminal_height: 0,
             last_error: None,
             prompt: None,
-            message: Some("Tab focus | Explorer: n file, N dir, e rename, D delete | Editor: Ctrl-S save | Terminal: Ctrl-Q quit".to_owned()),
+            message: Some("Tab focus | Explorer: n file, N dir, e rename, D delete | Editor: Ctrl-S save, Ctrl-Z/Y undo/redo | Terminal: Ctrl-Q quit".to_owned()),
+            search_needle: None,
         })
     }
 
@@ -285,14 +398,16 @@ impl App {
         }
 
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
-            self.should_quit = true;
+            self.request_quit();
             return Ok(());
         }
 
         match key.code {
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::CONTROL) => self.next_tab(),
+            KeyCode::BackTab => self.previous_tab(),
             KeyCode::Tab if !matches!(self.focus, FocusPanel::Terminal) => self.cycle_focus(),
-            KeyCode::Esc if !matches!(self.focus, FocusPanel::Terminal) => self.should_quit = true,
-            KeyCode::Char('q') if self.focus != FocusPanel::Terminal => self.should_quit = true,
+            KeyCode::Esc if !matches!(self.focus, FocusPanel::Terminal) => self.request_quit(),
+            KeyCode::Char('q') if self.focus != FocusPanel::Terminal => self.request_quit(),
             _ => match self.focus {
                 FocusPanel::Explorer => self.handle_explorer_key(key)?,
                 FocusPanel::Editor => self.handle_editor_key(key)?,
@@ -312,6 +427,11 @@ impl App {
         match mouse.kind {
             MouseEventKind::Moved => {}
             MouseEventKind::Down(MouseButton::Left) => self.activate_target(target)?,
+            MouseEventKind::Down(MouseButton::Middle) => {
+                if let HoverTarget::Tab(index) | HoverTarget::TabClose(index) = target {
+                    self.close_tab(index);
+                }
+            }
             MouseEventKind::ScrollUp => self.scroll_target(target, -3),
             MouseEventKind::ScrollDown => self.scroll_target(target, 3),
             MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {}
@@ -327,7 +447,7 @@ impl App {
             HoverTarget::Explorer | HoverTarget::ExplorerRow(_) => {
                 self.focus = FocusPanel::Explorer;
             }
-            HoverTarget::Tab(_) | HoverTarget::Editor => {
+            HoverTarget::Tab(_) | HoverTarget::TabClose(_) | HoverTarget::Editor => {
                 self.focus = FocusPanel::Editor;
             }
             HoverTarget::Terminal | HoverTarget::TerminalInput => {
@@ -344,6 +464,7 @@ impl App {
             HoverTarget::Tab(index) if index < self.tabs.len() => {
                 self.active_tab = Some(index);
             }
+            HoverTarget::TabClose(index) => self.close_tab(index),
             HoverTarget::Editor => {
                 self.set_editor_cursor_from_mouse();
             }
@@ -376,10 +497,21 @@ impl App {
     }
 
     fn handle_editor_key(&mut self, key: KeyEvent) -> Result<()> {
+        if key.modifiers.contains(KeyModifiers::SHIFT) && key.code == KeyCode::F(3) {
+            self.find_next(false);
+            return Ok(());
+        }
+
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('s') => self.save_active_tab(),
-                KeyCode::Char('f') => self.start_prompt(PromptKind::Search, ""),
+                KeyCode::Char('f') => {
+                    let initial = self.search_needle.clone().unwrap_or_default();
+                    self.start_prompt(PromptKind::Search, &initial);
+                }
+                KeyCode::Char('w') => self.close_active_tab(),
+                KeyCode::Char('z') => self.undo_active_tab(),
+                KeyCode::Char('y') => self.redo_active_tab(),
                 _ => {}
             }
             return Ok(());
@@ -394,6 +526,7 @@ impl App {
             KeyCode::PageDown => self.scroll_editor(self.editor_height as isize),
             KeyCode::Home => self.set_editor_cursor_col(0),
             KeyCode::End => self.set_editor_cursor_end(),
+            KeyCode::F(3) => self.find_next(true),
             KeyCode::Enter => self.edit_newline(),
             KeyCode::Backspace => self.edit_backspace(),
             KeyCode::Delete => self.edit_delete(),
@@ -433,6 +566,25 @@ impl App {
             FocusPanel::Editor => FocusPanel::Terminal,
             FocusPanel::Terminal => FocusPanel::Explorer,
         };
+    }
+
+    pub fn handle_paste(&mut self, text: String) -> Result<()> {
+        if let Some(prompt) = &mut self.prompt {
+            prompt.input.push_str(&text.replace(['\r', '\n'], " "));
+            return Ok(());
+        }
+
+        match self.focus {
+            FocusPanel::Editor => {
+                if let Some(tab) = self.active_tab_mut() {
+                    tab.insert_text(&text);
+                    self.ensure_editor_cursor_visible();
+                }
+            }
+            FocusPanel::Terminal => self.terminal.send_text(&text)?,
+            FocusPanel::Explorer => {}
+        }
+        Ok(())
     }
 
     fn move_explorer_selection(&mut self, delta: isize) {
@@ -514,7 +666,9 @@ impl App {
     fn scroll_target(&mut self, target: HoverTarget, amount: isize) {
         match target {
             HoverTarget::Explorer | HoverTarget::ExplorerRow(_) => self.scroll_explorer(amount),
-            HoverTarget::Editor | HoverTarget::Tab(_) => self.scroll_editor(amount),
+            HoverTarget::Editor | HoverTarget::Tab(_) | HoverTarget::TabClose(_) => {
+                self.scroll_editor(amount)
+            }
             HoverTarget::Terminal | HoverTarget::TerminalInput => self.scroll_terminal(amount),
             HoverTarget::None => match self.focus {
                 FocusPanel::Explorer => self.scroll_explorer(amount),
@@ -570,7 +724,7 @@ impl App {
         let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
             return;
         };
-        self.start_prompt(PromptKind::Delete(node.path), "type yes");
+        self.start_prompt(PromptKind::Delete(node.path), "");
     }
 
     fn finish_prompt(&mut self) -> Result<()> {
@@ -589,6 +743,13 @@ impl App {
                 }
             }
             PromptKind::Search => self.search_active(prompt.input),
+            PromptKind::QuitDirty => {
+                if prompt.input == "quit" {
+                    self.should_quit = true;
+                } else {
+                    self.message = Some("quit cancelled".to_owned());
+                }
+            }
         }
         Ok(())
     }
@@ -648,9 +809,14 @@ impl App {
             .unwrap_or_else(|| self.root.join(name));
         fs::rename(&path, &new_path)?;
         for tab in &mut self.tabs {
-            if tab.path == path {
-                tab.path = new_path.clone();
-                tab.title = name.to_owned();
+            if let Ok(relative) = tab.path.strip_prefix(&path) {
+                tab.path = new_path.join(relative);
+                tab.title = tab
+                    .path
+                    .file_name()
+                    .and_then(|file_name| file_name.to_str())
+                    .unwrap_or("[file]")
+                    .to_owned();
             }
         }
         self.refresh_explorer()?;
@@ -668,7 +834,7 @@ impl App {
         } else {
             fs::remove_file(&path)?;
         }
-        self.tabs.retain(|tab| tab.path != path);
+        self.tabs.retain(|tab| !tab.path.starts_with(&path));
         if self.tabs.is_empty() {
             self.active_tab = None;
         } else {
@@ -708,32 +874,34 @@ impl App {
     }
 
     fn search_active(&mut self, needle: String) {
+        let needle = needle.trim().to_owned();
         if needle.is_empty() {
             return;
         }
-        if let Some(tab) = self.active_tab_mut() {
-            for (line_index, line) in tab.lines.iter().enumerate().skip(tab.cursor_line) {
-                let start_col = if line_index == tab.cursor_line {
-                    tab.cursor_col.saturating_add(1)
-                } else {
-                    0
-                };
-                if let Some(byte) = line
-                    .char_indices()
-                    .nth(start_col)
-                    .map(|(idx, _)| idx)
-                    .or(Some(line.len()))
-                    && let Some(found) = line[byte..].find(&needle)
-                {
-                    let prefix = &line[..byte + found];
-                    tab.set_cursor(line_index, prefix.chars().count());
-                    self.ensure_editor_cursor_visible();
-                    self.message = Some(format!("found '{needle}'"));
-                    return;
-                }
-            }
+        self.search_needle = Some(needle);
+        self.find_next(true);
+    }
+
+    fn find_next(&mut self, forward: bool) {
+        let Some(needle) = self.search_needle.clone() else {
+            self.message = Some("no active search".to_owned());
+            return;
+        };
+        let Some(tab) = self.active_tab_mut() else {
+            return;
+        };
+        let found = if forward {
+            find_forward(tab, &needle)
+        } else {
+            find_backward(tab, &needle)
+        };
+        if let Some((line, col)) = found {
+            tab.set_cursor(line, col);
+            self.ensure_editor_cursor_visible();
+            self.message = Some(format!("found '{needle}'"));
+        } else {
+            self.message = Some(format!("not found: {needle}"));
         }
-        self.message = Some(format!("not found: {needle}"));
     }
 
     fn edit_insert(&mut self, c: char) {
@@ -827,6 +995,83 @@ impl App {
         let col = self.hit_regions.last_mouse_x.saturating_sub(body.x);
         let _ = self.terminal.send_mouse_click(row, col);
     }
+
+    fn next_tab(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let next = self
+            .active_tab
+            .map_or(0, |index| (index + 1) % self.tabs.len());
+        self.active_tab = Some(next);
+        self.focus = FocusPanel::Editor;
+    }
+
+    fn previous_tab(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let previous = self
+            .active_tab
+            .map_or(0, |index| (index + self.tabs.len() - 1) % self.tabs.len());
+        self.active_tab = Some(previous);
+        self.focus = FocusPanel::Editor;
+    }
+
+    fn close_active_tab(&mut self) {
+        if let Some(index) = self.active_tab {
+            self.close_tab(index);
+        }
+    }
+
+    fn close_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        if self.tabs[index].dirty {
+            self.message = Some(format!("save {} before closing", self.tabs[index].title));
+            return;
+        }
+
+        let title = self.tabs[index].title.clone();
+        self.tabs.remove(index);
+        self.active_tab = if self.tabs.is_empty() {
+            None
+        } else {
+            Some(index.saturating_sub(1).min(self.tabs.len() - 1))
+        };
+        self.message = Some(format!("closed {title}"));
+    }
+
+    fn undo_active_tab(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            if tab.undo() {
+                self.ensure_editor_cursor_visible();
+                self.message = Some("undo".to_owned());
+            } else {
+                self.message = Some("nothing to undo".to_owned());
+            }
+        }
+    }
+
+    fn redo_active_tab(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            if tab.redo() {
+                self.ensure_editor_cursor_visible();
+                self.message = Some("redo".to_owned());
+            } else {
+                self.message = Some("nothing to redo".to_owned());
+            }
+        }
+    }
+
+    fn request_quit(&mut self) {
+        if self.tabs.iter().any(|tab| tab.dirty) {
+            self.start_prompt(PromptKind::QuitDirty, "");
+        } else {
+            self.should_quit = true;
+        }
+    }
 }
 
 fn byte_index_for_char(s: &str, char_index: usize) -> usize {
@@ -834,4 +1079,111 @@ fn byte_index_for_char(s: &str, char_index: usize) -> usize {
         .nth(char_index)
         .map(|(index, _)| index)
         .unwrap_or(s.len())
+}
+
+fn find_forward(tab: &EditorTab, needle: &str) -> Option<(usize, usize)> {
+    let start_line = tab.cursor_line;
+    let start_col = tab.cursor_col.saturating_add(1);
+    for line_index in start_line..tab.lines.len() {
+        let col = if line_index == start_line {
+            start_col
+        } else {
+            0
+        };
+        if let Some(found) = line_find_from(&tab.lines[line_index], needle, col) {
+            return Some((line_index, found));
+        }
+    }
+
+    for line_index in 0..=start_line.min(tab.lines.len().saturating_sub(1)) {
+        if let Some(found) = line_find_from(&tab.lines[line_index], needle, 0) {
+            return Some((line_index, found));
+        }
+    }
+
+    None
+}
+
+fn find_backward(tab: &EditorTab, needle: &str) -> Option<(usize, usize)> {
+    let start_line = tab.cursor_line;
+    for line_index in (0..=start_line).rev() {
+        let col = if line_index == start_line {
+            tab.cursor_col
+        } else {
+            tab.lines[line_index].chars().count()
+        };
+        if let Some(found) = line_rfind_before(&tab.lines[line_index], needle, col) {
+            return Some((line_index, found));
+        }
+    }
+
+    for line_index in ((start_line + 1)..tab.lines.len()).rev() {
+        let col = tab.lines[line_index].chars().count();
+        if let Some(found) = line_rfind_before(&tab.lines[line_index], needle, col) {
+            return Some((line_index, found));
+        }
+    }
+
+    None
+}
+
+fn line_find_from(line: &str, needle: &str, char_col: usize) -> Option<usize> {
+    let byte = byte_index_for_char(line, char_col);
+    line[byte..]
+        .find(needle)
+        .map(|found| line[..byte + found].chars().count())
+}
+
+fn line_rfind_before(line: &str, needle: &str, char_col: usize) -> Option<usize> {
+    let byte = byte_index_for_char(line, char_col);
+    line[..byte]
+        .rfind(needle)
+        .map(|found| line[..found].chars().count())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_file(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("tscode-test-{}-{name}", std::process::id()))
+    }
+
+    #[test]
+    fn editor_undo_redo_and_save_preserves_trailing_newline() {
+        let path = temp_file("undo-redo.txt");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "alpha\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.insert_char('X');
+        assert_eq!(tab.lines[0], "Xalpha");
+
+        assert!(tab.undo());
+        assert_eq!(tab.lines[0], "alpha");
+
+        assert!(tab.redo());
+        assert_eq!(tab.lines[0], "Xalpha");
+
+        tab.save().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "Xalpha\n");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn search_wraps_forward_and_backward() {
+        let path = temp_file("search.txt");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "alpha\nbeta alpha\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.set_cursor(0, 0);
+        assert_eq!(find_forward(&tab, "alpha"), Some((1, 5)));
+
+        tab.set_cursor(1, 5);
+        assert_eq!(find_forward(&tab, "alpha"), Some((0, 0)));
+        assert_eq!(find_backward(&tab, "alpha"), Some((0, 0)));
+
+        let _ = fs::remove_file(path);
+    }
 }

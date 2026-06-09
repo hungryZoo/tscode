@@ -122,6 +122,12 @@ impl ShellPanel {
         Ok(())
     }
 
+    pub fn send_text(&mut self, text: &str) -> Result<()> {
+        self.writer.write_all(text.as_bytes())?;
+        self.writer.flush()?;
+        Ok(())
+    }
+
     pub fn send_mouse_click(&mut self, row: u16, col: u16) -> Result<()> {
         let seq = format!(
             "\x1b[<0;{};{}M\x1b[<0;{};{}m",

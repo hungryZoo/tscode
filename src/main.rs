@@ -42,7 +42,8 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                 Event::Resize(_, _) => {
                     terminal.autoresize()?;
                 }
-                Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
+                Event::Paste(text) => app.handle_paste(text)?,
+                Event::FocusGained | Event::FocusLost => {}
             }
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
         }

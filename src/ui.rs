@@ -160,7 +160,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusPanel::Editor;
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Editor  Ctrl-S save  Ctrl-F find ")
+        .title(" Editor  Ctrl-S save  Ctrl-F find  F3 next  Ctrl-Z/Y undo/redo ")
         .border_style(border_style(focused));
     let inner = block.inner(chunks[1]);
     app.hit_regions.editor_body = Some(inner);
@@ -242,9 +242,16 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
         let width = width.min(remaining);
         let rect = Rect::new(x, area.y, width, 1);
         app.hit_regions.tabs.push((rect, index));
+        if width >= 3 {
+            app.hit_regions.tab_closes.push((
+                Rect::new(rect.right().saturating_sub(3), rect.y, 3, 1),
+                index,
+            ));
+        }
 
         let active = app.active_tab == Some(index);
-        let hovered = app.hover == HoverTarget::Tab(index);
+        let hovered =
+            app.hover == HoverTarget::Tab(index) || app.hover == HoverTarget::TabClose(index);
         let style = if active {
             Style::default()
                 .fg(Color::White)
@@ -338,6 +345,7 @@ fn hover_name(hover: &HoverTarget) -> String {
         HoverTarget::ExplorerRow(index) => format!("explorer row {index}"),
         HoverTarget::Editor => "editor".to_owned(),
         HoverTarget::Tab(index) => format!("tab {index}"),
+        HoverTarget::TabClose(index) => format!("tab close {index}"),
         HoverTarget::Terminal => "terminal".to_owned(),
         HoverTarget::TerminalInput => "terminal input".to_owned(),
     }
@@ -348,8 +356,9 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::NewFile => "new file",
         crate::app::PromptKind::NewDir => "new folder",
         crate::app::PromptKind::Rename(_) => "rename",
-        crate::app::PromptKind::Delete(_) => "delete confirm",
+        crate::app::PromptKind::Delete(_) => "delete: type yes",
         crate::app::PromptKind::Search => "find",
+        crate::app::PromptKind::QuitDirty => "unsaved: type quit",
     }
 }
 
