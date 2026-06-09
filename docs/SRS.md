@@ -236,7 +236,7 @@ The terminal renderer shall preserve visible ANSI foreground colors, background 
 
 ### R-312 Terminal Modified Keys
 
-When terminal focus is active, modified navigation keys shall be encoded as xterm-compatible CSI sequences where crossterm reports the modifiers.
+When terminal focus is active, modified navigation keys, function keys, Shift-Tab, null, and application-cursor arrows shall be encoded as xterm-compatible sequences where crossterm reports enough information.
 
 ### R-313 Terminal Bracketed Paste
 
@@ -248,7 +248,7 @@ Clicking a visible shell output token that resolves to an existing workspace fil
 
 ### R-315 Terminal Mouse Pass-Through
 
-When the child terminal application requests xterm mouse events, terminal clicks and wheel events shall be forwarded to the PTY instead of being interpreted as source-reference clicks or scrollback movement.
+When the child terminal application requests xterm mouse events, terminal mouse down, release, drag, move, and wheel events shall be forwarded to the PTY instead of being interpreted as source-reference clicks or scrollback movement. The forwarded encoding shall follow the requested xterm mouse mode where the parser exposes it.
 
 ### R-316 Terminal Layout Controls
 

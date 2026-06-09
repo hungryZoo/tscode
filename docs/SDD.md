@@ -158,9 +158,11 @@ The shell runs inside a PTY with `TERM=xterm-256color`, receives resize notifica
 
 PTY output is parsed into `vt100` cells. `ShellPanel::styled_rows` groups adjacent cells with the same foreground color, background color, and text modifiers into lightweight terminal spans. The UI layer maps those spans into ratatui `Span` values so command output keeps ANSI color and style information without exposing ratatui rendering concerns to the PTY layer.
 
+Keyboard events are converted to xterm-compatible byte sequences before being written to the PTY. The encoder handles control characters, modified navigation keys, function keys, Shift-Tab, null, and the parser's application-cursor mode so alternate-screen tools receive the arrow-key family they requested.
+
 Paste events use normal byte writes unless the parsed terminal screen has bracketed paste mode enabled. In bracketed paste mode, pasted text is wrapped with the standard begin/end paste control sequences before being sent to the PTY.
 
-Terminal mouse handling has two modes. If the child application has requested xterm mouse events, clicks and wheel events are passed through to the PTY. Otherwise, a terminal click is interpreted as normal application UI input: the app inspects the clicked visible row and opens an existing `path`, `path:line`, or `path:line:column` reference in the editor when one is found.
+Terminal mouse handling has two modes. If the child application has requested xterm mouse events, mouse down, release, drag, move, and wheel events over the terminal body are encoded using the parser's current xterm mouse mode/encoding and passed through to the PTY. Otherwise, a terminal click is interpreted as normal application UI input: the app inspects the clicked visible row and opens an existing `path`, `path:line`, or `path:line:column` reference in the editor when one is found.
 
 ## 8. Release and Packaging Design
 
@@ -175,6 +177,6 @@ The release workflow builds archive artifacts on macOS, Linux, and Windows runne
 
 ## 9. Risks and Mitigations
 
-- Full terminal emulation is complex. The prerelease uses `vt100` parsing and a real PTY, which supports normal shell interaction and many CLI programs, while deeper terminal mouse/application-mode edge cases remain ongoing work.
+- Full terminal emulation is complex. The prerelease uses `vt100` parsing and a real PTY, which supports normal shell interaction, xterm-style keyboard input, and common terminal mouse modes, while deeper terminal edge cases remain ongoing work.
 - Cross-compiling every target from one machine may require external linkers. CI uses native runners and cross/zig where practical.
 - Terminal mouse support varies by emulator. The app uses crossterm's standard mouse capture and also provides keyboard fallbacks.

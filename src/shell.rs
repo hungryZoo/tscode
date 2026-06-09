@@ -7,9 +7,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
-use vt100::{Color as VtColor, MouseProtocolMode};
+use vt100::{Color as VtColor, MouseProtocolEncoding, MouseProtocolMode};
 
 const SCROLLBACK: usize = 10_000;
 
@@ -239,7 +239,7 @@ impl ShellPanel {
     }
 
     pub fn send_key(&mut self, key: KeyEvent) -> Result<()> {
-        if let Some(bytes) = key_to_bytes(key) {
+        if let Some(bytes) = key_to_bytes(key, self.parser.screen().application_cursor()) {
             self.writer.write_all(&bytes)?;
             self.writer.flush()?;
         }
@@ -268,40 +268,59 @@ impl ShellPanel {
         Ok(())
     }
 
-    pub fn wants_mouse_events(&self) -> bool {
-        !matches!(
-            self.parser.screen().mouse_protocol_mode(),
-            MouseProtocolMode::None
-        )
-    }
-
-    pub fn send_mouse_click(&mut self, row: u16, col: u16) -> Result<bool> {
-        if !self.wants_mouse_events() {
+    pub fn send_mouse_event(
+        &mut self,
+        kind: MouseEventKind,
+        row: u16,
+        col: u16,
+        modifiers: KeyModifiers,
+    ) -> Result<bool> {
+        let mode = self.parser.screen().mouse_protocol_mode();
+        if mode == MouseProtocolMode::None {
             return Ok(false);
         }
 
-        let seq = format!(
-            "\x1b[<0;{};{}M\x1b[<0;{};{}m",
-            col + 1,
-            row + 1,
-            col + 1,
-            row + 1
-        );
-        self.writer.write_all(seq.as_bytes())?;
+        let Some(bytes) = mouse_event_to_bytes(
+            kind,
+            row,
+            col,
+            modifiers,
+            mode,
+            self.parser.screen().mouse_protocol_encoding(),
+        ) else {
+            return Ok(true);
+        };
+
+        self.writer.write_all(&bytes)?;
         self.writer.flush()?;
+        Ok(true)
+    }
+
+    pub fn send_mouse_click(&mut self, row: u16, col: u16) -> Result<bool> {
+        if !self.send_mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            row,
+            col,
+            KeyModifiers::empty(),
+        )? {
+            return Ok(false);
+        }
+        let _ = self.send_mouse_event(
+            MouseEventKind::Up(MouseButton::Left),
+            row,
+            col,
+            KeyModifiers::empty(),
+        )?;
         Ok(true)
     }
 
     pub fn send_mouse_wheel(&mut self, row: u16, col: u16, up: bool) -> Result<bool> {
-        if !self.wants_mouse_events() {
-            return Ok(false);
-        }
-
-        let button = if up { 64 } else { 65 };
-        let seq = format!("\x1b[<{};{};{}M", button, col + 1, row + 1);
-        self.writer.write_all(seq.as_bytes())?;
-        self.writer.flush()?;
-        Ok(true)
+        let kind = if up {
+            MouseEventKind::ScrollUp
+        } else {
+            MouseEventKind::ScrollDown
+        };
+        self.send_mouse_event(kind, row, col, KeyModifiers::empty())
     }
 
     pub fn scroll(&mut self, amount: isize) {
@@ -333,7 +352,7 @@ fn shell_command() -> CommandBuilder {
     CommandBuilder::new(shell)
 }
 
-fn key_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
+fn key_to_bytes(key: KeyEvent, application_cursor: bool) -> Option<Vec<u8>> {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && let KeyCode::Char(c) = key.code
@@ -345,17 +364,20 @@ fn key_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Backspace => b"\x7f".to_vec(),
         KeyCode::Enter => b"\r".to_vec(),
         KeyCode::Tab => b"\t".to_vec(),
+        KeyCode::BackTab => b"\x1b[Z".to_vec(),
         KeyCode::Esc => b"\x1b".to_vec(),
-        KeyCode::Left => csi_arrow('D', key.modifiers),
-        KeyCode::Right => csi_arrow('C', key.modifiers),
-        KeyCode::Up => csi_arrow('A', key.modifiers),
-        KeyCode::Down => csi_arrow('B', key.modifiers),
-        KeyCode::Home => csi_arrow('H', key.modifiers),
-        KeyCode::End => csi_arrow('F', key.modifiers),
+        KeyCode::Left => cursor_key('D', key.modifiers, application_cursor),
+        KeyCode::Right => cursor_key('C', key.modifiers, application_cursor),
+        KeyCode::Up => cursor_key('A', key.modifiers, application_cursor),
+        KeyCode::Down => cursor_key('B', key.modifiers, application_cursor),
+        KeyCode::Home => cursor_key('H', key.modifiers, application_cursor),
+        KeyCode::End => cursor_key('F', key.modifiers, application_cursor),
         KeyCode::PageUp => csi_tilde(5, key.modifiers),
         KeyCode::PageDown => csi_tilde(6, key.modifiers),
         KeyCode::Delete => csi_tilde(3, key.modifiers),
         KeyCode::Insert => csi_tilde(2, key.modifiers),
+        KeyCode::F(number) => function_key(number, key.modifiers)?,
+        KeyCode::Null => b"\0".to_vec(),
         KeyCode::Char(c) => c.to_string().into_bytes(),
         _ => return None,
     };
@@ -369,11 +391,13 @@ fn ctrl_byte(c: char) -> Option<u8> {
         Some(c as u8 - b'a' + 1)
     } else {
         match c {
+            ' ' | '@' => Some(0x00),
             '[' => Some(0x1b),
             '\\' => Some(0x1c),
             ']' => Some(0x1d),
             '^' => Some(0x1e),
             '_' => Some(0x1f),
+            '?' => Some(0x7f),
             _ => None,
         }
     }
@@ -394,12 +418,55 @@ fn csi_arrow(final_byte: char, modifiers: KeyModifiers) -> Vec<u8> {
     }
 }
 
+fn cursor_key(final_byte: char, modifiers: KeyModifiers, application_cursor: bool) -> Vec<u8> {
+    if modifier_code(modifiers).is_some() {
+        return csi_arrow(final_byte, modifiers);
+    }
+
+    if application_cursor {
+        format!("\x1bO{final_byte}").into_bytes()
+    } else {
+        format!("\x1b[{final_byte}").into_bytes()
+    }
+}
+
 fn csi_tilde(number: u8, modifiers: KeyModifiers) -> Vec<u8> {
     if let Some(code) = modifier_code(modifiers) {
         format!("\x1b[{number};{code}~").into_bytes()
     } else {
         format!("\x1b[{number}~").into_bytes()
     }
+}
+
+fn function_key(number: u8, modifiers: KeyModifiers) -> Option<Vec<u8>> {
+    let final_byte = match number {
+        1 => Some('P'),
+        2 => Some('Q'),
+        3 => Some('R'),
+        4 => Some('S'),
+        _ => None,
+    };
+
+    if let Some(final_byte) = final_byte {
+        return Some(if let Some(code) = modifier_code(modifiers) {
+            format!("\x1b[1;{code}{final_byte}").into_bytes()
+        } else {
+            format!("\x1bO{final_byte}").into_bytes()
+        });
+    }
+
+    let number = match number {
+        5 => 15,
+        6 => 17,
+        7 => 18,
+        8 => 19,
+        9 => 20,
+        10 => 21,
+        11 => 23,
+        12 => 24,
+        _ => return None,
+    };
+    Some(csi_tilde(number, modifiers))
 }
 
 fn modifier_code(modifiers: KeyModifiers) -> Option<u8> {
@@ -414,4 +481,194 @@ fn modifier_code(modifiers: KeyModifiers) -> Option<u8> {
         code += 4;
     }
     (code != 1).then_some(code)
+}
+
+fn mouse_event_to_bytes(
+    kind: MouseEventKind,
+    row: u16,
+    col: u16,
+    modifiers: KeyModifiers,
+    mode: MouseProtocolMode,
+    encoding: MouseProtocolEncoding,
+) -> Option<Vec<u8>> {
+    let mut code = match kind {
+        MouseEventKind::Down(button) => button_code(button),
+        MouseEventKind::Up(button) if reports_release(mode) => match encoding {
+            MouseProtocolEncoding::Sgr => button_code(button),
+            MouseProtocolEncoding::Default | MouseProtocolEncoding::Utf8 => 3,
+        },
+        MouseEventKind::Drag(button) if reports_drag(mode) => button_code(button) + 32,
+        MouseEventKind::Moved if mode == MouseProtocolMode::AnyMotion => 35,
+        MouseEventKind::ScrollUp => 64,
+        MouseEventKind::ScrollDown => 65,
+        MouseEventKind::ScrollLeft => 66,
+        MouseEventKind::ScrollRight => 67,
+        _ => return None,
+    };
+
+    if modifiers.contains(KeyModifiers::SHIFT) {
+        code += 4;
+    }
+    if modifiers.contains(KeyModifiers::ALT) {
+        code += 8;
+    }
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        code += 16;
+    }
+
+    let x = col.saturating_add(1);
+    let y = row.saturating_add(1);
+    let release = matches!(kind, MouseEventKind::Up(_));
+
+    match encoding {
+        MouseProtocolEncoding::Sgr => {
+            let final_byte = if release { 'm' } else { 'M' };
+            Some(format!("\x1b[<{code};{x};{y}{final_byte}").into_bytes())
+        }
+        MouseProtocolEncoding::Default | MouseProtocolEncoding::Utf8 => {
+            default_mouse_sequence(code, x, y)
+        }
+    }
+}
+
+fn button_code(button: MouseButton) -> u16 {
+    match button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    }
+}
+
+fn reports_release(mode: MouseProtocolMode) -> bool {
+    matches!(
+        mode,
+        MouseProtocolMode::PressRelease
+            | MouseProtocolMode::ButtonMotion
+            | MouseProtocolMode::AnyMotion
+    )
+}
+
+fn reports_drag(mode: MouseProtocolMode) -> bool {
+    matches!(
+        mode,
+        MouseProtocolMode::ButtonMotion | MouseProtocolMode::AnyMotion
+    )
+}
+
+fn default_mouse_sequence(code: u16, x: u16, y: u16) -> Option<Vec<u8>> {
+    let cb = u8::try_from(code.checked_add(32)?).ok()?;
+    let cx = u8::try_from(x.checked_add(32)?).ok()?;
+    let cy = u8::try_from(y.checked_add(32)?).ok()?;
+    Some(vec![0x1b, b'[', b'M', cb, cx, cy])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn terminal_key_encoding_supports_application_cursor_and_function_keys() {
+        assert_eq!(
+            key_to_bytes(key(KeyCode::Up, KeyModifiers::empty()), false),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(key(KeyCode::Up, KeyModifiers::empty()), true),
+            Some(b"\x1bOA".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(key(KeyCode::Left, KeyModifiers::CONTROL), true),
+            Some(b"\x1b[1;5D".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(key(KeyCode::F(1), KeyModifiers::empty()), false),
+            Some(b"\x1bOP".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(key(KeyCode::F(5), KeyModifiers::SHIFT), false),
+            Some(b"\x1b[15;2~".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(key(KeyCode::BackTab, KeyModifiers::SHIFT), false),
+            Some(b"\x1b[Z".to_vec())
+        );
+    }
+
+    #[test]
+    fn terminal_mouse_encoding_reports_sgr_press_release_drag_and_wheel() {
+        assert_eq!(
+            mouse_event_to_bytes(
+                MouseEventKind::Down(MouseButton::Left),
+                4,
+                9,
+                KeyModifiers::empty(),
+                MouseProtocolMode::PressRelease,
+                MouseProtocolEncoding::Sgr,
+            ),
+            Some(b"\x1b[<0;10;5M".to_vec())
+        );
+        assert_eq!(
+            mouse_event_to_bytes(
+                MouseEventKind::Up(MouseButton::Left),
+                4,
+                9,
+                KeyModifiers::empty(),
+                MouseProtocolMode::PressRelease,
+                MouseProtocolEncoding::Sgr,
+            ),
+            Some(b"\x1b[<0;10;5m".to_vec())
+        );
+        assert_eq!(
+            mouse_event_to_bytes(
+                MouseEventKind::Drag(MouseButton::Right),
+                0,
+                0,
+                KeyModifiers::CONTROL,
+                MouseProtocolMode::ButtonMotion,
+                MouseProtocolEncoding::Sgr,
+            ),
+            Some(b"\x1b[<50;1;1M".to_vec())
+        );
+        assert_eq!(
+            mouse_event_to_bytes(
+                MouseEventKind::ScrollDown,
+                2,
+                3,
+                KeyModifiers::SHIFT,
+                MouseProtocolMode::Press,
+                MouseProtocolEncoding::Sgr,
+            ),
+            Some(b"\x1b[<69;4;3M".to_vec())
+        );
+    }
+
+    #[test]
+    fn terminal_mouse_encoding_respects_requested_motion_modes() {
+        assert_eq!(
+            mouse_event_to_bytes(
+                MouseEventKind::Drag(MouseButton::Left),
+                1,
+                1,
+                KeyModifiers::empty(),
+                MouseProtocolMode::PressRelease,
+                MouseProtocolEncoding::Sgr,
+            ),
+            None
+        );
+        assert_eq!(
+            mouse_event_to_bytes(
+                MouseEventKind::Moved,
+                1,
+                1,
+                KeyModifiers::empty(),
+                MouseProtocolMode::AnyMotion,
+                MouseProtocolEncoding::Sgr,
+            ),
+            Some(b"\x1b[<35;2;2M".to_vec())
+        );
+    }
 }

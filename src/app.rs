@@ -1089,6 +1089,13 @@ impl App {
         let target = self.hit_regions.target_at(mouse.column, mouse.row);
         self.hover = target.clone();
 
+        if matches!(target, HoverTarget::Terminal | HoverTarget::TerminalInput)
+            && self.forward_terminal_mouse_event(mouse.kind, mouse.modifiers)?
+        {
+            self.focus = FocusPanel::Terminal;
+            return Ok(());
+        }
+
         match mouse.kind {
             MouseEventKind::Moved => {}
             MouseEventKind::Down(MouseButton::Left) => self.activate_target(target)?,
@@ -3013,6 +3020,21 @@ impl App {
         self.active_terminal_mut()
             .shell
             .send_mouse_wheel(row, col, up)
+    }
+
+    fn forward_terminal_mouse_event(
+        &mut self,
+        kind: MouseEventKind,
+        modifiers: KeyModifiers,
+    ) -> Result<bool> {
+        let Some(body) = self.hit_regions.terminal_body else {
+            return Ok(false);
+        };
+        let row = self.hit_regions.last_mouse_y.saturating_sub(body.y);
+        let col = self.hit_regions.last_mouse_x.saturating_sub(body.x);
+        self.active_terminal_mut()
+            .shell
+            .send_mouse_event(kind, row, col, modifiers)
     }
 
     fn open_terminal_reference(&mut self, row: u16, col: u16) -> bool {

@@ -31,8 +31,9 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Terminal focus, maximize/restore, and height controls through `F6`, `F12`, optional control-key shortcuts, and command palette actions.
 - Terminal ANSI rendering preserves parsed foreground/background colors plus bold, dim, italic, underline, and inverse styles.
 - Terminal paste now honors bracketed paste mode when the child application requests it.
-- Terminal modified navigation keys use xterm-compatible CSI sequences for better shell/editor behavior inside the PTY.
-- Terminal clicks on visible existing `path:line:column` references open the file in the editor, while terminal apps that request mouse events receive those clicks and wheel events through the PTY.
+- Terminal modified navigation keys, function keys, Shift-Tab, null, and application-cursor arrows use xterm-compatible sequences for better shell/editor behavior inside the PTY.
+- Terminal clicks on visible existing `path:line:column` references open the file in the editor when the shell is not using terminal mouse mode.
+- Terminal apps that request mouse events now receive xterm-compatible mouse down, release, drag, move, and wheel events through the PTY instead of only basic click/wheel forwarding.
 - Installer latest-version resolution now compares semantic prerelease tags so `pre.10` sorts after `pre.9` even when the GitHub API returns prereleases out of lexical order.
 - Keyboard fallback for focus cycling, navigation, scrolling, command entry, and exit.
 
