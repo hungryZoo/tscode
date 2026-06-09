@@ -62,13 +62,13 @@ impl FsTree {
     }
 
     pub fn toggle(&mut self, path: &Path) -> Result<()> {
-        if let Some(node) = find_mut(&mut self.root, path) {
-            if node.is_dir {
-                if node.children.is_none() {
-                    load_children(node)?;
-                }
-                node.expanded = !node.expanded;
+        if let Some(node) = find_mut(&mut self.root, path)
+            && node.is_dir
+        {
+            if node.children.is_none() {
+                load_children(node)?;
             }
+            node.expanded = !node.expanded;
         }
 
         self.clamp_selection();
@@ -76,10 +76,10 @@ impl FsTree {
     }
 
     pub fn collapse(&mut self, path: &Path) {
-        if let Some(node) = find_mut(&mut self.root, path) {
-            if node.is_dir {
-                node.expanded = false;
-            }
+        if let Some(node) = find_mut(&mut self.root, path)
+            && node.is_dir
+        {
+            node.expanded = false;
         }
 
         self.clamp_selection();
@@ -101,11 +101,12 @@ fn flatten(node: &FsNode, depth: usize, visible: &mut Vec<VisibleNode>) {
         expanded: node.expanded,
     });
 
-    if node.is_dir && node.expanded {
-        if let Some(children) = &node.children {
-            for child in children {
-                flatten(child, depth + 1, visible);
-            }
+    if node.is_dir
+        && node.expanded
+        && let Some(children) = &node.children
+    {
+        for child in children {
+            flatten(child, depth + 1, visible);
         }
     }
 }

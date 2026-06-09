@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -114,11 +114,7 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
         let hovered = app.hover == HoverTarget::ExplorerRow(row);
         let style = row_style(selected, hovered);
         let marker = if node.is_dir {
-            if node.expanded {
-                "-"
-            } else {
-                "+"
-            }
+            if node.expanded { "-" } else { "+" }
         } else {
             " "
         };
@@ -203,7 +199,7 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
         }
 
         let label = format!(" {} x ", tab.title);
-        let width = label.width().min(24).max(8) as u16;
+        let width = label.width().clamp(8, 24) as u16;
         let remaining = area.x.saturating_add(area.width).saturating_sub(x);
         let width = width.min(remaining);
         let rect = Rect::new(x, area.y, width, 1);

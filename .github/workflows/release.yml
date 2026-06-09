@@ -1,0 +1,183 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build"
+        required: true
+        default: "v0.1.0-pre.1"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: macos-14
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            cross: true
+            packages: true
+            rpm_arch: x86_64
+          - os: ubuntu-24.04
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            cross: true
+            packages: true
+            rpm_arch: aarch64
+          - os: ubuntu-24.04
+            target: armv7-unknown-linux-gnueabihf
+            archive: tar.gz
+            cross: true
+            packages: true
+            rpm_arch: armv7hl
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-24.04
+            target: aarch64-unknown-linux-musl
+            archive: tar.gz
+            cross: true
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            exe: .exe
+          - os: windows-2022
+            target: aarch64-pc-windows-msvc
+            archive: zip
+            exe: .exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine release tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "RELEASE_TAG=${{ github.event.inputs.tag }}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        if: matrix.cross == true
+        uses: taiki-e/install-action@cross
+
+      - name: Build
+        shell: bash
+        run: |
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            cross build --release --locked --target "${{ matrix.target }}"
+          else
+            cargo build --release --locked --target "${{ matrix.target }}"
+          fi
+
+      - name: Package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          exe="${{ matrix.exe }}"
+          asset="tscode-${RELEASE_TAG}-${target}"
+          bin="target/${target}/release/tscode${exe}"
+          stage="dist/${asset}"
+          mkdir -p "$stage"
+          cp "$bin" "$stage/"
+          cp README.md LICENSE install.sh "$stage/"
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            (cd dist && 7z a "${asset}.zip" "$asset" >/dev/null)
+          else
+            tar -czf "dist/${asset}.tar.gz" -C dist "$asset"
+          fi
+
+      - name: Install Linux package tools
+        if: matrix.packages == true
+        shell: bash
+        run: |
+          cargo install cargo-deb cargo-generate-rpm --locked
+
+      - name: Build Linux packages
+        if: matrix.packages == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          mkdir -p target/release
+          cp "target/${target}/release/tscode" target/release/tscode
+          cargo deb --no-build --target "$target" --output "dist/tscode-${RELEASE_TAG}-${target}.deb"
+          cargo generate-rpm --arch "${{ matrix.rpm_arch }}" --output "dist/tscode-${RELEASE_TAG}-${target}.rpm"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tscode-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.deb
+            dist/*.rpm
+
+  release:
+    name: publish prerelease
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine release tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "RELEASE_TAG=${{ github.event.inputs.tag }}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Add installer asset
+        run: cp install.sh dist/install.sh
+
+      - name: Publish GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: tscode ${{ env.RELEASE_TAG }}
+          prerelease: true
+          body_path: .github/RELEASE_NOTES.md
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.deb
+            dist/*.rpm
+            dist/install.sh

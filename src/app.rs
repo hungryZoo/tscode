@@ -19,8 +19,9 @@ pub enum FocusPanel {
     Terminal,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum HoverTarget {
+    #[default]
     None,
     Explorer,
     ExplorerRow(usize),
@@ -30,13 +31,7 @@ pub enum HoverTarget {
     TerminalInput,
 }
 
-impl Default for HoverTarget {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct HitRegions {
     pub explorer_area: Option<Rect>,
     pub editor_area: Option<Rect>,
@@ -81,19 +76,6 @@ impl HitRegions {
         }
 
         HoverTarget::None
-    }
-}
-
-impl Default for HitRegions {
-    fn default() -> Self {
-        Self {
-            explorer_area: None,
-            editor_area: None,
-            terminal_area: None,
-            terminal_input: None,
-            explorer_rows: Vec::new(),
-            tabs: Vec::new(),
-        }
     }
 }
 

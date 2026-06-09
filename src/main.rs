@@ -11,9 +11,9 @@ use app::App;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 fn main() -> Result<()> {
     let root = env::args_os()
@@ -28,16 +28,17 @@ fn main() -> Result<()> {
 }
 
 fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> Result<()> {
-    while !app.should_quit {
-        terminal.draw(|frame| ui::draw(frame, &mut app))?;
+    terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
-        if event::poll(Duration::from_millis(50))? {
+    while !app.should_quit {
+        if event::poll(Duration::from_millis(250))? {
             match event::read()? {
                 Event::Key(key) => app.handle_key(key)?,
                 Event::Mouse(mouse) => app.handle_mouse(mouse)?,
                 Event::Resize(_, _) => {}
                 Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
             }
+            terminal.draw(|frame| ui::draw(frame, &mut app))?;
         }
     }
 

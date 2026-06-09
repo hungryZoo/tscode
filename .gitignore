@@ -1,1 +1,6 @@
 /target
+/dist/tscode-*
+/dist/*.tar.gz
+/dist/*.zip
+/dist/*.deb
+/dist/*.rpm
