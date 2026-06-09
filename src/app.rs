@@ -706,6 +706,38 @@ impl EditorTab {
         self.set_cursor_raw(line, col);
     }
 
+    fn toggle_cursor_at(&mut self, line: usize, col: usize) -> usize {
+        let target = self.clamped_position(line, col);
+        let mut cursors = self.cursor_positions();
+        if let Some(index) = cursors.iter().position(|cursor| *cursor == target) {
+            if cursors.len() > 1 {
+                cursors.remove(index);
+            }
+        } else {
+            cursors.push(target);
+        }
+        cursors.sort();
+        cursors.dedup();
+
+        let primary = if cursors.contains(&target) {
+            target
+        } else if cursors.contains(&self.cursor_position()) {
+            self.cursor_position()
+        } else {
+            cursors[0]
+        };
+
+        self.selection_anchor = None;
+        self.extra_selections.clear();
+        self.cursor_line = primary.0;
+        self.cursor_col = primary.1;
+        self.extra_cursors = cursors
+            .into_iter()
+            .filter(|cursor| *cursor != primary)
+            .collect();
+        self.selection_count()
+    }
+
     fn set_cursor_selecting(&mut self, line: usize, col: usize) {
         self.extra_selections.clear();
         self.extra_cursors.clear();
@@ -717,13 +749,19 @@ impl EditorTab {
     }
 
     fn set_cursor_raw(&mut self, line: usize, col: usize) {
-        self.cursor_line = line.min(self.lines.len().saturating_sub(1));
+        let (line, col) = self.clamped_position(line, col);
+        self.cursor_line = line;
         self.cursor_col = col;
-        self.clamp_cursor_col();
     }
 
     fn cursor_position(&self) -> (usize, usize) {
         (self.cursor_line, self.cursor_col)
+    }
+
+    fn clamped_position(&self, line: usize, col: usize) -> (usize, usize) {
+        let line = line.min(self.lines.len().saturating_sub(1));
+        let col = col.min(self.lines[line].chars().count());
+        (line, col)
     }
 
     pub fn cursor_positions(&self) -> Vec<(usize, usize)> {
@@ -1653,6 +1691,12 @@ impl App {
 
         match mouse.kind {
             MouseEventKind::Moved => {}
+            MouseEventKind::Down(MouseButton::Left)
+                if target == HoverTarget::Editor && mouse.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.focus = FocusPanel::Editor;
+                self.toggle_editor_cursor_from_mouse();
+            }
             MouseEventKind::Down(MouseButton::Left) => self.activate_target(target)?,
             MouseEventKind::Drag(MouseButton::Left) => {
                 if target == HoverTarget::Editor {
@@ -4093,25 +4137,12 @@ impl App {
     }
 
     fn set_editor_cursor_from_mouse(&mut self, selecting: bool) {
-        let Some(body) = self.hit_regions.editor_body else {
-            return;
-        };
         let HoverTarget::Editor = self.hover else {
             return;
         };
-        let mouse_x = self.hit_regions.last_mouse_x;
-        let mouse_y = self.hit_regions.last_mouse_y;
-        if let Some(tab) = self.active_tab_mut() {
-            let line_number_width = tab.lines.len().max(1).to_string().len().max(3) + 2;
-            let x = body.x;
-            let y = body.y;
-            let local_x = mouse_x.saturating_sub(x) as usize;
-            let col = if local_x < line_number_width {
-                0
-            } else {
-                local_x.saturating_sub(line_number_width) + tab.horizontal_scroll
-            };
-            let line = tab.scroll + mouse_y.saturating_sub(y) as usize;
+        if let Some((line, col)) = self.editor_mouse_position()
+            && let Some(tab) = self.active_tab_mut()
+        {
             if selecting {
                 tab.set_cursor_selecting(line, col);
             } else {
@@ -4119,6 +4150,31 @@ impl App {
             }
             self.ensure_editor_cursor_visible();
         }
+    }
+
+    fn toggle_editor_cursor_from_mouse(&mut self) {
+        let Some((line, col)) = self.editor_mouse_position() else {
+            return;
+        };
+        if let Some(tab) = self.active_tab_mut() {
+            let count = tab.toggle_cursor_at(line, col);
+            self.ensure_editor_cursor_visible();
+            self.message = Some(format!("{count} editor cursor(s)"));
+        }
+    }
+
+    fn editor_mouse_position(&self) -> Option<(usize, usize)> {
+        let body = self.hit_regions.editor_body?;
+        let tab = self.active_tab()?;
+        let line_number_width = tab.lines.len().max(1).to_string().len().max(3) + 2;
+        let local_x = self.hit_regions.last_mouse_x.saturating_sub(body.x) as usize;
+        let col = if local_x < line_number_width {
+            0
+        } else {
+            local_x.saturating_sub(line_number_width) + tab.horizontal_scroll
+        };
+        let line = tab.scroll + self.hit_regions.last_mouse_y.saturating_sub(body.y) as usize;
+        Some((line, col))
     }
 
     fn move_quick_selection(&mut self, delta: isize) {
@@ -6367,6 +6423,61 @@ mod tests {
         app.set_editor_cursor_from_mouse(false);
         assert_eq!(app.active_tab().unwrap().cursor_position(), (0, 0));
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_alt_click_toggles_mouse_cursors_and_typing_uses_all() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-alt-click-cursors-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "alpha\nbeta\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.focus = FocusPanel::Editor;
+        app.editor_height = 5;
+        app.editor_width = 24;
+        app.hit_regions.editor_area = Some(Rect::new(0, 0, 24, 5));
+        app.hit_regions.editor_body = Some(Rect::new(0, 0, 24, 5));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::ALT,
+        })
+        .unwrap();
+        assert_eq!(app.focus, FocusPanel::Editor);
+        assert_eq!(
+            app.active_tab().unwrap().cursor_positions(),
+            vec![(0, 0), (1, 0)]
+        );
+        assert_eq!(app.active_tab().unwrap().selection_count(), 2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.active_tab().unwrap().lines, vec!["!alpha", "!beta"]);
+        assert_eq!(
+            app.active_tab().unwrap().cursor_positions(),
+            vec![(0, 1), (1, 1)]
+        );
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 6,
+            row: 1,
+            modifiers: KeyModifiers::ALT,
+        })
+        .unwrap();
+        assert_eq!(app.active_tab().unwrap().cursor_positions(), vec![(0, 1)]);
+        assert_eq!(app.active_tab().unwrap().selection_count(), 0);
+
+        app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
 

@@ -164,6 +164,10 @@ The command palette shall include a save-all command that writes every dirty edi
 
 The editor shall support text selection with `Shift` plus arrow keys and with mouse drag inside the editor body. Selected text shall be visually highlighted. The editor shall also support multiple selected occurrence ranges in the active file.
 
+### R-221A Mouse Multi-Cursor
+
+`Alt`+click inside the editor body shall toggle an additional editor cursor at the clicked text position after applying line-number gutter, vertical scroll, and horizontal scroll offsets. Typing, paste, `Enter`, `Backspace`, and `Delete` shall operate on every active cursor as one undoable edit when no explicit selection ranges are active. A regular editor click shall clear extra cursors and move back to a single cursor.
+
 ### R-222 Editor Clipboard
 
 When editor focus is active, `Ctrl-a` shall select the full buffer, `Ctrl-c` shall copy the selected text to an internal editor clipboard, `Ctrl-x` shall cut the selected text to that clipboard, and `Ctrl-v` shall paste that clipboard at the cursor or replace the active selection. `Ctrl-c` and `Ctrl-x` shall also queue an OSC52 terminal clipboard export for selections within the configured terminal-safe size limit.
@@ -230,7 +234,7 @@ The command palette shall include a revert-file action for the active editor tab
 
 ### R-238 Occurrence Selection
 
-`Ctrl-d` or the command palette shall add the next active-file occurrence of the current single-line selection, or the identifier under the editor cursor when no selection exists, to the editor selection set. `Ctrl-shift-l` or the command palette shall select all active-file occurrences. Identifier-based occurrence selection shall respect identifier boundaries. Copy, cut, typing, paste, `Enter`, `Backspace`, and `Delete` shall operate on all selected occurrence ranges as one undoable edit, and the status bar shall show the selected occurrence count.
+`Ctrl-d` or the command palette shall add the next active-file occurrence of the current single-line selection, or the identifier under the editor cursor when no selection exists, to the editor selection set. `Ctrl-shift-l` or the command palette shall select all active-file occurrences. Identifier-based occurrence selection shall respect identifier boundaries. Copy, cut, typing, paste, `Enter`, `Backspace`, and `Delete` shall operate on all selected occurrence ranges as one undoable edit, and the status bar shall show the selected occurrence count. Continued typing after replacing selected occurrences shall preserve the resulting cursor set for additional simultaneous edits.
 
 ## 5. Integrated Terminal Requirements
 

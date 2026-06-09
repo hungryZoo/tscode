@@ -57,6 +57,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
 - As a developer, I can select text with the keyboard or mouse, copy or cut it to both the editor clipboard and a terminal clipboard export where supported, then paste it back into the editor.
+- As a developer, I can `Alt`+click inside the editor to place multiple cursors and type the same edit at every clicked location.
 - As a developer, I can use `Ctrl-D` and `Ctrl-Shift-L` to select the next or all active-file occurrences of the current word or selection, then replace the selected occurrences together as one undoable edit.
 - As a developer, I can copy active-file or selected-explorer absolute and workspace-relative paths for use in shell commands, bug reports, or external tools.
 - As a developer, I can use common line editing actions on the current line or selected line range: indent, outdent, duplicate, delete, move, toggle comments, and go to line.
@@ -98,6 +99,7 @@ Mouse input is first-class:
 
 - hover updates visual state
 - left click changes focus or activates items
+- `Alt`+click in the editor toggles mouse-placed extra cursors
 - mouse wheel scrolls the hovered/focused panel
 - horizontal wheel gestures pan long editor lines
 

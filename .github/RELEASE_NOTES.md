@@ -23,6 +23,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - In-file search now highlights visible matches and shows a match count in the status bar.
 - `Ctrl-H` and the command palette can replace the current/next active-file match, while replace-all changes every match as one undoable edit.
 - Editor text selection with `Shift`+arrow keys and mouse drag, visual selection highlighting, and selection counts in the status bar.
+- Mouse multi-cursor editing: `Alt`+click inside the editor toggles extra cursors at clicked text positions, and typing/paste continues through every active cursor as one undoable edit.
 - Multi-occurrence editor selection: `Ctrl-D` adds the next active-file occurrence of the current word or selection, `Ctrl-Shift-L` selects all active-file occurrences, and typing/paste/delete changes every selected occurrence as one undoable edit.
 - Editor word movement and word selection with `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` where the terminal reports modified arrow keys.
 - Editor smart editing now preserves indentation on newline, adds one extra indent level after opening braces/brackets/parentheses, and splits immediate closing pairs onto their own line.
