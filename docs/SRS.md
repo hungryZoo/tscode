@@ -192,7 +192,11 @@ Saving an edited file shall preserve an existing trailing newline unless the buf
 
 ### R-218 Line Editing Commands
 
-The editor shall support indenting, outdenting, duplicating, deleting, moving, and toggling comments for the active line or selected line range. `Tab`, `Shift-tab`, `Ctrl-shift-d`, `Ctrl-/`, `Alt-up`, and `Alt-down` shall invoke the corresponding editor actions where the terminal can report those keys. Each selected-range line command shall be undoable as a single edit.
+The editor shall support indenting, outdenting, duplicating, deleting, moving, and toggling line comments for the active line or selected line range. `Tab`, `Shift-tab`, `Ctrl-shift-d`, `Ctrl-/`, `Alt-up`, and `Alt-down` shall invoke the corresponding editor actions where the terminal can report those keys. Each selected-range line command shall be undoable as a single edit.
+
+### R-218A Block Comments
+
+`Shift-alt-a`, the command palette, and the editor context menu shall include a Toggle Block Comment action. For supported file types, the action shall wrap the active selection or indentation-preserving current line with the file type's block comment delimiters, and shall unwrap the same region when it is already surrounded by matching delimiters. Supported delimiters shall include C-style `/* */`, HTML/XML/Markdown `<!-- -->`, Lua `--[[ ]]`, and Python triple-quote blocks. The command shall update the in-memory editor buffer as one undoable edit, mark the tab dirty, preserve file contents on disk until save, and report a clear status message when the active file type has no block comment token.
 
 ### R-219 Go To Line
 
@@ -530,6 +534,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use `F1` to open the command palette and execute an editor command.
 - Use `Ctrl-l` or the command palette to jump to a line.
 - Use `Ctrl-shift-\`, the command palette, or the editor context menu to jump between matching brackets, including a nested pair, then confirm `Alt-left` returns to the previous cursor location.
+- Use `Shift-alt-a`, the command palette, or the editor context menu to toggle a block comment on a selection and on the current line, then undo and confirm the original text and selection are restored.
 - Select all text, cut it, paste it back, save, and confirm file contents on disk.
 - Drag in the editor, including past the bottom/right visible edge, confirm the selection extends while the viewport scrolls, then copy or cut the selected text and confirm the clipboard/file contents match the selected range.
 - Type brackets/quotes and press `Enter` inside a brace pair, then confirm auto-pairing, skip-over, paired deletion, and auto-indent behavior.

@@ -817,6 +817,45 @@ impl EditorTab {
         true
     }
 
+    fn toggle_block_comment(&mut self) -> Option<bool> {
+        let (open, close) = block_comment_tokens_for_path(&self.path)?;
+        let mut ranges = self.selection_ranges();
+        if ranges.is_empty() {
+            let line = self.cursor_line;
+            let start_col = self.lines[line]
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .count();
+            let end_col = self.lines[line].chars().count();
+            ranges.push(EditorSelection {
+                start: (line, start_col),
+                end: (line, end_col),
+            });
+        }
+
+        let should_uncomment = ranges.iter().all(|range| {
+            uncomment_block_text(&self.text_in_range(range.start, range.end), open, close).is_some()
+        });
+
+        let replacements = ranges
+            .iter()
+            .map(|range| {
+                let selected = self.text_in_range(range.start, range.end);
+                let replacement = if should_uncomment {
+                    uncomment_block_text(&selected, open, close).unwrap_or(selected)
+                } else {
+                    comment_block_text(&selected, open, close)
+                };
+                (range.start, range.end, replacement)
+            })
+            .collect::<Vec<_>>();
+
+        self.push_undo();
+        self.replace_distinct_ranges_raw(&replacements, false);
+        self.dirty = true;
+        Some(!should_uncomment)
+    }
+
     fn trim_trailing_whitespace(&mut self) -> usize {
         let changed_lines = self
             .lines
@@ -1947,6 +1986,7 @@ pub enum CommandAction {
     MoveLineUp,
     MoveLineDown,
     ToggleLineComment,
+    ToggleBlockComment,
     ToggleFold,
     FoldAll,
     UnfoldAll,
@@ -2762,6 +2802,11 @@ impl App {
                 KeyCode::Down => self.move_active_line_down(),
                 KeyCode::Char('[') => self.toggle_active_fold(),
                 KeyCode::Char(']') => self.unfold_all_active_tab(),
+                KeyCode::Char('a') | KeyCode::Char('A')
+                    if key.modifiers.contains(KeyModifiers::SHIFT) =>
+                {
+                    self.toggle_active_block_comment()
+                }
                 KeyCode::Char('f') | KeyCode::Char('F')
                     if key.modifiers.contains(KeyModifiers::SHIFT) =>
                 {
@@ -4454,6 +4499,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::ToggleLineComment,
         },
         CommandSpec {
+            label: "Toggle Block Comment",
+            detail: "Wrap or unwrap the selection or current line with the file type's block comment tokens",
+            shortcut: "Shift-Alt-A",
+            action: CommandAction::ToggleBlockComment,
+        },
+        CommandSpec {
             label: "Toggle Fold",
             detail: "Fold or unfold the code block at the editor cursor",
             shortcut: "Alt-[",
@@ -5220,6 +5271,12 @@ impl App {
                 detail: "Comment or uncomment the current line or selected lines".to_owned(),
                 shortcut: "Ctrl-/",
                 action: CommandAction::ToggleLineComment,
+            },
+            ContextMenuAction {
+                label: "Toggle Block Comment",
+                detail: "Wrap or unwrap the current selection with block comment tokens".to_owned(),
+                shortcut: "Shift-Alt-A",
+                action: CommandAction::ToggleBlockComment,
             },
             ContextMenuAction {
                 label: "Toggle Fold",
@@ -7652,6 +7709,27 @@ impl App {
         }
     }
 
+    fn toggle_active_block_comment(&mut self) {
+        if !self.ensure_active_tab_writable("toggle block comment") {
+            return;
+        }
+        if let Some(tab) = self.active_tab_mut() {
+            match tab.toggle_block_comment() {
+                Some(true) => {
+                    self.ensure_editor_cursor_visible();
+                    self.message = Some("added block comment".to_owned());
+                }
+                Some(false) => {
+                    self.ensure_editor_cursor_visible();
+                    self.message = Some("removed block comment".to_owned());
+                }
+                None => {
+                    self.message = Some("no block comment token for file type".to_owned());
+                }
+            }
+        }
+    }
+
     fn trim_active_trailing_whitespace(&mut self) {
         if !self.ensure_active_tab_writable("trim trailing whitespace") {
             return;
@@ -9021,6 +9099,7 @@ impl App {
             CommandAction::MoveLineUp => self.move_active_line_up(),
             CommandAction::MoveLineDown => self.move_active_line_down(),
             CommandAction::ToggleLineComment => self.toggle_active_line_comment(),
+            CommandAction::ToggleBlockComment => self.toggle_active_block_comment(),
             CommandAction::ToggleFold => self.toggle_active_fold(),
             CommandAction::FoldAll => self.fold_all_active_tab(),
             CommandAction::UnfoldAll => self.unfold_all_active_tab(),
@@ -11947,6 +12026,58 @@ fn comment_token_for_path(path: &Path) -> Option<&'static str> {
     }
 }
 
+fn block_comment_tokens_for_path(path: &Path) -> Option<(&'static str, &'static str)> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some(
+            "rs" | "js" | "jsx" | "ts" | "tsx" | "go" | "java" | "kt" | "kts" | "c" | "h" | "cc"
+            | "cpp" | "hpp" | "cs" | "swift" | "scala" | "php" | "dart" | "css" | "scss" | "sass"
+            | "less" | "sql",
+        ) => Some(("/*", "*/")),
+        Some("html" | "htm" | "xml" | "svg" | "md" | "markdown") => Some(("<!--", "-->")),
+        Some("lua") => Some(("--[[", "]]")),
+        Some("py") => Some(("\"\"\"", "\"\"\"")),
+        _ => None,
+    }
+}
+
+fn comment_block_text(text: &str, open: &str, close: &str) -> String {
+    if text.is_empty() {
+        format!("{open}{close}")
+    } else {
+        format!("{open} {text} {close}")
+    }
+}
+
+fn uncomment_block_text(text: &str, open: &str, close: &str) -> Option<String> {
+    let start = text.find(|c: char| !c.is_whitespace())?;
+    let end = text.trim_end().len();
+    if start >= end {
+        return None;
+    }
+
+    let core = &text[start..end];
+    if !core.starts_with(open)
+        || !core.ends_with(close)
+        || core.len() < open.len().saturating_add(close.len())
+    {
+        return None;
+    }
+
+    let mut inner = core[open.len()..core.len() - close.len()].to_owned();
+    if inner.starts_with(' ') {
+        inner.remove(0);
+    }
+    if inner.ends_with(' ') {
+        inner.pop();
+    }
+
+    Some(format!("{}{}{}", &text[..start], inner, &text[end..]))
+}
+
 fn comment_removal_range(line: &str, token: &str) -> Option<(usize, usize, usize)> {
     let indent_chars = line.chars().take_while(|c| c.is_whitespace()).count();
     let indent_byte = byte_index_for_char(line, indent_chars);
@@ -13328,6 +13459,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ClearDocumentHighlights))
         );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ToggleBlockComment))
+        );
         let toggle_index = panel
             .items
             .iter()
@@ -13483,6 +13620,72 @@ mod tests {
         tab.delete_line();
         assert_eq!(tab.lines, vec!["fn main() {", "println!(\"hi\");", "}"]);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn editor_block_comment_toggles_current_line_selection_and_undoes() {
+        let path = temp_file("block-comment.rs");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "fn main() {\n    let value = 1;\n}\n").unwrap();
+
+        let mut tab = EditorTab::open(path.clone()).unwrap();
+        tab.set_cursor(1, 8);
+
+        assert_eq!(tab.toggle_block_comment(), Some(true));
+        assert_eq!(tab.lines[1], "    /* let value = 1; */");
+
+        assert_eq!(tab.toggle_block_comment(), Some(false));
+        assert_eq!(tab.lines[1], "    let value = 1;");
+
+        tab.set_cursor(1, 8);
+        tab.set_cursor_selecting(1, 13);
+        assert_eq!(tab.selected_text().as_deref(), Some("value"));
+        assert_eq!(tab.toggle_block_comment(), Some(true));
+        assert_eq!(tab.lines[1], "    let /* value */ = 1;");
+        assert!(tab.dirty);
+
+        assert!(tab.undo());
+        assert_eq!(tab.lines[1], "    let value = 1;");
+        assert_eq!(tab.selected_text().as_deref(), Some("value"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn editor_block_comment_supports_html_tokens_and_shift_alt_shortcut() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-block-comment-shortcut-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let html = root.join("index.html");
+        fs::write(&html, "<main>hello</main>\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let html = canonical_root.join("index.html");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&html);
+        app.focus = FocusPanel::Editor;
+        app.active_tab_mut().unwrap().set_cursor(0, 0);
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('A'),
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ))
+        .unwrap();
+        assert_eq!(
+            app.active_tab().unwrap().lines[0],
+            "<!-- <main>hello</main> -->"
+        );
+        assert_eq!(app.message.as_deref(), Some("added block comment"));
+
+        app.run_command(CommandAction::ToggleBlockComment).unwrap();
+        assert_eq!(app.active_tab().unwrap().lines[0], "<main>hello</main>");
+        assert_eq!(app.message.as_deref(), Some("removed block comment"));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -14881,6 +15084,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::TriggerSuggest))
+        );
+        let commands = app.command_palette_items("block comment");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ToggleBlockComment))
         );
         let commands = app.command_palette_items("copy relative path");
         assert!(commands.iter().any(|item| {
