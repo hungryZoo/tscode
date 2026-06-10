@@ -53,6 +53,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can drag across visible terminal output, see the selected cells highlighted, copy that text, and paste it back into the active shell with terminal-safe shortcuts.
 - As a developer, I can search the integrated terminal's visible output and scrollback, see matches highlighted, and jump between matches without losing the PTY session.
 - As a developer, I can edit text, save files, create files/folders, rename, delete, and refresh the explorer.
+- As a developer, New File and New Folder use the selected explorer folder or selected file's parent as the target, and rename refuses unsafe root moves or target overwrites.
 - As a developer, I can copy, cut, paste, and duplicate files or folders from the explorer.
 - As a developer, I can select multiple explorer rows with the mouse or keyboard and run copy, cut, paste, duplicate, delete, and path-copy actions on the whole selected set.
 - As a developer, I can right-click explorer rows and run common file actions from a mouse-selectable context menu instead of memorizing every shortcut.

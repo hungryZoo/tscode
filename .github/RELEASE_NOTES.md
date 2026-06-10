@@ -9,6 +9,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - `tscode --help`/`--version` now print CLI metadata before entering raw mode, making installer and package verification work without an interactive terminal.
 - Explorer sorting can now be changed by keyboard (`s`), command palette, or right-click context menu between name, type, modified time, and size while keeping folders first and preserving the selected path.
 - Explorer copy, cut, paste, duplicate, and reveal-active-file actions backed by real filesystem operations.
+- Explorer New File/New Folder now prefill the selected folder path, create items under the selected folder or selected file's parent, reveal new folders, open new files, and refuse workspace-escaping paths.
 - Explorer multi-select is now a real file-operation selection model: `Space` toggles the focused row, `Shift`+click range-selects visible rows, `Ctrl`/`Command`/`Meta`+click toggles rows, selected rows show a distinct marker/background, and copy/cut/paste/duplicate/delete/path-copy apply to the whole selected set.
 - Explorer rows now support a right-click context menu whose mouse-selectable actions call the same real open/toggle, create, copy/cut/paste/duplicate, rename, delete, path-copy, New Terminal Here, refresh, collapse, and visibility operations as shortcuts and the command palette.
 - Editor and terminal areas now support right-click context menus backed by the same real `CommandAction` path as shortcuts and the command palette. Editor menus cover save, clipboard, search, navigation, rename, suggestions, formatting, comments, run-in-terminal, path-copy, revert, and close-tab actions; terminal menus cover copy/paste/search, clear/restart/rename, session management, maximize/resize, and focus actions when the child app is not using terminal mouse reporting.
@@ -63,7 +64,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Command palette Trim Trailing Whitespace removes spaces and tabs at line ends in the active editor buffer as one undoable edit, then saves cleanly to the real file when `Ctrl-S` or Save File is used.
 - Command palette Revert File and Reload File From Disk reload the active editor tab from disk, discard unsaved buffer edits, clear per-tab edit history, reset dirty/external-file markers, and refresh Git status markers.
 - Opening files now canonicalizes paths before tab lookup, avoiding duplicate tabs and broken relative-path behavior when the OS exposes aliases such as `/tmp` and `/private/tmp`.
-- File explorer actions for refresh, new file, new folder, rename, and delete with confirmation; folder rename/delete keeps open tabs in sync, and explorer delete now refuses to discard unsaved dirty open tabs.
+- File explorer actions for refresh, new file, new folder, rename, and delete with confirmation; rename refuses to move the workspace root or overwrite an existing target, folder rename/delete keeps open tabs in sync, and explorer delete now refuses to discard unsaved dirty open tabs.
 - Explorer collapse-all is available through the command palette.
 - Tab close support through the tab `x`, middle click, or `Ctrl-W`, with a mouse-selectable Save and Close / Don't Save / Cancel panel for dirty tabs, including Save As then close for Untitled tabs.
 - File save preserves existing trailing newlines.

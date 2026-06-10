@@ -2530,8 +2530,8 @@ impl App {
             KeyCode::Char('/') => self.start_explorer_filter_prompt(),
             KeyCode::Char('.') => self.toggle_hidden_files(),
             KeyCode::Char('i') => self.toggle_ignored_files(),
-            KeyCode::Char('n') => self.start_prompt(PromptKind::NewFile, ""),
-            KeyCode::Char('N') => self.start_prompt(PromptKind::NewDir, ""),
+            KeyCode::Char('n') => self.start_new_file_prompt(),
+            KeyCode::Char('N') => self.start_new_dir_prompt(),
             KeyCode::Char('e') => self.prompt_rename(),
             KeyCode::Char('D') => self.prompt_delete(),
             KeyCode::Char(' ') => self.toggle_explorer_multi_selection(),
@@ -4309,6 +4309,26 @@ impl App {
         self.start_prompt(PromptKind::WorkspaceReplaceFind, &initial);
     }
 
+    fn start_new_file_prompt(&mut self) {
+        let initial = self.new_item_prompt_prefix();
+        self.start_prompt(PromptKind::NewFile, &initial);
+    }
+
+    fn start_new_dir_prompt(&mut self) {
+        let initial = self.new_item_prompt_prefix();
+        self.start_prompt(PromptKind::NewDir, &initial);
+    }
+
+    fn new_item_prompt_prefix(&self) -> String {
+        let base = self.selected_base_dir();
+        let relative = relative_path(&self.root, &base);
+        if relative.is_empty() {
+            String::new()
+        } else {
+            format!("{relative}/")
+        }
+    }
+
     fn start_save_as_prompt(&mut self) {
         let Some(tab) = self.active_tab() else {
             self.message = Some("no active file to save as".to_owned());
@@ -6024,17 +6044,30 @@ impl App {
     }
 
     fn create_file_from_prompt(&mut self, name: String) -> Result<()> {
-        let name = name.trim();
-        if name.is_empty() {
+        self.message = None;
+        let Some(path) = self.resolve_explorer_create_path(&name) else {
+            if self.message.is_none() {
+                self.message = Some("new file cancelled".to_owned());
+            }
+            return Ok(());
+        };
+        if path == self.root {
+            self.message = Some("new file requires a file name".to_owned());
             return Ok(());
         }
-        let path = self.selected_base_dir().join(name);
+        if path.exists() {
+            if path.is_dir() {
+                self.message = Some(format!("new file target is a folder: {}", path.display()));
+                return Ok(());
+            }
+            self.open_file(&path);
+            self.message = Some(format!("opened existing file {}", path.display()));
+            return Ok(());
+        }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        if !path.exists() {
-            fs::write(&path, "")?;
-        }
+        fs::write(&path, "")?;
         self.refresh_explorer()?;
         self.open_file(&path);
         self.message = Some(format!("created {}", path.display()));
@@ -6042,13 +6075,27 @@ impl App {
     }
 
     fn create_dir_from_prompt(&mut self, name: String) -> Result<()> {
-        let name = name.trim();
-        if name.is_empty() {
+        self.message = None;
+        let Some(path) = self.resolve_explorer_create_path(&name) else {
+            if self.message.is_none() {
+                self.message = Some("new folder cancelled".to_owned());
+            }
+            return Ok(());
+        };
+        if path == self.root {
+            self.message = Some("new folder requires a folder name".to_owned());
             return Ok(());
         }
-        let path = self.selected_base_dir().join(name);
+        if path.is_file() {
+            self.message = Some(format!(
+                "new folder target is an existing file: {}",
+                path.display()
+            ));
+            return Ok(());
+        }
         fs::create_dir_all(&path)?;
         self.refresh_explorer()?;
+        self.reveal_path(&path)?;
         self.message = Some(format!("created {}", path.display()));
         Ok(())
     }
@@ -6056,12 +6103,32 @@ impl App {
     fn rename_from_prompt(&mut self, path: PathBuf, name: String) -> Result<()> {
         let name = name.trim();
         if name.is_empty() {
+            self.message = Some("rename cancelled".to_owned());
+            return Ok(());
+        }
+        if path == self.root {
+            self.message = Some("refusing to rename workspace root".to_owned());
+            return Ok(());
+        }
+        if !is_simple_file_name(name) {
+            self.message = Some("rename expects a single file or folder name".to_owned());
             return Ok(());
         }
         let new_path = path
             .parent()
             .map(|parent| parent.join(name))
             .unwrap_or_else(|| self.root.join(name));
+        if new_path == path {
+            self.message = Some("rename unchanged".to_owned());
+            return Ok(());
+        }
+        if new_path.exists() {
+            self.message = Some(format!(
+                "rename target already exists: {}",
+                new_path.display()
+            ));
+            return Ok(());
+        }
         fs::rename(&path, &new_path)?;
         let new_path = new_path.canonicalize().unwrap_or(new_path);
         self.update_open_tabs_for_move(&path, &new_path);
@@ -6070,6 +6137,39 @@ impl App {
         self.reveal_path(&new_path)?;
         self.message = Some(format!("renamed to {}", new_path.display()));
         Ok(())
+    }
+
+    fn resolve_explorer_create_path(&mut self, input: &str) -> Option<PathBuf> {
+        let input = input.trim();
+        if input.is_empty() {
+            return None;
+        }
+        let requested = PathBuf::from(input);
+        if requested.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::Prefix(_)
+            )
+        }) {
+            self.message = Some("explorer paths cannot use '..'".to_owned());
+            return None;
+        }
+
+        let target = if requested.is_absolute() {
+            requested
+        } else if input.contains('/') || input.contains('\\') || path_mentions_directory(&requested)
+        {
+            self.root.join(requested)
+        } else {
+            self.selected_base_dir().join(requested)
+        };
+
+        if !target.starts_with(&self.root) {
+            self.message = Some("explorer create target must stay inside the workspace".to_owned());
+            return None;
+        }
+
+        Some(target)
     }
 
     fn delete_paths(&mut self, paths: Vec<PathBuf>) -> Result<()> {
@@ -8018,8 +8118,8 @@ impl App {
             }
             CommandAction::CloseSavedTabs => self.close_saved_tabs(),
             CommandAction::OpenSelectedExplorerItem => self.open_or_toggle_selected()?,
-            CommandAction::NewFile => self.start_prompt(PromptKind::NewFile, ""),
-            CommandAction::NewFolder => self.start_prompt(PromptKind::NewDir, ""),
+            CommandAction::NewFile => self.start_new_file_prompt(),
+            CommandAction::NewFolder => self.start_new_dir_prompt(),
             CommandAction::RenameSelected => self.prompt_rename(),
             CommandAction::DeleteSelected => self.prompt_delete(),
             CommandAction::CopySelectedExplorerItem => self.copy_selected_path(),
@@ -9297,6 +9397,19 @@ fn resolve_prompt_path(root: &Path, input: &str) -> Option<PathBuf> {
     } else {
         root.join(path)
     })
+}
+
+fn path_mentions_directory(path: &Path) -> bool {
+    path.components()
+        .filter(|component| matches!(component, std::path::Component::Normal(_)))
+        .count()
+        > 1
+}
+
+fn is_simple_file_name(input: &str) -> bool {
+    let mut components = Path::new(input).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
 }
 
 fn load_git_status(root: &Path) -> (HashMap<PathBuf, GitStatusKind>, HashSet<PathBuf>) {
@@ -15649,6 +15762,101 @@ src/lib.rs:3:1: note: trailing note
             app.tabs
                 .iter()
                 .all(|tab| tab.untitled || !tab.path.starts_with(&canonical_src))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_new_file_and_folder_prompts_use_selected_context() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-new-item-context-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let src_path = canonical_root.join("src");
+        let main_path = canonical_root.join("src/main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+
+        app.explorer.reveal(&src_path).unwrap();
+        app.start_new_file_prompt();
+        assert!(matches!(
+            app.prompt.as_ref().map(|prompt| &prompt.kind),
+            Some(PromptKind::NewFile)
+        ));
+        assert_eq!(
+            app.prompt.as_ref().map(|prompt| prompt.input.as_str()),
+            Some("src/")
+        );
+        app.prompt.as_mut().unwrap().input = "src/mod.rs".to_owned();
+        app.finish_prompt().unwrap();
+
+        let mod_path = canonical_root.join("src/mod.rs");
+        assert!(mod_path.is_file());
+        assert_eq!(app.active_tab().map(|tab| tab.path.clone()), Some(mod_path));
+
+        app.explorer.reveal(&main_path).unwrap();
+        app.start_new_dir_prompt();
+        assert!(matches!(
+            app.prompt.as_ref().map(|prompt| &prompt.kind),
+            Some(PromptKind::NewDir)
+        ));
+        assert_eq!(
+            app.prompt.as_ref().map(|prompt| prompt.input.as_str()),
+            Some("src/")
+        );
+        app.prompt.as_mut().unwrap().input = "src/components".to_owned();
+        app.finish_prompt().unwrap();
+
+        assert!(canonical_root.join("src/components").is_dir());
+        assert_eq!(
+            app.visible_nodes()
+                .get(app.explorer.selected)
+                .map(|node| node.path.clone()),
+            Some(canonical_root.join("src/components"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_rename_refuses_root_and_existing_targets() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-rename-safety-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), "alpha").unwrap();
+        fs::write(root.join("b.txt"), "beta").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let a = canonical_root.join("a.txt");
+        let b = canonical_root.join("b.txt");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+
+        app.rename_from_prompt(a.clone(), "b.txt".to_owned())
+            .unwrap();
+        assert_eq!(fs::read_to_string(&a).unwrap(), "alpha");
+        assert_eq!(fs::read_to_string(&b).unwrap(), "beta");
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("rename target already exists"))
+        );
+
+        app.rename_from_prompt(canonical_root.clone(), "workspace".to_owned())
+            .unwrap();
+        assert!(canonical_root.is_dir());
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("workspace root"))
         );
 
         app.kill_all_terminals();

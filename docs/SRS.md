@@ -54,6 +54,10 @@ The explorer shall visually highlight the row under the mouse cursor.
 
 The explorer shall support a visible multi-selection model. Pressing `Space` on the focused explorer row shall toggle that row in the selection set. `Ctrl`, `Command`, or `Meta` left-clicking an explorer row shall toggle that row without opening it. `Shift` left-clicking an explorer row shall select the visible row range between the selection anchor and the clicked row. Multi-selected rows shall be visually distinct from ordinary hovered rows and from the active cursor row. Pressing `Esc` outside terminal focus shall clear the explorer multi-selection before invoking app quit behavior.
 
+### R-106B Create and Rename Safety
+
+New File and New Folder shall prompt with the selected folder, or the selected file's parent folder, prefilled as the workspace-relative target prefix. Simple names shall be created under that selected base; explicit relative paths shall be resolved under the workspace root; parent-directory traversal and workspace-escaping absolute paths shall be rejected. Creating a new file shall open the created file in the editor, and creating a new folder shall reveal the created folder in the explorer. Explorer rename shall operate on one item at a time, shall reject workspace-root rename, shall require a single file or folder name rather than a path, and shall refuse to overwrite an existing target.
+
 ### R-107 Open Tab Synchronization
 
 Renaming a file or folder shall update matching open tab paths. Deleting one or more files or folders shall close matching clean open tabs. If any delete target contains a dirty open file-backed tab, the application shall refuse the filesystem delete, keep all matching tabs open, keep the dirty buffer contents intact, and tell the user to save, close, or discard the unsaved tab first.
