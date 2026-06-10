@@ -2897,6 +2897,26 @@ impl App {
                     self.message = Some("Ctrl-K chord: press S to Save All".to_owned());
                     return Ok(());
                 }
+                KeyCode::PageDown if matches!(self.focus, FocusPanel::Terminal) => {
+                    if !terminal_child_owns_keyboard {
+                        self.next_terminal();
+                        return Ok(());
+                    }
+                }
+                KeyCode::PageUp if matches!(self.focus, FocusPanel::Terminal) => {
+                    if !terminal_child_owns_keyboard {
+                        self.previous_terminal();
+                        return Ok(());
+                    }
+                }
+                KeyCode::PageDown => {
+                    self.next_tab();
+                    return Ok(());
+                }
+                KeyCode::PageUp => {
+                    self.previous_tab();
+                    return Ok(());
+                }
                 _ if matches!(self.focus, FocusPanel::Terminal) => {}
                 KeyCode::Char('P') => {
                     self.open_quick_panel(QuickPanelKind::CommandPalette)?;
@@ -6231,13 +6251,13 @@ fn command_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             label: "Next Terminal",
             detail: "Switch to the next integrated terminal session",
-            shortcut: "F8",
+            shortcut: "Ctrl-PageDown / F8",
             action: CommandAction::NextTerminal,
         },
         CommandSpec {
             label: "Previous Terminal",
             detail: "Switch to the previous integrated terminal session",
-            shortcut: "",
+            shortcut: "Ctrl-PageUp",
             action: CommandAction::PreviousTerminal,
         },
         CommandSpec {
@@ -7123,13 +7143,13 @@ impl App {
             ContextMenuAction {
                 label: "Next Terminal",
                 detail: "Switch to the next integrated terminal session".to_owned(),
-                shortcut: "F8",
+                shortcut: "Ctrl-PageDown / F8",
                 action: CommandAction::NextTerminal,
             },
             ContextMenuAction {
                 label: "Previous Terminal",
                 detail: "Switch to the previous integrated terminal session".to_owned(),
-                shortcut: "",
+                shortcut: "Ctrl-PageUp",
                 action: CommandAction::PreviousTerminal,
             },
             ContextMenuAction {
@@ -21277,6 +21297,62 @@ mod tests {
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ctrl_page_keys_switch_editor_tabs_and_terminal_sessions() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-ctrl-page-navigation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("first.rs"), "fn first() {}\n").unwrap();
+        fs::write(root.join("second.rs"), "fn second() {}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        let first = canonical_root.join("first.rs");
+        let second = canonical_root.join("second.rs");
+        app.open_file(&first);
+        app.open_file(&second);
+        assert_eq!(app.active_tab().unwrap().path, second);
+
+        app.focus = FocusPanel::Editor;
+        app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.active_tab().unwrap().path, first);
+        assert_eq!(app.focus, FocusPanel::Editor);
+
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.active_tab().unwrap().path, second);
+
+        app.new_terminal().unwrap();
+        assert_eq!(app.active_terminal, 1);
+        app.focus = FocusPanel::Terminal;
+        app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.active_terminal, 0);
+        assert_eq!(app.focus, FocusPanel::Terminal);
+
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.active_terminal, 1);
+
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(b"\x1b[?1049h");
+        assert!(app.terminal_child_owns_keyboard());
+        app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.active_terminal, 1);
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.active_terminal, 1);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(canonical_root);
     }
 
     #[test]

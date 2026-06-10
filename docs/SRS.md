@@ -554,11 +554,13 @@ Dirty editor buffers shall require an explicit `quit` confirmation before the ap
 
 ### R-503 Editor Scroll
 
-`PageUp`, `PageDown`, `Up`, and `Down` shall scroll or move through the focused editor. Horizontal wheel gestures shall pan long editor lines.
+`PageUp`, `PageDown`, `Up`, and `Down` shall scroll or move through the focused editor. Horizontal wheel gestures shall pan long editor lines. `Ctrl-PageUp` and `Ctrl-PageDown` shall switch to the previous and next editor tab when terminal focus is not active.
 
 ### R-504 Terminal Editing
 
 When terminal focus is active, printable characters and supported control/navigation keys shall be forwarded to the PTY shell.
+
+When terminal focus is active and the child PTY application is not owning terminal keyboard shortcuts through alternate-screen or mouse-reporting modes, `Ctrl-PageUp` and `Ctrl-PageDown` shall switch to the previous and next integrated terminal session. When the child owns terminal keyboard shortcuts, those keys shall be forwarded to the PTY.
 
 ## 8. Packaging Requirements
 
