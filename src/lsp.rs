@@ -89,6 +89,19 @@ pub struct LspDocumentSymbol {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspCallHierarchyEntry {
+    pub name: String,
+    pub kind: String,
+    pub detail: Option<String>,
+    pub path: PathBuf,
+    pub line: usize,
+    pub col: usize,
+    pub preview: Option<String>,
+    pub range_count: usize,
+    pub server: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspCodeAction {
     pub title: String,
     pub kind: Option<String>,
@@ -231,6 +244,20 @@ pub fn workspace_symbols(
         return Ok(Vec::new());
     };
     request_workspace_symbols_with_config(position, query, &config)
+}
+
+pub fn incoming_calls(position: &DocumentPosition) -> Result<Vec<LspCallHierarchyEntry>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(Vec::new());
+    };
+    request_call_hierarchy_with_config(position, &config, CallHierarchyDirection::Incoming)
+}
+
+pub fn outgoing_calls(position: &DocumentPosition) -> Result<Vec<LspCallHierarchyEntry>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(Vec::new());
+    };
+    request_call_hierarchy_with_config(position, &config, CallHierarchyDirection::Outgoing)
 }
 
 pub fn diagnostics(position: &DocumentPosition) -> Result<Vec<LspDiagnostic>> {
@@ -436,6 +463,138 @@ fn request_workspace_symbols_with_config(
         position,
         &config.name,
     ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallHierarchyDirection {
+    Incoming,
+    Outgoing,
+}
+
+impl CallHierarchyDirection {
+    fn method(self) -> &'static str {
+        match self {
+            Self::Incoming => "callHierarchy/incomingCalls",
+            Self::Outgoing => "callHierarchy/outgoingCalls",
+        }
+    }
+}
+
+fn request_call_hierarchy_with_config(
+    position: &DocumentPosition,
+    config: &LanguageServerConfig,
+    direction: CallHierarchyDirection,
+) -> Result<Vec<LspCallHierarchyEntry>> {
+    let Ok(mut process) = spawn_lsp(config, &position.root) else {
+        return Ok(Vec::new());
+    };
+
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "rootUri": path_to_file_uri(&position.root),
+            "capabilities": {},
+            "clientInfo": {
+                "name": "tscode",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }
+    });
+    if send_message(&mut process.stdin, &initialize).is_err() {
+        process.kill();
+        return Ok(Vec::new());
+    }
+    if next_response(&process.messages, 1, Instant::now() + request_timeout()).is_none() {
+        process.kill();
+        return Ok(Vec::new());
+    }
+
+    let initialized = json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    });
+    let did_open = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": path_to_file_uri(&position.path),
+                "languageId": config.language_id,
+                "version": 1,
+                "text": position.text
+            }
+        }
+    });
+    let prepare = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/prepareCallHierarchy",
+        "params": text_document_position_params(position)
+    });
+    if send_message(&mut process.stdin, &initialized).is_err()
+        || send_message(&mut process.stdin, &did_open).is_err()
+        || send_message(&mut process.stdin, &prepare).is_err()
+    {
+        process.kill();
+        return Ok(Vec::new());
+    }
+
+    let Some(prepare_response) =
+        next_response(&process.messages, 2, Instant::now() + request_timeout())
+    else {
+        process.kill();
+        return Ok(Vec::new());
+    };
+    let prepared_items = prepare_response
+        .get("result")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if prepared_items.is_empty() {
+        shutdown_lsp(process, 3);
+        return Ok(Vec::new());
+    }
+
+    let mut entries = Vec::new();
+    let mut request_id = 3;
+    for item in prepared_items.iter().take(8) {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": direction.method(),
+            "params": {
+                "item": item
+            }
+        });
+        if send_message(&mut process.stdin, &request).is_err() {
+            process.kill();
+            return Ok(entries);
+        }
+        if let Some(response) = next_response(
+            &process.messages,
+            request_id,
+            Instant::now() + request_timeout(),
+        ) {
+            entries.extend(parse_call_hierarchy_calls(
+                response.get("result"),
+                position,
+                &config.name,
+                direction,
+            ));
+        }
+        request_id += 1;
+        if entries.len() >= 256 {
+            entries.truncate(256);
+            break;
+        }
+    }
+
+    shutdown_lsp(process, request_id);
+    Ok(entries)
 }
 
 fn request_diagnostics_with_config(
@@ -839,6 +998,28 @@ impl LspProcess {
             }
         }
     }
+}
+
+fn shutdown_lsp(mut process: LspProcess, request_id: i64) {
+    let shutdown = json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "shutdown",
+        "params": null
+    });
+    let exit = json!({
+        "jsonrpc": "2.0",
+        "method": "exit",
+        "params": null
+    });
+    let _ = send_message(&mut process.stdin, &shutdown);
+    let _ = next_response(
+        &process.messages,
+        request_id,
+        Instant::now() + SHUTDOWN_TIMEOUT,
+    );
+    let _ = send_message(&mut process.stdin, &exit);
+    process.finish();
 }
 
 fn spawn_lsp(config: &LanguageServerConfig, root: &Path) -> io::Result<LspProcess> {
@@ -1475,6 +1656,99 @@ fn parse_workspace_symbols(
         .iter()
         .filter_map(|item| parse_symbol_information(item, position, server))
         .collect()
+}
+
+fn parse_call_hierarchy_calls(
+    result: Option<&Value>,
+    position: &DocumentPosition,
+    server: &str,
+    direction: CallHierarchyDirection,
+) -> Vec<LspCallHierarchyEntry> {
+    let Some(items) = result.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter_map(|call| {
+            let ranges = call
+                .get("fromRanges")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let range_count = ranges.len();
+            match direction {
+                CallHierarchyDirection::Incoming => {
+                    let item = call.get("from")?;
+                    let call_site_start = ranges
+                        .first()
+                        .and_then(|range| range.get("start"))
+                        .or_else(|| call_hierarchy_item_start(item));
+                    parse_call_hierarchy_entry(item, call_site_start, range_count, position, server)
+                }
+                CallHierarchyDirection::Outgoing => {
+                    let item = call.get("to")?;
+                    parse_call_hierarchy_entry(
+                        item,
+                        call_hierarchy_item_start(item),
+                        range_count,
+                        position,
+                        server,
+                    )
+                }
+            }
+        })
+        .collect()
+}
+
+fn parse_call_hierarchy_entry(
+    value: &Value,
+    start: Option<&Value>,
+    range_count: usize,
+    position: &DocumentPosition,
+    server: &str,
+) -> Option<LspCallHierarchyEntry> {
+    let name = value.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let uri = value.get("uri").and_then(Value::as_str)?;
+    let path = file_uri_to_path(uri)?;
+    let (line, utf16_col) = if let Some(start) = start {
+        (
+            start.get("line")?.as_u64()? as usize,
+            start.get("character")?.as_u64()? as usize,
+        )
+    } else {
+        (0, 0)
+    };
+    let line_text = line_text_for_path(&path, line, position).unwrap_or_default();
+    let col = utf16_col_to_char_col(&line_text, utf16_col);
+    let preview = (!line_text.trim().is_empty()).then(|| line_text.trim().to_owned());
+    let detail = value
+        .get("detail")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty())
+        .map(str::to_owned);
+    Some(LspCallHierarchyEntry {
+        name: name.to_owned(),
+        kind: symbol_kind_label(value.get("kind")).to_owned(),
+        detail,
+        path,
+        line,
+        col,
+        preview,
+        range_count,
+        server: server.to_owned(),
+    })
+}
+
+fn call_hierarchy_item_start(value: &Value) -> Option<&Value> {
+    value
+        .get("selectionRange")
+        .or_else(|| value.get("range"))
+        .and_then(|range| range.get("start"))
 }
 
 fn parse_document_symbol_tree(
@@ -2300,6 +2574,102 @@ mod tests {
             Some("pub struct ServerWidget;")
         );
         assert_eq!(symbols[1].server, "mock-workspace");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parses_call_hierarchy_incoming_and_outgoing_calls() {
+        let root = env::temp_dir().join(format!("tscode-lsp-call-parse-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let main = root.join("main.rs");
+        let lib = root.join("lib.rs");
+        fs::write(&main, "fn main() {\n    target();\n}\n").unwrap();
+        fs::write(&lib, "fn helper() {}\nfn target() {\n    helper();\n}\n").unwrap();
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: lib.clone(),
+            text: fs::read_to_string(&lib).unwrap(),
+            line: 1,
+            col: 3,
+        };
+        let incoming = json!([
+            {
+                "from": {
+                    "name": "main",
+                    "kind": 12,
+                    "detail": "bin",
+                    "uri": path_to_file_uri(&main),
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 2, "character": 1 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": 0, "character": 3 },
+                        "end": { "line": 0, "character": 7 }
+                    }
+                },
+                "fromRanges": [
+                    {
+                        "start": { "line": 1, "character": 4 },
+                        "end": { "line": 1, "character": 10 }
+                    }
+                ]
+            }
+        ]);
+        let outgoing = json!([
+            {
+                "to": {
+                    "name": "helper",
+                    "kind": 12,
+                    "uri": path_to_file_uri(&lib),
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 14 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": 0, "character": 3 },
+                        "end": { "line": 0, "character": 9 }
+                    }
+                },
+                "fromRanges": [
+                    {
+                        "start": { "line": 2, "character": 4 },
+                        "end": { "line": 2, "character": 10 }
+                    }
+                ]
+            }
+        ]);
+
+        let incoming = parse_call_hierarchy_calls(
+            Some(&incoming),
+            &position,
+            "mock-call",
+            CallHierarchyDirection::Incoming,
+        );
+        assert_eq!(incoming.len(), 1);
+        assert_eq!(incoming[0].name, "main");
+        assert_eq!(incoming[0].kind, "function");
+        assert_eq!(incoming[0].detail.as_deref(), Some("bin"));
+        assert!(same_path(&incoming[0].path, &main));
+        assert_eq!(incoming[0].line, 1);
+        assert_eq!(incoming[0].col, 4);
+        assert_eq!(incoming[0].preview.as_deref(), Some("target();"));
+        assert_eq!(incoming[0].range_count, 1);
+
+        let outgoing = parse_call_hierarchy_calls(
+            Some(&outgoing),
+            &position,
+            "mock-call",
+            CallHierarchyDirection::Outgoing,
+        );
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(outgoing[0].name, "helper");
+        assert!(same_path(&outgoing[0].path, &lib));
+        assert_eq!(outgoing[0].line, 0);
+        assert_eq!(outgoing[0].col, 3);
+        assert_eq!(outgoing[0].preview.as_deref(), Some("fn helper() {}"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -3325,6 +3695,191 @@ read_msg >/dev/null
             help.signatures[0].parameters[1].documentation.as_deref(),
             Some("number of times")
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_call_hierarchy_from_mock_stdio_language_server() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!("tscode-lsp-call-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let main = root.join("main.rs");
+        let lib = root.join("lib.rs");
+        fs::write(&main, "mod lib;\nfn main() {\n    lib::target();\n}\n").unwrap();
+        fs::write(
+            &lib,
+            "pub fn helper() {}\npub fn target() {\n    helper();\n}\n",
+        )
+        .unwrap();
+        let prepare = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": [
+                {
+                    "name": "target",
+                    "kind": 12,
+                    "uri": path_to_file_uri(&lib),
+                    "range": {
+                        "start": { "line": 1, "character": 0 },
+                        "end": { "line": 3, "character": 1 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": 1, "character": 7 },
+                        "end": { "line": 1, "character": 13 }
+                    }
+                }
+            ]
+        })
+        .to_string();
+        let incoming = json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": [
+                {
+                    "from": {
+                        "name": "main",
+                        "kind": 12,
+                        "detail": "bin",
+                        "uri": path_to_file_uri(&main),
+                        "range": {
+                            "start": { "line": 1, "character": 0 },
+                            "end": { "line": 3, "character": 1 }
+                        },
+                        "selectionRange": {
+                            "start": { "line": 1, "character": 3 },
+                            "end": { "line": 1, "character": 7 }
+                        }
+                    },
+                    "fromRanges": [
+                        {
+                            "start": { "line": 2, "character": 4 },
+                            "end": { "line": 2, "character": 15 }
+                        }
+                    ]
+                }
+            ]
+        })
+        .to_string();
+        let outgoing = json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": [
+                {
+                    "to": {
+                        "name": "helper",
+                        "kind": 12,
+                        "uri": path_to_file_uri(&lib),
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": 0, "character": 18 }
+                        },
+                        "selectionRange": {
+                            "start": { "line": 0, "character": 7 },
+                            "end": { "line": 0, "character": 13 }
+                        }
+                    },
+                    "fromRanges": [
+                        {
+                            "start": { "line": 2, "character": 4 },
+                            "end": { "line": 2, "character": 10 }
+                        }
+                    ]
+                }
+            ]
+        })
+        .to_string();
+        let server = root.join("mock-call-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"callHierarchyProvider":true}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+body=$(read_msg)
+case "$body" in
+  *textDocument/prepareCallHierarchy*) send_msg '{}' ;;
+  *) send_msg '{{"jsonrpc":"2.0","id":2,"result":[]}}' ;;
+esac
+body=$(read_msg)
+case "$body" in
+  *callHierarchy/incomingCalls*) send_msg '{}' ;;
+  *callHierarchy/outgoingCalls*) send_msg '{}' ;;
+  *) send_msg '{{"jsonrpc":"2.0","id":3,"result":[]}}' ;;
+esac
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":4,"result":null}}'
+read_msg >/dev/null
+"#,
+                prepare, incoming, outgoing
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-call-lsp".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: lib.clone(),
+            text: fs::read_to_string(&lib).unwrap(),
+            line: 1,
+            col: 8,
+        };
+
+        let callers = request_call_hierarchy_with_config(
+            &position,
+            &config,
+            CallHierarchyDirection::Incoming,
+        )
+        .unwrap();
+        assert_eq!(callers.len(), 1);
+        assert_eq!(callers[0].name, "main");
+        assert!(same_path(&callers[0].path, &main));
+        assert_eq!(callers[0].line, 2);
+        assert_eq!(callers[0].col, 4);
+        assert_eq!(callers[0].preview.as_deref(), Some("lib::target();"));
+        assert_eq!(callers[0].server, "mock-call-lsp");
+
+        let callees = request_call_hierarchy_with_config(
+            &position,
+            &config,
+            CallHierarchyDirection::Outgoing,
+        )
+        .unwrap();
+        assert_eq!(callees.len(), 1);
+        assert_eq!(callees[0].name, "helper");
+        assert!(same_path(&callees[0].path, &lib));
+        assert_eq!(callees[0].line, 0);
+        assert_eq!(callees[0].col, 7);
+        assert_eq!(callees[0].preview.as_deref(), Some("pub fn helper() {}"));
 
         let _ = fs::remove_dir_all(root);
     }

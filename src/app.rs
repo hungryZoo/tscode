@@ -1643,6 +1643,8 @@ pub enum QuickPanelKind {
     Definitions,
     TypeDefinitions,
     Implementations,
+    IncomingCalls,
+    OutgoingCalls,
     References,
     LspReferences,
     Problems,
@@ -1730,6 +1732,8 @@ pub enum CommandAction {
     GoToDefinition,
     GoToTypeDefinition,
     GoToImplementation,
+    ShowIncomingCalls,
+    ShowOutgoingCalls,
     FindReferences,
     CodeAction,
     GoBack,
@@ -3828,6 +3832,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::GoToImplementation,
         },
         CommandSpec {
+            label: "Show Incoming Calls",
+            detail: "Ask an installed language server which functions call the symbol under the cursor",
+            shortcut: "",
+            action: CommandAction::ShowIncomingCalls,
+        },
+        CommandSpec {
+            label: "Show Outgoing Calls",
+            detail: "Ask an installed language server which functions are called by the symbol under the cursor",
+            shortcut: "",
+            action: CommandAction::ShowOutgoingCalls,
+        },
+        CommandSpec {
             label: "Find References",
             detail: "List whole-word workspace references for the symbol under the editor cursor",
             shortcut: "Ctrl-R",
@@ -4439,6 +4455,9 @@ impl App {
             QuickPanelKind::TypeDefinitions | QuickPanelKind::Implementations => {
                 filter_existing_quick_items(existing_items, &query)
             }
+            QuickPanelKind::IncomingCalls | QuickPanelKind::OutgoingCalls => {
+                filter_existing_quick_items(existing_items, &query)
+            }
             QuickPanelKind::References => self.reference_items(&query)?,
             QuickPanelKind::LspReferences => filter_existing_quick_items(existing_items, &query),
             QuickPanelKind::Problems => self.problem_items(&query),
@@ -4825,6 +4844,18 @@ impl App {
                 detail: format!("Jump to LSP implementations for {symbol}"),
                 shortcut: "",
                 action: CommandAction::GoToImplementation,
+            },
+            ContextMenuAction {
+                label: "Show Incoming Calls",
+                detail: format!("List LSP callers for {symbol}"),
+                shortcut: "",
+                action: CommandAction::ShowIncomingCalls,
+            },
+            ContextMenuAction {
+                label: "Show Outgoing Calls",
+                detail: format!("List LSP callees used by {symbol}"),
+                shortcut: "",
+                action: CommandAction::ShowOutgoingCalls,
             },
             ContextMenuAction {
                 label: "Find References",
@@ -7729,6 +7760,45 @@ impl App {
         Ok(())
     }
 
+    fn show_lsp_call_hierarchy_under_cursor(
+        &mut self,
+        label: &str,
+        kind: QuickPanelKind,
+        request: fn(&DocumentPosition) -> Result<Vec<lsp::LspCallHierarchyEntry>>,
+    ) -> Result<()> {
+        let Some(symbol) = self.active_identifier_under_cursor() else {
+            self.message = Some("no symbol under cursor".to_owned());
+            return Ok(());
+        };
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            self.message = Some("no language server configured for the active file".to_owned());
+            return Ok(());
+        };
+        let entries = request(&position)?;
+        if entries.is_empty() {
+            let server = lsp::server_name_for_path(&position.path)
+                .unwrap_or_else(|| "language server".to_owned());
+            self.message = Some(format!("no LSP {label}s returned by {server}: {symbol}"));
+            return Ok(());
+        }
+
+        let items = lsp_call_hierarchy_items(entries, &self.root);
+        if items.is_empty() {
+            self.message = Some(format!("no on-disk LSP {label}s returned for {symbol}"));
+            return Ok(());
+        }
+        let count = items.len();
+        self.quick_panel = Some(QuickPanel {
+            kind,
+            query: symbol.clone(),
+            items,
+            selected: 0,
+            scroll: 0,
+        });
+        self.message = Some(format!("LSP {label}s: {symbol} ({count})"));
+        Ok(())
+    }
+
     fn find_references_under_cursor(&mut self) -> Result<()> {
         let Some(symbol) = self.active_identifier_under_cursor() else {
             self.message = Some("no symbol under cursor".to_owned());
@@ -8255,6 +8325,16 @@ impl App {
             CommandAction::GoToDefinition => self.go_to_definition_under_cursor()?,
             CommandAction::GoToTypeDefinition => self.go_to_type_definition_under_cursor()?,
             CommandAction::GoToImplementation => self.go_to_implementation_under_cursor()?,
+            CommandAction::ShowIncomingCalls => self.show_lsp_call_hierarchy_under_cursor(
+                "incoming call",
+                QuickPanelKind::IncomingCalls,
+                lsp::incoming_calls,
+            )?,
+            CommandAction::ShowOutgoingCalls => self.show_lsp_call_hierarchy_under_cursor(
+                "outgoing call",
+                QuickPanelKind::OutgoingCalls,
+                lsp::outgoing_calls,
+            )?,
             CommandAction::FindReferences => self.find_references_under_cursor()?,
             CommandAction::CodeAction => self.run_code_actions()?,
             CommandAction::GoBack => self.go_back(),
@@ -9985,6 +10065,42 @@ fn signature_help_preview(
         parts.push(parameter_text);
     }
     (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+fn lsp_call_hierarchy_items(
+    entries: Vec<lsp::LspCallHierarchyEntry>,
+    root: &Path,
+) -> Vec<QuickItem> {
+    entries
+        .into_iter()
+        .filter(|entry| entry.path.is_file())
+        .take(MAX_QUICK_ITEMS)
+        .map(|entry| {
+            let relative = relative_path(root, &entry.path);
+            let mut detail_parts = vec![
+                format!("LSP {}", entry.server),
+                format!("{}:{}", relative, entry.line + 1),
+                entry.kind,
+            ];
+            if entry.range_count > 1 {
+                detail_parts.push(format!("{} call site(s)", entry.range_count));
+            } else if entry.range_count == 1 {
+                detail_parts.push("1 call site".to_owned());
+            }
+            if let Some(detail) = entry.detail.filter(|detail| !detail.is_empty()) {
+                detail_parts.push(detail);
+            }
+            QuickItem {
+                label: entry.name,
+                detail: detail_parts.join("  "),
+                path: entry.path,
+                line: Some(entry.line),
+                col: Some(entry.col),
+                preview: entry.preview,
+                command: None,
+            }
+        })
+        .collect()
 }
 
 fn code_action_detail(action: &lsp::LspCodeAction) -> String {
@@ -12276,6 +12392,18 @@ mod tests {
                 .iter()
                 .any(|item| { item.command == Some(CommandAction::GoToImplementation) })
         );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ShowIncomingCalls))
+        );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ShowOutgoingCalls))
+        );
         let toggle_index = panel
             .items
             .iter()
@@ -13643,6 +13771,18 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::FormatDocument))
+        );
+        let commands = app.command_palette_items("incoming calls");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ShowIncomingCalls))
+        );
+        let commands = app.command_palette_items("outgoing calls");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ShowOutgoingCalls))
         );
         let commands = app.command_palette_items("replace files");
         assert!(

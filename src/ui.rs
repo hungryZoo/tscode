@@ -892,6 +892,8 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         crate::app::QuickPanelKind::Definitions => " Go to Definition  Ctrl-] ",
         crate::app::QuickPanelKind::TypeDefinitions => " Go to Type Definition ",
         crate::app::QuickPanelKind::Implementations => " Go to Implementation ",
+        crate::app::QuickPanelKind::IncomingCalls => " Incoming Calls ",
+        crate::app::QuickPanelKind::OutgoingCalls => " Outgoing Calls ",
         crate::app::QuickPanelKind::References => " Find References  Ctrl-R ",
         crate::app::QuickPanelKind::LspReferences => " LSP References  Ctrl-R ",
         crate::app::QuickPanelKind::Problems => " Problems ",
@@ -956,6 +958,12 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             crate::app::QuickPanelKind::Implementations => {
                 "No implementations match the current query."
+            }
+            crate::app::QuickPanelKind::IncomingCalls => {
+                "No incoming calls match the current query."
+            }
+            crate::app::QuickPanelKind::OutgoingCalls => {
+                "No outgoing calls match the current query."
             }
             crate::app::QuickPanelKind::References => {
                 "No whole-word references found for the current query."
