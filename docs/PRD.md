@@ -98,11 +98,11 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can revert the active editor tab back to the file currently on disk when I want to discard unsaved edits or reload external changes.
 - As a developer, I can keep files open while terminal commands, Git operations, or external tools change those files on disk; clean tabs reload automatically, while dirty tabs show conflict status and prevent accidental overwrite saves.
 - As a developer, I can clear the integrated terminal viewport or restart the PTY shell without restarting the whole application.
-- As a developer, I can see which terminal session is active, where it is running, whether it is live, and whether scrollback or terminal child modes are active.
+- As a developer, I can see which terminal session is active, where it is running, whether it is live, whether its child app reported a title, and whether scrollback or terminal child modes are active.
 - As a developer, I can focus the integrated terminal quickly, maximize it when command output needs more space, and resize its normal panel height by dragging the panel border or using commands.
 - As a developer, I can create multiple integrated terminal sessions, switch between them, close them, and keep each shell's state independent.
 - As a developer, I can split the active integrated terminal into side-by-side PTY panes, click either pane to focus that shell, and close one pane without killing the other shell.
-- As a developer, I can rename terminal sessions so long-running shells, tasks, and logs stay recognizable without restarting them.
+- As a developer, I can rename terminal sessions so long-running shells, tasks, and logs stay recognizable without restarting them, and that chosen name is not overwritten by later shell title reports.
 - As a developer, I can open a new integrated terminal in the selected explorer folder, or the selected file's parent folder, and keep that working directory when restarting the terminal.
 - As a developer, I can `cd` inside the integrated terminal and see the terminal tab/header working directory update instead of staying stuck on the launch directory.
 - As a developer, I can rename or delete folders and have open tabs update or close consistently with the filesystem change without losing unsaved editor buffers.
@@ -142,6 +142,7 @@ Keyboard fallback:
 - Terminal `Ctrl-F` searches terminal scrollback; terminal `F3` and `Shift-F3` move to next and previous terminal search matches
 - Terminal right-click opens a context menu for copy, paste, search, clear, restart, terminal session switching/creation/splitting/closing, maximize, resize, and focus actions when the child app is not using terminal mouse reporting
 - Terminal top-border hover is visually highlighted and dragging it changes the normal terminal panel height without restarting the PTY session
+- Terminal child apps that request mouse input receive the requested xterm mouse events, including default, SGR, and UTF-8 coordinate encodings where supported by the parser
 - Explorer `Space`, `Shift`+click, and `Ctrl`/`Command`/`Meta`+click provide visible multi-select and range-select for file rows
 - Explorer `c`, `x`, `p`, `y`, and `o` perform copy, cut, paste, duplicate, and reveal-active-file actions
 - Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
@@ -202,6 +203,7 @@ GitHub Actions should build and upload release artifacts automatically for tagge
 - `cargo build` succeeds on macOS.
 - Running `tscode` on macOS shows explorer, editor, terminal, title/status bars, and hover/click/wheel interactions.
 - The integrated terminal runs a real PTY shell and forwards interactive input.
+- Terminal sessions update unlocked tab titles from OSC 0/2 reports, preserve user-renamed titles, and forward child-requested terminal mouse events with the correct xterm coordinate encoding.
 - Cross-platform packaging workflow exists.
 - `install.sh` detects OS/architecture and installs the matching release binary.
 - A GitHub prerelease contains release notes, supported platforms, `install.sh`, and build artifacts.

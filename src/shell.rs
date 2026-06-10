@@ -78,7 +78,7 @@ pub struct ShellPanel {
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<Vec<u8>>,
-    osc7: Osc7Tracker,
+    osc: OscTracker,
     integration_dir: Option<PathBuf>,
     rows: u16,
     cols: u16,
@@ -134,7 +134,7 @@ impl ShellPanel {
             writer,
             child,
             rx,
-            osc7: Osc7Tracker::default(),
+            osc: OscTracker::default(),
             integration_dir,
             rows,
             cols,
@@ -145,7 +145,7 @@ impl ShellPanel {
     pub fn drain(&mut self) -> bool {
         let mut changed = false;
         while let Ok(bytes) = self.rx.try_recv() {
-            self.osc7.process(&bytes);
+            self.osc.process(&bytes);
             self.parser.process(&bytes);
             if self.user_scrollback == 0 {
                 self.parser.screen_mut().set_scrollback(0);
@@ -157,12 +157,16 @@ impl ShellPanel {
 
     #[cfg(test)]
     pub fn process_output_for_test(&mut self, bytes: &[u8]) {
-        self.osc7.process(bytes);
+        self.osc.process(bytes);
         self.parser.process(bytes);
     }
 
     pub fn take_cwd_update(&mut self) -> Option<PathBuf> {
-        self.osc7.take_cwd_update()
+        self.osc.take_cwd_update()
+    }
+
+    pub fn take_title_update(&mut self) -> Option<String> {
+        self.osc.take_title_update()
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -476,23 +480,25 @@ enum OscState {
 }
 
 #[derive(Debug)]
-struct Osc7Tracker {
+struct OscTracker {
     state: OscState,
     buffer: Vec<u8>,
     cwd_update: Option<PathBuf>,
+    title_update: Option<String>,
 }
 
-impl Default for Osc7Tracker {
+impl Default for OscTracker {
     fn default() -> Self {
         Self {
             state: OscState::Ground,
             buffer: Vec::new(),
             cwd_update: None,
+            title_update: None,
         }
     }
 }
 
-impl Osc7Tracker {
+impl OscTracker {
     fn process(&mut self, bytes: &[u8]) {
         for byte in bytes {
             match self.state {
@@ -539,6 +545,10 @@ impl Osc7Tracker {
         self.cwd_update.take()
     }
 
+    fn take_title_update(&mut self) -> Option<String> {
+        self.title_update.take()
+    }
+
     fn push_osc_byte(&mut self, byte: u8) {
         if self.buffer.len() < MAX_OSC_PAYLOAD_BYTES {
             self.buffer.push(byte);
@@ -553,6 +563,10 @@ impl Osc7Tracker {
             && let Some(path) = osc7_path(payload)
         {
             self.cwd_update = Some(path);
+        } else if let Ok(payload) = std::str::from_utf8(&self.buffer)
+            && let Some(title) = osc_title(payload)
+        {
+            self.title_update = Some(title);
         }
         self.buffer.clear();
     }
@@ -588,6 +602,24 @@ fn osc7_path(payload: &str) -> Option<PathBuf> {
         return None;
     }
     Some(path.canonicalize().unwrap_or(path))
+}
+
+fn osc_title(payload: &str) -> Option<String> {
+    let title = payload
+        .strip_prefix("0;")
+        .or_else(|| payload.strip_prefix("2;"))?;
+    let title = sanitize_terminal_title(title);
+    (!title.is_empty()).then_some(title)
+}
+
+fn sanitize_terminal_title(title: &str) -> String {
+    title
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(80)
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }
 
 fn percent_decode(input: &str) -> Option<String> {
@@ -878,9 +910,8 @@ fn mouse_event_to_bytes(
             let final_byte = if release { 'm' } else { 'M' };
             Some(format!("\x1b[<{code};{x};{y}{final_byte}").into_bytes())
         }
-        MouseProtocolEncoding::Default | MouseProtocolEncoding::Utf8 => {
-            default_mouse_sequence(code, x, y)
-        }
+        MouseProtocolEncoding::Default => default_mouse_sequence(code, x, y),
+        MouseProtocolEncoding::Utf8 => utf8_mouse_sequence(code, x, y),
     }
 }
 
@@ -913,6 +944,22 @@ fn default_mouse_sequence(code: u16, x: u16, y: u16) -> Option<Vec<u8>> {
     let cx = u8::try_from(x.checked_add(32)?).ok()?;
     let cy = u8::try_from(y.checked_add(32)?).ok()?;
     Some(vec![0x1b, b'[', b'M', cb, cx, cy])
+}
+
+fn utf8_mouse_sequence(code: u16, x: u16, y: u16) -> Option<Vec<u8>> {
+    let mut bytes = vec![0x1b, b'[', b'M'];
+    push_utf8_mouse_value(&mut bytes, code)?;
+    push_utf8_mouse_value(&mut bytes, x)?;
+    push_utf8_mouse_value(&mut bytes, y)?;
+    Some(bytes)
+}
+
+fn push_utf8_mouse_value(bytes: &mut Vec<u8>, value: u16) -> Option<()> {
+    let codepoint = u32::from(value.checked_add(32)?);
+    let ch = char::from_u32(codepoint)?;
+    let mut buffer = [0_u8; 4];
+    bytes.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
+    Some(())
 }
 
 #[cfg(test)]
@@ -971,7 +1018,7 @@ mod tests {
         let canonical = space_dir.canonicalize().unwrap();
         let encoded_path = canonical.to_string_lossy().replace(' ', "%20");
 
-        let mut tracker = Osc7Tracker::default();
+        let mut tracker = OscTracker::default();
         tracker.process(b"ignored\x1b]7;file://localhost");
         tracker.process(format!("{encoded_path}\x07tail").as_bytes());
         assert_eq!(tracker.take_cwd_update(), Some(canonical.clone()));
@@ -980,6 +1027,22 @@ mod tests {
         assert_eq!(tracker.take_cwd_update(), Some(canonical));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn osc_tracker_reads_terminal_titles_from_osc_zero_and_two() {
+        let mut tracker = OscTracker::default();
+        tracker.process(b"\x1b]0;demo terminal\x07");
+        assert_eq!(
+            tracker.take_title_update(),
+            Some("demo terminal".to_owned())
+        );
+
+        tracker.process(b"\x1b]2; build\tlogs \x1b\\");
+        assert_eq!(tracker.take_title_update(), Some("buildlogs".to_owned()));
+
+        tracker.process(b"\x1b]1;ignored\x07");
+        assert_eq!(tracker.take_title_update(), None);
     }
 
     #[test]
@@ -1053,6 +1116,33 @@ mod tests {
                 MouseProtocolEncoding::Sgr,
             ),
             Some(b"\x1b[<35;2;2M".to_vec())
+        );
+    }
+
+    #[test]
+    fn terminal_mouse_encoding_uses_real_utf8_coordinates_when_requested() {
+        assert_eq!(
+            mouse_event_to_bytes(
+                MouseEventKind::Down(MouseButton::Left),
+                0,
+                200,
+                KeyModifiers::empty(),
+                MouseProtocolMode::Press,
+                MouseProtocolEncoding::Utf8,
+            ),
+            Some(b"\x1b[M \xc3\xa9!".to_vec())
+        );
+
+        assert_eq!(
+            mouse_event_to_bytes(
+                MouseEventKind::Down(MouseButton::Left),
+                0,
+                200,
+                KeyModifiers::empty(),
+                MouseProtocolMode::Press,
+                MouseProtocolEncoding::Default,
+            ),
+            Some(vec![0x1b, b'[', b'M', 32, 233, 33])
         );
     }
 }

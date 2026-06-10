@@ -328,7 +328,7 @@ Typing while the terminal is focused shall send input bytes to the shell PTY.
 
 The terminal panel shall parse PTY output and render the resulting terminal screen.
 
-The terminal panel shall show active-session status including terminal title, working directory, live/exited state, nonzero scrollback offset, and active child-requested modes such as alternate screen, bracketed paste, and mouse reporting.
+The terminal panel shall show active-session status including terminal title, working directory, live/exited state, nonzero scrollback offset, and active child-requested modes such as alternate screen, bracketed paste, and mouse reporting. Unlocked terminal sessions shall update their displayed title when the child emits OSC 0 or OSC 2 title reports.
 
 ### R-304 Working Directory
 
@@ -378,7 +378,7 @@ Clicking a visible shell output token that resolves to an existing workspace fil
 
 ### R-315 Terminal Mouse Pass-Through
 
-When the child terminal application requests xterm mouse events, terminal mouse down, release, drag, move, and wheel events shall be forwarded to the PTY instead of being interpreted as source-reference clicks or scrollback movement. The forwarded encoding shall follow the requested xterm mouse mode where the parser exposes it.
+When the child terminal application requests xterm mouse events, terminal mouse down, release, drag, move, and wheel events shall be forwarded to the PTY instead of being interpreted as source-reference clicks or scrollback movement. The forwarded encoding shall follow the requested xterm mouse mode and coordinate encoding, including SGR, default, and UTF-8 encodings where the parser exposes them.
 
 ### R-316 Terminal Text Selection
 
@@ -406,7 +406,7 @@ The terminal panel shall render terminal session tabs with mouse hover highlight
 
 ### R-321 Rename Terminal
 
-The command palette and terminal context menu shall include a Rename Terminal action. The action shall prompt for a new non-empty title for the active terminal session, update the terminal tab/header title, keep the existing PTY child alive, preserve the session working directory, and leave the number of terminal sessions unchanged. Blank or whitespace-only titles shall be rejected without changing the active terminal title.
+The command palette and terminal context menu shall include a Rename Terminal action. The action shall prompt for a new non-empty title for the active terminal session, update and lock the terminal tab/header title against later child OSC title updates, keep the existing PTY child alive, preserve the session working directory, and leave the number of terminal sessions unchanged. Blank or whitespace-only titles shall be rejected without changing the active terminal title.
 
 ### R-322 New Terminal Here
 

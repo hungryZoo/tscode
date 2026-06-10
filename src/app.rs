@@ -1874,6 +1874,7 @@ pub struct TerminalSearchState {
 pub struct TerminalSession {
     pub id: usize,
     pub title: String,
+    pub title_locked: bool,
     pub cwd: PathBuf,
     pub shell: ShellPanel,
     pub exited: bool,
@@ -1894,9 +1895,18 @@ impl TerminalSession {
     }
 
     fn with_title(id: usize, title: String, cwd: PathBuf) -> Result<Self> {
+        Self::with_title_lock(id, title, cwd, false)
+    }
+
+    fn with_locked_title(id: usize, title: String, cwd: PathBuf) -> Result<Self> {
+        Self::with_title_lock(id, title, cwd, true)
+    }
+
+    fn with_title_lock(id: usize, title: String, cwd: PathBuf, title_locked: bool) -> Result<Self> {
         Ok(Self {
             id,
             title,
+            title_locked,
             shell: ShellPanel::new(cwd.clone())?,
             cwd,
             exited: false,
@@ -3122,6 +3132,13 @@ impl App {
                 && terminal.cwd != cwd
             {
                 terminal.cwd = cwd;
+                changed = true;
+            }
+            if let Some(title) = terminal.shell.take_title_update()
+                && !terminal.title_locked
+                && terminal.title != title
+            {
+                terminal.title = title;
                 changed = true;
             }
             if !terminal.exited && terminal.shell.child_exited() {
@@ -7100,7 +7117,7 @@ impl App {
         let id = self.next_terminal_id;
         self.next_terminal_id += 1;
         let title = format!("task: {}", truncate_chars(&item.label, 28));
-        let terminal = TerminalSession::with_title(id, title.clone(), cwd)?;
+        let terminal = TerminalSession::with_locked_title(id, title.clone(), cwd)?;
         self.terminals.push(terminal);
         self.set_active_terminal(self.terminals.len() - 1);
         self.focus = FocusPanel::Terminal;
@@ -8332,6 +8349,7 @@ impl App {
 
     fn restart_terminal(&mut self) -> Result<()> {
         let title = self.active_terminal().title.clone();
+        let title_locked = self.active_terminal().title_locked;
         let id = self.active_terminal().id;
         let cwd = self.active_terminal().cwd.clone();
         let _ = self.active_terminal_mut().shell.kill();
@@ -8339,6 +8357,7 @@ impl App {
         self.terminals[self.active_terminal] = TerminalSession {
             id,
             title: title.clone(),
+            title_locked,
             shell: ShellPanel::new(cwd.clone())?,
             cwd,
             exited: false,
@@ -8361,7 +8380,9 @@ impl App {
         }
 
         let old_title = self.active_terminal().title.clone();
-        self.active_terminal_mut().title = title.to_owned();
+        let terminal = self.active_terminal_mut();
+        terminal.title = title.to_owned();
+        terminal.title_locked = true;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("renamed terminal: {old_title} -> {title}"));
     }
@@ -13929,6 +13950,35 @@ index 1111111..2222222 100644
 
         assert!(app.drain_terminal());
         assert_eq!(app.active_terminal().cwd, canonical_nested);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_osc_title_updates_unlocked_session_title_only() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-terminal-title-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        assert!(!app.active_terminal().title_locked);
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(b"\x1b]2;server logs\x07");
+
+        assert!(app.drain_terminal());
+        assert_eq!(app.active_terminal().title, "server logs");
+
+        app.rename_terminal_from_prompt("manual name".to_owned());
+        assert!(app.active_terminal().title_locked);
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(b"\x1b]0;ignored title\x07");
+
+        assert!(!app.drain_terminal());
+        assert_eq!(app.active_terminal().title, "manual name");
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
