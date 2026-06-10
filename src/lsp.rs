@@ -181,6 +181,16 @@ pub fn document_symbols(position: &DocumentPosition) -> Result<Vec<LspDocumentSy
     request_document_symbols_with_config(position, &config)
 }
 
+pub fn workspace_symbols(
+    position: &DocumentPosition,
+    query: &str,
+) -> Result<Vec<LspDocumentSymbol>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(Vec::new());
+    };
+    request_workspace_symbols_with_config(position, query, &config)
+}
+
 pub fn diagnostics(position: &DocumentPosition) -> Result<Vec<LspDiagnostic>> {
     let Some(config) = language_server_for_path(&position.path) else {
         return Ok(Vec::new());
@@ -316,6 +326,29 @@ fn request_document_symbols_with_config(
         return Ok(Vec::new());
     };
     Ok(parse_document_symbols(
+        response.result.as_ref(),
+        position,
+        &config.name,
+    ))
+}
+
+fn request_workspace_symbols_with_config(
+    position: &DocumentPosition,
+    query: &str,
+    config: &LanguageServerConfig,
+) -> Result<Vec<LspDocumentSymbol>> {
+    let Some(response) = run_lsp_request(
+        position,
+        config,
+        "workspace/symbol",
+        json!({
+            "query": query
+        }),
+    )?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(parse_workspace_symbols(
         response.result.as_ref(),
         position,
         &config.name,
@@ -1234,6 +1267,21 @@ fn parse_document_symbols(
     symbols
 }
 
+fn parse_workspace_symbols(
+    result: Option<&Value>,
+    position: &DocumentPosition,
+    server: &str,
+) -> Vec<LspDocumentSymbol> {
+    let Some(items) = result.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter_map(|item| parse_symbol_information(item, position, server))
+        .collect()
+}
+
 fn parse_document_symbol_tree(
     value: &Value,
     position: &DocumentPosition,
@@ -1301,11 +1349,17 @@ fn parse_symbol_information(
         .map(str::trim)
         .filter(|container| !container.is_empty())
         .map(str::to_owned);
+    let detail = value
+        .get("detail")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty())
+        .map(str::to_owned);
     lsp_symbol_from_parts(
         ParsedSymbolFields {
             name,
             kind: symbol_kind_label(value.get("kind")).to_owned(),
-            detail: None,
+            detail,
             container_name,
             start: range,
             path: &path,
@@ -1329,9 +1383,14 @@ fn lsp_symbol_from_parts(
     position: &DocumentPosition,
     server: &str,
 ) -> Option<LspDocumentSymbol> {
-    let start = fields.start?;
-    let line = start.get("line")?.as_u64()? as usize;
-    let utf16_col = start.get("character")?.as_u64()? as usize;
+    let (line, utf16_col) = if let Some(start) = fields.start {
+        (
+            start.get("line")?.as_u64()? as usize,
+            start.get("character")?.as_u64()? as usize,
+        )
+    } else {
+        (0, 0)
+    };
     let line_text = line_text_for_path(fields.path, line, position).unwrap_or_default();
     let col = utf16_col_to_char_col(&line_text, utf16_col);
     let preview = (!line_text.trim().is_empty()).then(|| line_text.trim().to_owned());
@@ -1942,6 +2001,70 @@ mod tests {
     }
 
     #[test]
+    fn parses_workspace_symbols_from_symbol_information_and_workspace_symbol_shapes() {
+        let root = env::temp_dir().join(format!(
+            "tscode-lsp-workspace-symbols-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        let other = root.join("lib.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+        fs::write(&other, "pub struct ServerWidget;\n").unwrap();
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: file.clone(),
+            text: fs::read_to_string(&file).unwrap(),
+            line: 0,
+            col: 0,
+        };
+        let result = json!([
+            {
+                "name": "main",
+                "kind": 12,
+                "containerName": "bin",
+                "location": {
+                    "uri": path_to_file_uri(&file),
+                    "range": {
+                        "start": { "line": 0, "character": 3 },
+                        "end": { "line": 0, "character": 7 }
+                    }
+                }
+            },
+            {
+                "name": "ServerWidget",
+                "kind": 23,
+                "detail": "workspace detail",
+                "location": {
+                    "uri": path_to_file_uri(&other)
+                }
+            }
+        ]);
+
+        let symbols = parse_workspace_symbols(Some(&result), &position, "mock-workspace");
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "main");
+        assert_eq!(symbols[0].kind, "function");
+        assert_eq!(symbols[0].container_name.as_deref(), Some("bin"));
+        assert_eq!(symbols[0].line, 0);
+        assert_eq!(symbols[0].col, 3);
+        assert_eq!(symbols[1].name, "ServerWidget");
+        assert_eq!(symbols[1].kind, "struct");
+        assert_eq!(symbols[1].detail.as_deref(), Some("workspace detail"));
+        assert!(same_path(&symbols[1].path, &other));
+        assert_eq!(symbols[1].line, 0);
+        assert_eq!(symbols[1].col, 0);
+        assert_eq!(
+            symbols[1].preview.as_deref(),
+            Some("pub struct ServerWidget;")
+        );
+        assert_eq!(symbols[1].server, "mock-workspace");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn parses_publish_diagnostics_notification() {
         let root = env::temp_dir().join(format!("tscode-lsp-diagnostics-{}", std::process::id()));
         let file = root.join("main.rs");
@@ -2400,6 +2523,106 @@ read_msg >/dev/null
         assert_eq!(symbols[1].kind, "method");
         assert_eq!(symbols[1].container_name.as_deref(), Some("App"));
         assert_eq!(symbols[1].server, "mock-symbols");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_workspace_symbols_from_mock_stdio_language_server() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!(
+            "tscode-lsp-workspace-symbols-stdio-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "pub struct ServerWidget;\n").unwrap();
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": [
+                {
+                    "name": "ServerWidget",
+                    "kind": 23,
+                    "detail": "from workspace/symbol",
+                    "location": {
+                        "uri": path_to_file_uri(&file),
+                        "range": {
+                            "start": { "line": 0, "character": 11 },
+                            "end": { "line": 0, "character": 23 }
+                        }
+                    }
+                }
+            ]
+        })
+        .to_string();
+        let server = root.join("mock-workspace-symbol-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"workspaceSymbolProvider":true}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+body=$(read_msg)
+case "$body" in
+  *workspace/symbol*) send_msg '{}' ;;
+  *) send_msg '{{"jsonrpc":"2.0","id":2,"result":[]}}' ;;
+esac
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":3,"result":null}}'
+read_msg >/dev/null
+"#,
+                response
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-workspace".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: file.clone(),
+            text: fs::read_to_string(&file).unwrap(),
+            line: 0,
+            col: 0,
+        };
+
+        let symbols = request_workspace_symbols_with_config(&position, "Server", &config).unwrap();
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "ServerWidget");
+        assert_eq!(symbols[0].kind, "struct");
+        assert_eq!(symbols[0].detail.as_deref(), Some("from workspace/symbol"));
+        assert_eq!(symbols[0].line, 0);
+        assert_eq!(symbols[0].col, 11);
+        assert_eq!(symbols[0].server, "mock-workspace");
 
         let _ = fs::remove_dir_all(root);
     }

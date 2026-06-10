@@ -264,7 +264,7 @@ The app shall detect when an open editor tab's backing file is modified or delet
 
 ### R-234 Workspace Symbols
 
-`Ctrl-t` or the command palette shall open a quick panel that scans visible workspace text files for code symbols while applying the same hidden/generated-folder visibility policy as quick open and workspace search. Dirty open editor buffers shall be scanned from their in-memory text so unsaved symbols can be found. Selecting a workspace symbol shall open the owning file and move the editor cursor to that symbol.
+`Ctrl-t` or the command palette shall open a quick panel listing code symbols across the workspace. For file types with a configured or discoverable language server, the app shall first publish the active in-memory buffer and request `workspace/symbol` with the current quick-panel query, accepting server symbols that include either full `Location` ranges or URI-only workspace-symbol locations. Returned symbols shall be filterable in the quick panel and selecting one shall open the owning file and move the editor cursor to that symbol. If no LSP workspace symbols are available, the app shall fall back to scanning visible workspace text files for common function, method, type, class, interface, module, namespace, and implementation declarations while applying the same hidden/generated-folder visibility policy as quick open and workspace search. Dirty open editor buffers shall be scanned from their in-memory text during fallback so unsaved symbols can be found.
 
 ### R-235 Go To Definition
 
