@@ -268,7 +268,7 @@ The app shall detect when an open editor tab's backing file is modified or delet
 
 ### R-236 Find References
 
-`Ctrl-r` or the command palette shall use the active editor selection, when it is a valid identifier, or the identifier under the editor cursor to open a quick panel listing whole-word workspace references. Selecting a reference shall open its file and move the cursor to the occurrence. Reference scanning shall apply the same visible workspace text-file policy as workspace search and shall use in-memory text for dirty open editor buffers.
+`Ctrl-r` or the command palette shall use the active editor selection, when it is a valid identifier, or the identifier under the editor cursor to request `textDocument/references` from an installed language server when a supported server is configured or discoverable for the active file type. If the language server returns references, the app shall open a filterable quick panel listing those locations and selecting a reference shall open its file and move the cursor to the occurrence. If no language server is configured, the server cannot be started, the request times out, or no LSP references are returned, the command shall fall back to whole-word workspace reference scanning. Reference fallback scanning shall apply the same visible workspace text-file policy as workspace search and shall use in-memory text for dirty open editor buffers.
 
 ### R-236A Code Suggestions
 

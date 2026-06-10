@@ -853,6 +853,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         crate::app::QuickPanelKind::LspHover => " LSP Hover ",
         crate::app::QuickPanelKind::Definitions => " Go to Definition  Ctrl-] ",
         crate::app::QuickPanelKind::References => " Find References  Ctrl-R ",
+        crate::app::QuickPanelKind::LspReferences => " LSP References  Ctrl-R ",
         crate::app::QuickPanelKind::Problems => " Problems ",
         crate::app::QuickPanelKind::SourceControl => " Source Control ",
         crate::app::QuickPanelKind::Tasks => " Run Task  Ctrl-Shift-B ",
@@ -906,6 +907,9 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             crate::app::QuickPanelKind::Definitions => "No definition found for the current query.",
             crate::app::QuickPanelKind::References => {
                 "No whole-word references found for the current query."
+            }
+            crate::app::QuickPanelKind::LspReferences => {
+                "No language-server references match the current query."
             }
             crate::app::QuickPanelKind::Problems => {
                 "No problems collected. Run Workspace Check from the command palette."

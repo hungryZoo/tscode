@@ -14,6 +14,14 @@ use serde_json::{Value, json};
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(2_500);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 
+fn request_timeout() -> Duration {
+    if cfg!(test) {
+        Duration::from_secs(10)
+    } else {
+        REQUEST_TIMEOUT
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DocumentPosition {
     pub root: PathBuf,
@@ -72,6 +80,13 @@ pub fn definitions(position: &DocumentPosition) -> Result<Vec<LspLocation>> {
     request_definitions_with_config(position, &config)
 }
 
+pub fn references(position: &DocumentPosition) -> Result<Vec<LspLocation>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(Vec::new());
+    };
+    request_references_with_config(position, &config)
+}
+
 pub fn completions(position: &DocumentPosition) -> Result<Vec<LspCompletion>> {
     let Some(config) = language_server_for_path(&position.path) else {
         return Ok(Vec::new());
@@ -102,6 +117,30 @@ fn request_definitions_with_config(
 ) -> Result<Vec<LspLocation>> {
     let params = text_document_position_params(position);
     let Some(response) = run_lsp_request(position, config, "textDocument/definition", params)?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(parse_locations(
+        response.result.as_ref(),
+        position,
+        &config.name,
+    ))
+}
+
+fn request_references_with_config(
+    position: &DocumentPosition,
+    config: &LanguageServerConfig,
+) -> Result<Vec<LspLocation>> {
+    let mut params = text_document_position_params(position);
+    if let Some(object) = params.as_object_mut() {
+        object.insert(
+            "context".to_owned(),
+            json!({
+                "includeDeclaration": true
+            }),
+        );
+    }
+    let Some(response) = run_lsp_request(position, config, "textDocument/references", params)?
     else {
         return Ok(Vec::new());
     };
@@ -147,7 +186,7 @@ fn run_lsp_request(
         return Ok(None);
     };
 
-    let deadline = Instant::now() + REQUEST_TIMEOUT;
+    let deadline = Instant::now() + request_timeout();
     let initialize = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -708,6 +747,105 @@ mod tests {
             hover_contents(Some(&value)).unwrap(),
             "plain\n\nfn main()\n\n**docs**"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_references_from_mock_stdio_language_server() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!("tscode-lsp-refs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "hello();\nfn hello() {}\n").unwrap();
+        let uri = path_to_file_uri(&file);
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": [
+                {
+                    "uri": uri,
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 5 }
+                    }
+                },
+                {
+                    "uri": uri,
+                    "range": {
+                        "start": { "line": 1, "character": 3 },
+                        "end": { "line": 1, "character": 8 }
+                    }
+                }
+            ]
+        })
+        .to_string();
+        let server = root.join("mock-refs-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"referencesProvider":true}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+body=$(read_msg)
+case "$body" in
+  *textDocument/references*) send_msg '{}' ;;
+  *) send_msg '{{"jsonrpc":"2.0","id":2,"result":null}}' ;;
+esac
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":3,"result":null}}'
+read_msg >/dev/null
+"#,
+                response
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-refs-lsp".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: file.clone(),
+            text: fs::read_to_string(&file).unwrap(),
+            line: 0,
+            col: 1,
+        };
+
+        let references = request_references_with_config(&position, &config).unwrap();
+        assert_eq!(references.len(), 2);
+        assert_eq!(references[0].line, 0);
+        assert_eq!(references[0].col, 0);
+        assert_eq!(references[1].line, 1);
+        assert_eq!(references[1].col, 3);
+        assert_eq!(references[1].preview.as_deref(), Some("fn hello() {}"));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]

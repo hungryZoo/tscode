@@ -85,7 +85,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can hover a symbol in the editor with the mouse and see lightweight definition/reference information without moving the cursor or opening a panel.
 - As a developer, I can run Show Hover from the command palette or editor context menu and see hover documentation from an installed language server without leaving the terminal.
 - As a developer, I can jump from the symbol under the editor cursor to an installed language-server definition first, falling back to a likely workspace definition without leaving the terminal.
-- As a developer, I can list whole-word workspace references for the symbol under the editor cursor and jump to any occurrence.
+- As a developer, I can list installed-language-server references first, fall back to whole-word workspace references for the symbol under the editor cursor, and jump to any occurrence.
 - As a developer, I can move backward and forward through previous editor locations after definition, reference, search, line, or terminal-output jumps.
 - As a developer, I can rename the symbol under the editor cursor across workspace files while open buffers receive undoable edits and longer identifiers with the same prefix are left intact.
 - As a developer, I can replace text across real workspace files while clean open tabs stay synchronized and dirty open buffers are not overwritten.
@@ -152,7 +152,7 @@ Keyboard fallback:
 - `Ctrl-P` opens the quick file picker
 - `Ctrl-Shift-F` and `Ctrl-G` open workspace text search, including dirty open buffers from memory, while respecting the explorer's hidden/ignored/generated visibility policy
 - `Ctrl-Shift-H` opens replace-in-files; the command palette provides the same action as an SSH-friendly fallback
-- `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, and `Ctrl-R` provide document symbols, workspace symbols, LSP-first go-to-definition, and find-references code navigation
+- `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, and `Ctrl-R` provide document symbols, workspace symbols, LSP-first go-to-definition, and LSP-first find-references code navigation
 - `Ctrl-Space` or the command palette opens code suggestions for the identifier at the editor cursor, including installed language-server candidates when available
 - The command palette and editor context menu provide Show Hover for installed language-server hover documentation
 - Mouse hover over an editor identifier shows lightweight symbol definition/reference information

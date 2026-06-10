@@ -1625,6 +1625,7 @@ pub enum QuickPanelKind {
     LspHover,
     Definitions,
     References,
+    LspReferences,
     Problems,
     SourceControl,
     Tasks,
@@ -4316,6 +4317,7 @@ impl App {
             QuickPanelKind::LspHover => filter_existing_quick_items(existing_items, &query),
             QuickPanelKind::Definitions => self.definition_items(&query)?,
             QuickPanelKind::References => self.reference_items(&query)?,
+            QuickPanelKind::LspReferences => filter_existing_quick_items(existing_items, &query),
             QuickPanelKind::Problems => self.problem_items(&query),
             QuickPanelKind::SourceControl => self.source_control_items(&query)?,
             QuickPanelKind::Tasks => self.task_items(&query),
@@ -7164,7 +7166,46 @@ impl App {
             self.message = Some("no symbol under cursor".to_owned());
             return Ok(());
         };
+        let references = self.lsp_reference_items()?;
+        if !references.is_empty() {
+            let count = references.len();
+            self.quick_panel = Some(QuickPanel {
+                kind: QuickPanelKind::LspReferences,
+                query: symbol.clone(),
+                items: references,
+                selected: 0,
+                scroll: 0,
+            });
+            self.message = Some(format!("LSP references: {symbol} ({count})"));
+            return Ok(());
+        }
         self.open_quick_panel_with_query(QuickPanelKind::References, symbol)
+    }
+
+    fn lsp_reference_items(&self) -> Result<Vec<QuickItem>> {
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            return Ok(Vec::new());
+        };
+        let mut items = Vec::new();
+        for location in lsp::references(&position)? {
+            if !location.path.is_file() {
+                continue;
+            }
+            let relative = relative_path(&self.root, &location.path);
+            items.push(QuickItem {
+                label: format!("{}:{}", relative, location.line + 1),
+                detail: format!("LSP {}  col {}", location.server, location.col + 1),
+                path: location.path,
+                line: Some(location.line),
+                col: Some(location.col),
+                preview: location.preview,
+                command: None,
+            });
+            if items.len() >= MAX_QUICK_ITEMS {
+                break;
+            }
+        }
+        Ok(items)
     }
 
     fn active_lsp_position_at_cursor(&self) -> Option<DocumentPosition> {
