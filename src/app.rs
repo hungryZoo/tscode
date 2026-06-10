@@ -1987,6 +1987,7 @@ pub enum CommandAction {
     CutSelectedExplorerItem,
     PasteIntoSelectedExplorerItem,
     DuplicateSelectedExplorerItem,
+    CompareSelectedFiles,
     RefreshExplorer,
     CollapseExplorer,
     CycleExplorerSort,
@@ -2814,6 +2815,7 @@ impl App {
             KeyCode::Char('x') => self.cut_selected_path(),
             KeyCode::Char('p') => self.paste_into_selected()?,
             KeyCode::Char('y') => self.duplicate_selected()?,
+            KeyCode::Char('v') => self.compare_selected_files()?,
             KeyCode::Char('o') => self.reveal_active_file()?,
             KeyCode::Char('t') => self.new_terminal_here()?,
             _ => {}
@@ -4578,6 +4580,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::DeleteSelected,
         },
         CommandSpec {
+            label: "Compare Selected Files",
+            detail: "Open a read-only unified diff for two selected explorer files",
+            shortcut: "Explorer v",
+            action: CommandAction::CompareSelectedFiles,
+        },
+        CommandSpec {
             label: "Refresh Explorer",
             detail: "Reload the workspace file tree from disk",
             shortcut: "r",
@@ -5346,6 +5354,14 @@ impl App {
                     detail: format!("Rename {relative}"),
                     shortcut: "e",
                     action: CommandAction::RenameSelected,
+                });
+            }
+            if selected_paths.len() == 2 && selected_paths.iter().all(|path| path.is_file()) {
+                selection_actions.push(ContextMenuAction {
+                    label: "Compare Selected Files",
+                    detail: "Open a read-only unified diff for the two selected files".to_owned(),
+                    shortcut: "v",
+                    action: CommandAction::CompareSelectedFiles,
                 });
             }
             selection_actions.push(ContextMenuAction {
@@ -6570,6 +6586,55 @@ impl App {
         } else {
             Some(format!("duplicated {} item(s)", destinations.len()))
         };
+        Ok(())
+    }
+
+    fn compare_selected_files(&mut self) -> Result<()> {
+        let paths = normalize_file_op_paths(self.selected_explorer_paths());
+        if paths.len() != 2 {
+            self.message = Some("compare expects exactly two selected explorer files".to_owned());
+            return Ok(());
+        }
+        let left = canonical_existing_path(&paths[0]);
+        let right = canonical_existing_path(&paths[1]);
+        if left == right {
+            self.message = Some("compare expects two different files".to_owned());
+            return Ok(());
+        }
+        if !left.is_file() || !right.is_file() {
+            self.message = Some("compare selected files only supports regular files".to_owned());
+            return Ok(());
+        }
+
+        let left_text = match read_compare_text_file(&left) {
+            Ok(text) => text,
+            Err(error) => {
+                self.message = Some(error.to_string());
+                return Ok(());
+            }
+        };
+        let right_text = match read_compare_text_file(&right) {
+            Ok(text) => text,
+            Err(error) => {
+                self.message = Some(error.to_string());
+                return Ok(());
+            }
+        };
+        let text = build_compare_diff(&self.root, &left, &right, &left_text, &right_text);
+        let tab_path = compare_diff_tab_path(&self.root, &left, &right);
+        let left_name = left
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("left");
+        let right_name = right
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("right");
+        let title = format!("Compare {left_name} <-> {right_name}");
+        let left_relative = relative_path(&self.root, &left);
+        let right_relative = relative_path(&self.root, &right);
+        self.open_read_only_text_tab(tab_path, title, text);
+        self.message = Some(format!("compared {left_relative} and {right_relative}"));
         Ok(())
     }
 
@@ -9353,6 +9418,7 @@ impl App {
             CommandAction::CutSelectedExplorerItem => self.cut_selected_path(),
             CommandAction::PasteIntoSelectedExplorerItem => self.paste_into_selected()?,
             CommandAction::DuplicateSelectedExplorerItem => self.duplicate_selected()?,
+            CommandAction::CompareSelectedFiles => self.compare_selected_files()?,
             CommandAction::RefreshExplorer => self.refresh_explorer()?,
             CommandAction::CollapseExplorer => self.collapse_explorer(),
             CommandAction::CycleExplorerSort => self.cycle_explorer_sort_mode(),
@@ -11052,6 +11118,197 @@ fn load_git_path_diff(root: &Path, top_level: &Path, path: &Path) -> Result<Stri
     ))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CompareDiffLine {
+    Equal(String),
+    Delete(String),
+    Insert(String),
+}
+
+fn read_compare_text_file(path: &Path) -> Result<String> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed to read metadata for {}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(anyhow!(
+            "compare selected files only supports regular files: {}",
+            path.display()
+        ));
+    }
+    if metadata.len() > MAX_FILE_SCAN_BYTES {
+        return Err(anyhow!(
+            "compare file is too large: {} ({} byte limit)",
+            path.display(),
+            MAX_FILE_SCAN_BYTES
+        ));
+    }
+
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    if bytes.contains(&0) {
+        return Err(anyhow!(
+            "compare selected files only supports text files: {}",
+            path.display()
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        anyhow!(
+            "compare selected files only supports valid UTF-8 text: {}",
+            path.display()
+        )
+    })
+}
+
+fn build_compare_diff(
+    root: &Path,
+    left: &Path,
+    right: &Path,
+    left_text: &str,
+    right_text: &str,
+) -> String {
+    let left_relative = relative_path(root, left);
+    let right_relative = relative_path(root, right);
+    let left_lines = diff_text_lines(left_text);
+    let right_lines = diff_text_lines(right_text);
+    let mut diff = format!(
+        "diff --tscode a/{left_relative} b/{right_relative}\n--- a/{left_relative}\n+++ b/{right_relative}\n"
+    );
+
+    if left_text == right_text {
+        diff.push_str("Files are identical.\n");
+        return diff;
+    }
+
+    diff.push_str(&format!(
+        "@@ -{} +{} @@\n",
+        unified_range(left_lines.len()),
+        unified_range(right_lines.len())
+    ));
+    for line in compare_diff_lines(&left_lines, &right_lines) {
+        match line {
+            CompareDiffLine::Equal(text) => {
+                diff.push(' ');
+                diff.push_str(&text);
+            }
+            CompareDiffLine::Delete(text) => {
+                diff.push('-');
+                diff.push_str(&text);
+            }
+            CompareDiffLine::Insert(text) => {
+                diff.push('+');
+                diff.push_str(&text);
+            }
+        }
+        diff.push('\n');
+    }
+    diff
+}
+
+fn diff_text_lines(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        text.lines().map(ToOwned::to_owned).collect()
+    }
+}
+
+fn unified_range(count: usize) -> String {
+    if count == 0 {
+        "0,0".to_owned()
+    } else {
+        format!("1,{count}")
+    }
+}
+
+fn compare_diff_lines(left: &[String], right: &[String]) -> Vec<CompareDiffLine> {
+    const MAX_EXACT_DIFF_CELLS: usize = 750_000;
+    if left.len().saturating_mul(right.len()) <= MAX_EXACT_DIFF_CELLS {
+        exact_compare_diff_lines(left, right)
+    } else {
+        coarse_compare_diff_lines(left, right)
+    }
+}
+
+fn exact_compare_diff_lines(left: &[String], right: &[String]) -> Vec<CompareDiffLine> {
+    let cols = right.len() + 1;
+    let mut lcs = vec![0usize; (left.len() + 1) * cols];
+    for i in (0..left.len()).rev() {
+        for j in (0..right.len()).rev() {
+            let index = i * cols + j;
+            lcs[index] = if left[i] == right[j] {
+                1 + lcs[(i + 1) * cols + j + 1]
+            } else {
+                lcs[(i + 1) * cols + j].max(lcs[i * cols + j + 1])
+            };
+        }
+    }
+
+    let mut lines = Vec::new();
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < left.len() && j < right.len() {
+        if left[i] == right[j] {
+            lines.push(CompareDiffLine::Equal(left[i].clone()));
+            i += 1;
+            j += 1;
+        } else if lcs[(i + 1) * cols + j] >= lcs[i * cols + j + 1] {
+            lines.push(CompareDiffLine::Delete(left[i].clone()));
+            i += 1;
+        } else {
+            lines.push(CompareDiffLine::Insert(right[j].clone()));
+            j += 1;
+        }
+    }
+    while i < left.len() {
+        lines.push(CompareDiffLine::Delete(left[i].clone()));
+        i += 1;
+    }
+    while j < right.len() {
+        lines.push(CompareDiffLine::Insert(right[j].clone()));
+        j += 1;
+    }
+    lines
+}
+
+fn coarse_compare_diff_lines(left: &[String], right: &[String]) -> Vec<CompareDiffLine> {
+    let mut prefix = 0usize;
+    while prefix < left.len() && prefix < right.len() && left[prefix] == right[prefix] {
+        prefix += 1;
+    }
+
+    let mut left_end = left.len();
+    let mut right_end = right.len();
+    while left_end > prefix && right_end > prefix && left[left_end - 1] == right[right_end - 1] {
+        left_end -= 1;
+        right_end -= 1;
+    }
+
+    let mut lines = Vec::new();
+    lines.extend(left[..prefix].iter().cloned().map(CompareDiffLine::Equal));
+    lines.extend(
+        left[prefix..left_end]
+            .iter()
+            .cloned()
+            .map(CompareDiffLine::Delete),
+    );
+    lines.extend(
+        right[prefix..right_end]
+            .iter()
+            .cloned()
+            .map(CompareDiffLine::Insert),
+    );
+    lines.extend(left[left_end..].iter().cloned().map(CompareDiffLine::Equal));
+    lines
+}
+
+fn compare_diff_tab_path(root: &Path, left: &Path, right: &Path) -> PathBuf {
+    let label = format!(
+        "{}__vs__{}",
+        relative_path(root, left),
+        relative_path(root, right)
+    );
+    root.join(".tscode-compare")
+        .join(format!("{}.diff", sanitize_virtual_path_fragment(&label)))
+}
+
 fn git_command_output_with_path(root: &Path, args: &[&str], path: &Path) -> Result<Output> {
     let top_level = git_top_level(root).unwrap_or_else(|| root.to_path_buf());
     let path_arg = git_relative_os_arg(&top_level, path);
@@ -11099,7 +11356,14 @@ fn build_untracked_file_diff(top_level: &Path, path: &Path) -> Result<String> {
 
 fn source_control_diff_tab_path(top_level: &Path, path: &Path) -> PathBuf {
     let relative = relative_path(top_level, path);
-    let sanitized = relative
+    top_level.join(".tscode-diff").join(format!(
+        "{}.diff",
+        sanitize_virtual_path_fragment(&relative)
+    ))
+}
+
+fn sanitize_virtual_path_fragment(value: &str) -> String {
+    value
         .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
@@ -11108,10 +11372,7 @@ fn source_control_diff_tab_path(top_level: &Path, path: &Path) -> PathBuf {
                 '_'
             }
         })
-        .collect::<String>();
-    top_level
-        .join(".tscode-diff")
-        .join(format!("{sanitized}.diff"))
+        .collect()
 }
 
 fn first_diff_hunk_line(lines: &[String]) -> Option<usize> {
@@ -14029,6 +14290,69 @@ mod tests {
     }
 
     #[test]
+    fn explorer_compare_selected_files_opens_read_only_diff_tab() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-compare-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("left.txt"), "one\ntwo\nthree\n").unwrap();
+        fs::write(root.join("right.txt"), "one\nTWO\nthree\nfour\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let left = canonical_root.join("left.txt");
+        let right = canonical_root.join("right.txt");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.explorer.reveal(&left).unwrap();
+        app.toggle_explorer_multi_selection();
+        app.explorer.reveal(&right).unwrap();
+        app.toggle_explorer_multi_selection();
+
+        assert_eq!(
+            app.selected_explorer_paths(),
+            vec![left.clone(), right.clone()]
+        );
+        let menu = app.explorer_context_menu_items("");
+        assert!(menu.iter().any(|item| {
+            item.label == "Compare Selected Files"
+                && item.command == Some(CommandAction::CompareSelectedFiles)
+        }));
+
+        app.run_command(CommandAction::CompareSelectedFiles)
+            .unwrap();
+        let tab = app.active_tab().unwrap();
+        assert!(tab.read_only);
+        assert_eq!(tab.title, "Compare left.txt <-> right.txt");
+        let diff_text = tab.text();
+        assert!(diff_text.contains("diff --tscode a/left.txt b/right.txt"));
+        assert!(diff_text.contains("--- a/left.txt"));
+        assert!(diff_text.contains("+++ b/right.txt"));
+        assert!(diff_text.contains("-two"));
+        assert!(diff_text.contains("+TWO"));
+        assert!(diff_text.contains("+four"));
+        assert!(
+            tab.path
+                .ends_with(".tscode-compare/left.txt__vs__right.txt.diff")
+        );
+
+        app.run_command(CommandAction::SaveFile).unwrap();
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("read-only"))
+        );
+        assert_eq!(fs::read_to_string(&left).unwrap(), "one\ntwo\nthree\n");
+        assert_eq!(
+            fs::read_to_string(&right).unwrap(),
+            "one\nTWO\nthree\nfour\n"
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn explorer_sort_modes_reorder_real_entries_and_preserve_selection() {
         let root =
             std::env::temp_dir().join(format!("tscode-test-explorer-sort-{}", std::process::id()));
@@ -15926,6 +16250,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::SortExplorerBySize))
+        );
+        let commands = app.command_palette_items("compare selected files");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::CompareSelectedFiles))
         );
         let commands = app.command_palette_items("run task");
         assert!(

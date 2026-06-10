@@ -59,6 +59,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, New File and New Folder use the selected explorer folder or selected file's parent as the target, and rename refuses unsafe root moves or target overwrites.
 - As a developer, I can copy, cut, paste, and duplicate files or folders from the explorer.
 - As a developer, I can select multiple explorer rows with the mouse or keyboard and run copy, cut, paste, duplicate, delete, and path-copy actions on the whole selected set.
+- As a developer, I can select two text files in the explorer and open a read-only unified diff tab comparing their real on-disk contents.
 - As a developer, I can right-click explorer rows and run common file actions from a mouse-selectable context menu instead of memorizing every shortcut.
 - As a developer, I can reveal the active editor file in the explorer.
 - As a developer, I can filter the explorer tree, hide or show dot-prefixed entries, hide or show generated folders, and see basic file metadata while browsing.
@@ -160,8 +161,8 @@ Keyboard fallback:
 - Terminal top-border hover is visually highlighted and dragging it changes the normal terminal panel height without restarting the PTY session
 - Terminal child apps that request mouse input receive the requested xterm mouse events, including default, SGR, and UTF-8 coordinate encodings where supported by the parser
 - Explorer `Space`, `Shift`+click, and `Ctrl`/`Command`/`Meta`+click provide visible multi-select and range-select for file rows
-- Explorer `c`, `x`, `p`, `y`, and `o` perform copy, cut, paste, duplicate, and reveal-active-file actions
-- Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
+- Explorer `c`, `x`, `p`, `y`, `v`, and `o` perform copy, cut, paste, duplicate, compare-selected-files, and reveal-active-file actions
+- Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, compare selected files, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
 - Explorer `s`, the context menu, and the command palette change sorting between name, type, modified time, and size while preserving folders-first grouping
 - Explorer `t` opens a new integrated terminal in the selected folder or selected file's parent folder
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the terminal clipboard

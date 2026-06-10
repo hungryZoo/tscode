@@ -98,11 +98,15 @@ The explorer shall detect externally-created, externally-deleted, renamed, and m
 
 ### R-115 Explorer Context Menu
 
-Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, rename, delete, New Terminal Here, refresh, collapse folders, sort mode selection, toggle hidden files, and toggle generated folders. When a multi-selection is active, applicable copy, cut, duplicate, delete, and path-copy actions shall apply to the whole selected set, while rename shall remain a single-item action. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
+Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, compare selected files, rename, delete, New Terminal Here, refresh, collapse folders, sort mode selection, toggle hidden files, and toggle generated folders. When a multi-selection is active, applicable copy, cut, duplicate, delete, and path-copy actions shall apply to the whole selected set, compare selected files shall be available for exactly two selected regular files, and rename shall remain a single-item action. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
 
 ### R-116 Ignore-Aware Workspace Visibility
 
 When ignored/generated entries are hidden, the explorer, quick open, workspace search, workspace symbols, go-to-definition, find-references, rename-symbol, and replace-in-files scans shall apply a shared workspace visibility policy. That policy shall respect `.gitignore`, `.ignore`, parent/global Git ignore files, and built-in generated folders such as `target`, `node_modules`, `dist`, and `build`. The `i` explorer toggle and matching command palette action shall reveal those ignored/generated entries and make them available to the same workspace scans.
+
+### R-117 Compare Selected Files
+
+Explorer `v`, the command palette, and the explorer context menu shall include a Compare Selected Files action. The action shall require exactly two selected regular files, read their current on-disk contents, reject binary, non-UTF-8, or oversized inputs without modifying either file, and open a read-only editor tab containing a unified diff. Repeating the same comparison shall reuse and refresh the same synthetic compare tab. Save, edit, replace, format, rename, and workspace mutation commands shall treat the compare tab as read-only.
 
 ## 4. Editor Requirements
 
@@ -539,6 +543,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Click a file and confirm a tab opens.
 - Hover rows/tabs and confirm highlight changes.
 - Copy, paste, duplicate, and cut/move explorer items and confirm filesystem results.
+- Select two text files in the explorer, run Compare Selected Files from the context menu or command palette, confirm a read-only unified diff tab opens, and confirm Save File does not modify either source file.
 - Open a file, reveal it in the explorer, and confirm its row is selected.
 - In the explorer, use `Right` on a folder to expand it, press `Right` again to move into its first child, then use `Left` to return to the folder, collapse it, and move to its parent.
 - Edit text, use `Ctrl-z`/`Ctrl-y`, save with `Ctrl-s`, and confirm file contents on disk.
