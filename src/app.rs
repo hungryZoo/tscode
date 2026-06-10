@@ -1566,6 +1566,7 @@ pub enum PromptKind {
     WorkspaceReplaceWith { needle: String },
     RenameSymbol { old: String },
     SaveAs,
+    SaveAsClose { index: usize },
     TerminalSearch,
     GotoLine,
     QuitDirty,
@@ -1581,6 +1582,7 @@ pub struct PromptState {
 pub enum QuickPanelKind {
     OpenFile,
     Completions,
+    DirtyClose { index: usize },
     ExplorerContextMenu,
     EditorContextMenu,
     TerminalContextMenu,
@@ -1686,6 +1688,9 @@ pub enum CommandAction {
     RevertFile,
     FormatDocument,
     CloseActiveTab,
+    SaveAndCloseTab(usize),
+    DiscardAndCloseTab(usize),
+    CancelCloseTab,
     CloseSavedTabs,
     OpenSelectedExplorerItem,
     NewFile,
@@ -3467,7 +3472,7 @@ fn command_catalog() -> Vec<CommandSpec> {
         },
         CommandSpec {
             label: "Close Active Tab",
-            detail: "Close the active tab when it has no unsaved edits",
+            detail: "Close the active tab, asking how to handle unsaved edits",
             shortcut: "Ctrl-W",
             action: CommandAction::CloseActiveTab,
         },
@@ -3881,6 +3886,7 @@ impl App {
         let items = match kind {
             QuickPanelKind::OpenFile => self.quick_open_items(&query)?,
             QuickPanelKind::Completions => self.completion_items(&query)?,
+            QuickPanelKind::DirtyClose { index } => self.dirty_close_items(index, &query),
             QuickPanelKind::ExplorerContextMenu => self.explorer_context_menu_items(&query),
             QuickPanelKind::EditorContextMenu => self.editor_context_menu_items(&query),
             QuickPanelKind::TerminalContextMenu => self.terminal_context_menu_items(&query),
@@ -3936,6 +3942,64 @@ impl App {
             .take(MAX_QUICK_ITEMS)
             .map(|(_, _, item)| item)
             .collect())
+    }
+
+    fn dirty_close_items(&self, index: usize, query: &str) -> Vec<QuickItem> {
+        let Some(tab) = self.tabs.get(index) else {
+            return Vec::new();
+        };
+        let label = if tab.untitled {
+            tab.title.clone()
+        } else {
+            relative_path(&self.root, &tab.path)
+        };
+        let specs = [
+            (
+                "Save and Close",
+                format!("Save {label} before closing this tab"),
+                "Enter",
+                CommandAction::SaveAndCloseTab(index),
+            ),
+            (
+                "Don't Save",
+                format!("Discard unsaved edits in {label} and close this tab"),
+                "",
+                CommandAction::DiscardAndCloseTab(index),
+            ),
+            (
+                "Cancel",
+                format!("Keep {label} open with its unsaved edits"),
+                "Esc",
+                CommandAction::CancelCloseTab,
+            ),
+        ];
+        let query = query.trim();
+        let mut scored = specs
+            .into_iter()
+            .enumerate()
+            .filter_map(|(order, (item_label, detail, shortcut, action))| {
+                let score = if query.is_empty() {
+                    Some(order)
+                } else {
+                    fuzzy_score(&format!("{item_label} {detail}"), query)
+                }?;
+                Some((
+                    score,
+                    order,
+                    QuickItem {
+                        label: item_label.to_owned(),
+                        detail,
+                        path: tab.path.clone(),
+                        line: None,
+                        col: None,
+                        preview: (!shortcut.is_empty()).then(|| shortcut.to_owned()),
+                        command: Some(action),
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        scored.into_iter().map(|(_, _, item)| item).collect()
     }
 
     fn explorer_context_menu_items(&self, query: &str) -> Vec<QuickItem> {
@@ -4232,7 +4296,7 @@ impl App {
             },
             ContextMenuAction {
                 label: "Close Active Tab",
-                detail: "Close the active tab when it has no unsaved edits".to_owned(),
+                detail: "Close the active tab, asking how to handle unsaved edits".to_owned(),
                 shortcut: "Ctrl-W",
                 action: CommandAction::CloseActiveTab,
             },
@@ -5053,6 +5117,11 @@ impl App {
                 self.rename_symbol_from_prompt(old, prompt.input)?;
             }
             PromptKind::SaveAs => self.save_as_from_prompt(prompt.input)?,
+            PromptKind::SaveAsClose { index } => {
+                if let Some(saved_index) = self.save_tab_as_from_prompt(index, prompt.input)? {
+                    self.close_tab_without_prompt(saved_index, "saved and closed");
+                }
+            }
             PromptKind::TerminalSearch => self.terminal_search_from_prompt(prompt.input),
             PromptKind::GotoLine => self.goto_line_from_prompt(prompt.input),
             PromptKind::QuitDirty => {
@@ -5410,16 +5479,29 @@ impl App {
             self.message = Some("no active file to save as".to_owned());
             return Ok(());
         };
+        let _ = self.save_tab_as_from_prompt(index, input)?;
+        Ok(())
+    }
+
+    fn save_tab_as_from_prompt(
+        &mut self,
+        mut index: usize,
+        input: String,
+    ) -> Result<Option<usize>> {
+        if index >= self.tabs.len() {
+            self.message = Some("tab to save is no longer open".to_owned());
+            return Ok(None);
+        }
         let Some(target) = resolve_prompt_path(&self.root, &input) else {
             self.message = Some("save as cancelled".to_owned());
-            return Ok(());
+            return Ok(None);
         };
         if target.is_dir() {
             self.message = Some(format!(
                 "save as target is a directory: {}",
                 target.display()
             ));
-            return Ok(());
+            return Ok(None);
         }
 
         let canonical_target = target.canonicalize().unwrap_or_else(|_| target.clone());
@@ -5439,7 +5521,7 @@ impl App {
                 "save as target is already open with unsaved edits: {}",
                 self.tabs[existing_index].path.display()
             ));
-            return Ok(());
+            return Ok(None);
         }
 
         if let Some(parent) = target.parent() {
@@ -5459,22 +5541,20 @@ impl App {
         {
             self.tabs.remove(existing_index);
             if existing_index < index {
-                self.active_tab = Some(index - 1);
+                index -= 1;
             }
         }
 
-        let Some(active_index) = self.active_tab else {
-            return Ok(());
-        };
         let title = saved_path
             .file_name()
             .and_then(|file_name| file_name.to_str())
             .unwrap_or("[file]")
             .to_owned();
-        self.tabs[active_index].path = saved_path.clone();
-        self.tabs[active_index].title = title;
-        self.tabs[active_index].dirty = false;
-        self.tabs[active_index].refresh_disk_stamp();
+        self.tabs[index].path = saved_path.clone();
+        self.tabs[index].title = title;
+        self.tabs[index].dirty = false;
+        self.tabs[index].refresh_disk_stamp();
+        self.active_tab = Some(index);
 
         self.refresh_explorer()?;
         if saved_path.starts_with(&self.root) {
@@ -5483,7 +5563,7 @@ impl App {
         self.focus = FocusPanel::Editor;
         self.refresh_git_status();
         self.message = Some(format!("saved as {}", saved_path.display()));
-        Ok(())
+        Ok(Some(index))
     }
 
     fn revert_active_tab(&mut self) -> Result<()> {
@@ -6652,6 +6732,11 @@ impl App {
             CommandAction::RevertFile => self.revert_active_tab()?,
             CommandAction::FormatDocument => self.format_active_document()?,
             CommandAction::CloseActiveTab => self.close_active_tab(),
+            CommandAction::SaveAndCloseTab(index) => self.save_and_close_tab(index)?,
+            CommandAction::DiscardAndCloseTab(index) => self.discard_and_close_tab(index),
+            CommandAction::CancelCloseTab => {
+                self.message = Some("close cancelled".to_owned());
+            }
             CommandAction::CloseSavedTabs => self.close_saved_tabs(),
             CommandAction::OpenSelectedExplorerItem => self.open_or_toggle_selected()?,
             CommandAction::NewFile => self.start_prompt(PromptKind::NewFile, ""),
@@ -7085,10 +7170,19 @@ impl App {
             return;
         }
         if self.tabs[index].dirty {
-            self.message = Some(format!("save {} before closing", self.tabs[index].title));
+            if let Err(error) = self.open_quick_panel(QuickPanelKind::DirtyClose { index }) {
+                self.last_error = Some(error.to_string());
+            }
             return;
         }
 
+        self.close_tab_without_prompt(index, "closed");
+    }
+
+    fn close_tab_without_prompt(&mut self, index: usize, verb: &str) {
+        if index >= self.tabs.len() {
+            return;
+        }
         let title = self.tabs[index].title.clone();
         self.tabs.remove(index);
         self.active_tab = if self.tabs.is_empty() {
@@ -7096,7 +7190,50 @@ impl App {
         } else {
             Some(index.saturating_sub(1).min(self.tabs.len() - 1))
         };
-        self.message = Some(format!("closed {title}"));
+        self.message = Some(format!("{verb} {title}"));
+    }
+
+    fn save_and_close_tab(&mut self, index: usize) -> Result<()> {
+        if index >= self.tabs.len() {
+            self.message = Some("tab to close is no longer open".to_owned());
+            return Ok(());
+        }
+
+        self.active_tab = Some(index);
+        if self.tabs[index].untitled {
+            let initial = relative_path(&self.root, &self.tabs[index].path);
+            self.start_prompt(PromptKind::SaveAsClose { index }, &initial);
+            self.message = Some(format!(
+                "{} needs Save As before closing",
+                self.tabs[index].title
+            ));
+            return Ok(());
+        }
+
+        self.check_external_file_changes();
+        if index >= self.tabs.len() {
+            self.message = Some("tab to close is no longer open".to_owned());
+            return Ok(());
+        }
+        if !self.tabs[index].external_state.is_clean() {
+            self.message = Some(format!(
+                "{} {}; use Revert File or Save As before closing",
+                self.tabs[index].title,
+                self.tabs[index].external_state.label()
+            ));
+            return Ok(());
+        }
+
+        let path = self.tabs[index].path.clone();
+        self.tabs[index].save()?;
+        self.refresh_git_status();
+        self.close_tab_without_prompt(index, "saved and closed");
+        self.message = Some(format!("saved and closed {}", path.display()));
+        Ok(())
+    }
+
+    fn discard_and_close_tab(&mut self, index: usize) {
+        self.close_tab_without_prompt(index, "discarded changes and closed");
     }
 
     fn undo_active_tab(&mut self) {
@@ -10740,6 +10877,111 @@ mod tests {
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(canonical_root);
+    }
+
+    #[test]
+    fn dirty_tab_close_prompt_can_save_or_discard() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-dirty-close-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let save_file = root.join("save.rs");
+        let discard_file = root.join("discard.rs");
+        fs::write(&save_file, "fn save() {}\n").unwrap();
+        fs::write(&discard_file, "fn discard() {}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&save_file);
+        app.active_tab_mut().unwrap().insert_text("// saved\n");
+        app.run_command(CommandAction::CloseActiveTab).unwrap();
+
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.kind, QuickPanelKind::DirtyClose { index: 0 });
+        assert!(panel.items.iter().any(|item| {
+            item.command == Some(CommandAction::SaveAndCloseTab(0))
+                && item.label == "Save and Close"
+        }));
+        let cancel_index = panel
+            .items
+            .iter()
+            .position(|item| item.command == Some(CommandAction::CancelCloseTab))
+            .unwrap();
+        app.activate_quick_row(cancel_index);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(app.active_tab().unwrap().dirty);
+        assert_eq!(app.message.as_deref(), Some("close cancelled"));
+
+        app.run_command(CommandAction::CloseActiveTab).unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        let save_index = panel
+            .items
+            .iter()
+            .position(|item| item.command == Some(CommandAction::SaveAndCloseTab(0)))
+            .unwrap();
+        app.activate_quick_row(save_index);
+        assert!(app.tabs.is_empty());
+        assert_eq!(
+            fs::read_to_string(&save_file).unwrap(),
+            "// saved\nfn save() {}\n"
+        );
+
+        app.open_file(&discard_file);
+        app.active_tab_mut().unwrap().insert_text("// discarded\n");
+        app.run_command(CommandAction::CloseActiveTab).unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        let discard_index = panel
+            .items
+            .iter()
+            .position(|item| item.command == Some(CommandAction::DiscardAndCloseTab(0)))
+            .unwrap();
+        app.activate_quick_row(discard_index);
+
+        assert!(app.tabs.is_empty());
+        assert_eq!(
+            fs::read_to_string(&discard_file).unwrap(),
+            "fn discard() {}\n"
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dirty_untitled_close_can_save_as_then_close_without_placeholder() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-untitled-close-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.run_command(CommandAction::NewUntitledFile).unwrap();
+        let placeholder = app.root.join("Untitled-1");
+        app.active_tab_mut().unwrap().insert_text("fn main() {}\n");
+        app.run_command(CommandAction::CloseActiveTab).unwrap();
+
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.kind, QuickPanelKind::DirtyClose { index: 0 });
+        let save_index = panel
+            .items
+            .iter()
+            .position(|item| item.command == Some(CommandAction::SaveAndCloseTab(0)))
+            .unwrap();
+        app.activate_quick_row(save_index);
+
+        assert!(matches!(
+            app.prompt.as_ref().map(|prompt| &prompt.kind),
+            Some(PromptKind::SaveAsClose { index: 0 })
+        ));
+        app.prompt.as_mut().unwrap().input = "src/scratch.rs".to_owned();
+        app.finish_prompt().unwrap();
+
+        let target = app.root.join("src/scratch.rs");
+        assert!(app.tabs.is_empty());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "fn main() {}\n");
+        assert!(!placeholder.exists());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

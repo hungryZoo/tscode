@@ -57,7 +57,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Opening files now canonicalizes paths before tab lookup, avoiding duplicate tabs and broken relative-path behavior when the OS exposes aliases such as `/tmp` and `/private/tmp`.
 - File explorer actions for refresh, new file, new folder, rename, and delete with confirmation; folder rename/delete keeps open tabs in sync.
 - Explorer collapse-all is available through the command palette.
-- Tab close support through the tab `x`, middle click, or `Ctrl-W`, with unsaved-buffer protection.
+- Tab close support through the tab `x`, middle click, or `Ctrl-W`, with a mouse-selectable Save and Close / Don't Save / Cancel panel for dirty tabs, including Save As then close for Untitled tabs.
 - File save preserves existing trailing newlines.
 - Bottom integrated terminal panel backed by a real PTY shell with forwarded keyboard input, shell state, `Ctrl-C`, terminal scrollback, clear-terminal, restart-terminal commands, and a live header showing the active session, cwd, live/exited state, scrollback offset, and active terminal modes.
 - Terminal cwd tracking now consumes OSC 7 current-directory reports and automatically hooks zsh/bash sessions so `cd` updates the terminal header, context menus, and restart-terminal working directory.

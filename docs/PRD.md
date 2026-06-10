@@ -60,7 +60,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, explorer filtering finds nested files inside collapsed folders and expands the matching path enough for me to click it.
 - As a developer, I can see Git working tree status badges in the explorer when the workspace is inside a Git repository.
 - As a developer, I can open a Source Control panel, inspect changed Git files and diff hunks, filter that list, and jump directly from a hunk to the changed source line.
-- As a developer, I can undo and redo edits, paste text, repeat search matches, and close saved tabs without losing unsaved changes.
+- As a developer, I can undo and redo edits, paste text, repeat search matches, close clean tabs immediately, and choose whether to save, discard, or cancel when closing a dirty tab.
 - As a developer, I can save the active editor buffer as a new relative or absolute path, have missing parent folders created, and keep editing the newly saved file.
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
 - As a developer, I can fold and unfold code blocks from the editor gutter, keyboard, command palette, or editor context menu so large files are easier to scan over SSH.
@@ -153,7 +153,7 @@ Keyboard fallback:
 - `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
 - `Ctrl-N` or the command palette creates an editable Untitled tab without touching disk until Save As
 - The command palette provides Save As for writing the active editor buffer to a new path and retargeting the tab
-- `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions; `Ctrl-S` on an Untitled tab opens Save As
+- `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions; `Ctrl-S` on an Untitled tab opens Save As, and dirty tab close opens Save and Close / Don't Save / Cancel choices
 - Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, definition/references/rename/suggest, format, fold/unfold, comments, send-to-terminal, path-copy, revert, and close-tab actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor
 - `Shift` with arrow keys and mouse drag select editor text

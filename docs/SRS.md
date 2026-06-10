@@ -136,6 +136,10 @@ The command palette shall include a Save As action for the active editor tab. Th
 
 Right-clicking the editor body or an editor tab shall focus the editor and open a mouse-selectable context menu. Right-clicking the editor body shall update the editor cursor to the clicked buffer location before opening the menu. The menu shall expose actions for save, copy, cut, paste, select all, find, replace, go to line, go to definition, find references, rename symbol, trigger suggest, format document, fold/unfold, toggle line comment, run selection/current line in terminal, copy absolute file path, copy relative file path, revert file, and close active tab. Activating a menu item shall call the same editor, workspace, terminal, or clipboard command used by keyboard shortcuts and the command palette.
 
+### R-208D Dirty Tab Close Confirmation
+
+Closing a clean editor tab through `Ctrl-w`, the tab close target, middle-click, the editor context menu, or the command palette shall close it immediately. Closing a dirty editor tab through the same entry points shall open a mouse-selectable quick panel with Save and Close, Don't Save, and Cancel actions. Save and Close shall write file-backed tabs before closing them; for Untitled tabs it shall prompt for Save As and close the tab after the target file is written. Don't Save shall close the tab without modifying the backing file or creating an Untitled placeholder. Cancel shall leave the dirty tab open.
+
 ### R-209 Search
 
 `Ctrl-f` in editor focus shall prompt for text and move the cursor to the next match when found.
@@ -186,7 +190,7 @@ The editor shall support jumping to one-based `line` or `line:column` input thro
 
 ### R-220 Save All
 
-The command palette shall include a save-all command that writes every dirty editor tab to disk.
+The command palette shall include a save-all command that writes every dirty file-backed editor tab to disk when the backing file is clean. It shall skip dirty Untitled tabs and dirty tabs with external disk conflicts, and it shall report the skipped counts.
 
 ### R-221 Editor Selection
 
@@ -471,6 +475,8 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Edit text, use `Ctrl-z`/`Ctrl-y`, save with `Ctrl-s`, and confirm file contents on disk.
 - Use Save As from the command palette to write the active buffer to a nested new path, confirm parent folders are created, confirm the active tab retargets to the new file, confirm the original source file is unchanged, and confirm a dirty open target is refused.
 - Create an Untitled tab with `Ctrl-n`, type text, confirm no `Untitled-*` placeholder exists on disk, confirm Save File opens Save As, confirm Save As writes the real target and retargets the tab, and confirm Save All skips any remaining dirty Untitled tab.
+- Close a dirty file-backed tab and confirm Save and Close writes the file then closes the tab, Don't Save closes without changing disk, and Cancel keeps the dirty tab open.
+- Close a dirty Untitled tab, choose Save and Close, confirm Save As writes the target file, closes the tab, and leaves no `Untitled-*` placeholder on disk.
 - Use `Ctrl-f` and `F3` to move through search matches.
 - Use `Ctrl-f` and confirm visible search highlights and match count.
 - Use `Ctrl-h` to replace one match, save, and confirm file contents on disk.

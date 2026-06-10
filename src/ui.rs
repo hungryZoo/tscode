@@ -762,6 +762,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = match panel.kind {
         crate::app::QuickPanelKind::OpenFile => " Quick Open  Ctrl-P ",
         crate::app::QuickPanelKind::Completions => " Suggestions  Ctrl-Space ",
+        crate::app::QuickPanelKind::DirtyClose { .. } => " Unsaved Changes  Ctrl-W ",
         crate::app::QuickPanelKind::ExplorerContextMenu => " Explorer Context Menu  Right Click ",
         crate::app::QuickPanelKind::EditorContextMenu => " Editor Context Menu  Right Click ",
         crate::app::QuickPanelKind::TerminalContextMenu => " Terminal Context Menu  Right Click ",
@@ -795,6 +796,9 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             crate::app::QuickPanelKind::OpenFile => "Type a file name or path fragment.",
             crate::app::QuickPanelKind::Completions => {
                 "No suggestions found for the current editor cursor."
+            }
+            crate::app::QuickPanelKind::DirtyClose { .. } => {
+                "The tab is no longer open or no close action matches the query."
             }
             crate::app::QuickPanelKind::ExplorerContextMenu => {
                 "No explorer actions match the current query."
@@ -1170,6 +1174,7 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::WorkspaceReplaceWith { .. } => "replace files: with",
         crate::app::PromptKind::RenameSymbol { .. } => "rename symbol",
         crate::app::PromptKind::SaveAs => "save as",
+        crate::app::PromptKind::SaveAsClose { .. } => "save as then close",
         crate::app::PromptKind::TerminalSearch => "find terminal",
         crate::app::PromptKind::GotoLine => "go to line",
         crate::app::PromptKind::QuitDirty => "unsaved: type quit",
