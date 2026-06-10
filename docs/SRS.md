@@ -392,21 +392,25 @@ The integrated terminal shall support multiple PTY shell sessions. The user shal
 
 The terminal panel shall render terminal session tabs with mouse hover highlighting. Clicking a terminal tab shall activate that session, clicking a close target shall close that session, and clicking the new-terminal target shall create a new PTY session.
 
-### R-321 New Terminal Here
+### R-321 Rename Terminal
+
+The command palette and terminal context menu shall include a Rename Terminal action. The action shall prompt for a new non-empty title for the active terminal session, update the terminal tab/header title, keep the existing PTY child alive, preserve the session working directory, and leave the number of terminal sessions unchanged. Blank or whitespace-only titles shall be rejected without changing the active terminal title.
+
+### R-322 New Terminal Here
 
 Explorer `t` and the command palette shall create a new integrated PTY terminal whose current working directory is the selected explorer folder, or the selected file's parent folder. Restarting that terminal shall preserve its current working directory instead of resetting it to the workspace root.
 
-### R-322 Terminal Search
+### R-323 Terminal Search
 
 When terminal focus is active, `Ctrl-f` or the command palette shall prompt for a literal search string for the active terminal session. The search shall scan the active terminal's current visible screen and scrollback retained by the terminal parser, highlight all visible matches, show the selected match count in the terminal header, and scroll the terminal viewport to the selected match. `F3` shall move to the next terminal match and `Shift-F3` shall move to the previous terminal match without sending those keys to the PTY while terminal search is active.
 
-### R-323 Terminal Child Keyboard Ownership
+### R-324 Terminal Child Keyboard Ownership
 
 When the active terminal child has entered alternate-screen mode or requested terminal mouse reporting, terminal-focused app conveniences that would otherwise intercept shell input, including terminal search, terminal search navigation, terminal tab management shortcuts, terminal maximize shortcuts, and terminal scrollback shortcuts, shall be forwarded to the PTY instead. `F6` and ``Ctrl-` `` shall remain available to move focus out of the terminal, and `Ctrl-Shift-C`/`Ctrl-Shift-V` shall remain terminal selection copy and clipboard paste shortcuts.
 
-### R-324 Terminal Context Menu
+### R-325 Terminal Context Menu
 
-Right-clicking the terminal body or terminal tabs shall focus the terminal and open a mouse-selectable context menu when the active child application has not requested terminal mouse reporting. Right-clicking a terminal tab shall first select that terminal session. The menu shall expose actions for copy, paste, terminal search, clear terminal, restart terminal, new terminal, close terminal, next terminal, previous terminal, toggle terminal maximize, increase terminal height, decrease terminal height, focus editor, and focus explorer. When the child application has requested terminal mouse reporting, right-click mouse events over the terminal body shall be forwarded to the PTY instead of opening the app-owned context menu.
+Right-clicking the terminal body or terminal tabs shall focus the terminal and open a mouse-selectable context menu when the active child application has not requested terminal mouse reporting. Right-clicking a terminal tab shall first select that terminal session. The menu shall expose actions for copy, paste, terminal search, clear terminal, restart terminal, rename terminal, new terminal, close terminal, next terminal, previous terminal, toggle terminal maximize, increase terminal height, decrease terminal height, focus editor, and focus explorer. When the child application has requested terminal mouse reporting, right-click mouse events over the terminal body shall be forwarded to the PTY instead of opening the app-owned context menu.
 
 ## 6. Mouse Requirements
 

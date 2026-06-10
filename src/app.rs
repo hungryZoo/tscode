@@ -1568,6 +1568,7 @@ pub enum PromptKind {
     SaveAs,
     SaveAsClose { index: usize },
     TerminalSearch,
+    RenameTerminal,
     GotoLine,
     QuitDirty,
 }
@@ -1749,6 +1750,7 @@ pub enum CommandAction {
     FocusTerminal,
     ClearTerminal,
     RestartTerminal,
+    RenameTerminal,
     NewTerminal,
     NewTerminalHere,
     CloseTerminal,
@@ -3801,6 +3803,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::RestartTerminal,
         },
         CommandSpec {
+            label: "Rename Terminal",
+            detail: "Change the active terminal tab title without restarting its PTY shell",
+            shortcut: "",
+            action: CommandAction::RenameTerminal,
+        },
+        CommandSpec {
             label: "New Terminal",
             detail: "Create a new integrated PTY terminal session",
             shortcut: "F7",
@@ -4410,6 +4418,12 @@ impl App {
                 detail: format!("Restart the shell in {cwd}"),
                 shortcut: "",
                 action: CommandAction::RestartTerminal,
+            },
+            ContextMenuAction {
+                label: "Rename Terminal",
+                detail: format!("Rename the active terminal tab '{}'", terminal.title),
+                shortcut: "",
+                action: CommandAction::RenameTerminal,
             },
             ContextMenuAction {
                 label: "New Terminal",
@@ -5190,6 +5204,7 @@ impl App {
                 }
             }
             PromptKind::TerminalSearch => self.terminal_search_from_prompt(prompt.input),
+            PromptKind::RenameTerminal => self.rename_terminal_from_prompt(prompt.input),
             PromptKind::GotoLine => self.goto_line_from_prompt(prompt.input),
             PromptKind::QuitDirty => {
                 if prompt.input == "quit" {
@@ -6896,6 +6911,7 @@ impl App {
                 self.message = Some("terminal cleared".to_owned());
             }
             CommandAction::RestartTerminal => self.restart_terminal()?,
+            CommandAction::RenameTerminal => self.start_terminal_rename_prompt(),
             CommandAction::NewTerminal => self.new_terminal()?,
             CommandAction::NewTerminalHere => self.new_terminal_here()?,
             CommandAction::CloseTerminal => self.close_active_terminal()?,
@@ -7393,6 +7409,24 @@ impl App {
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("terminal restarted: {title}"));
         Ok(())
+    }
+
+    fn start_terminal_rename_prompt(&mut self) {
+        let title = self.active_terminal().title.clone();
+        self.start_prompt(PromptKind::RenameTerminal, &title);
+    }
+
+    fn rename_terminal_from_prompt(&mut self, input: String) {
+        let title = input.trim();
+        if title.is_empty() {
+            self.message = Some("terminal rename requires a title".to_owned());
+            return;
+        }
+
+        let old_title = self.active_terminal().title.clone();
+        self.active_terminal_mut().title = title.to_owned();
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(format!("renamed terminal: {old_title} -> {title}"));
     }
 
     fn new_terminal(&mut self) -> Result<()> {
@@ -10242,6 +10276,13 @@ mod tests {
                 .any(|item| item.label == "Restart Terminal"
                     && item.command == Some(CommandAction::RestartTerminal))
         );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "Rename Terminal"
+                    && item.command == Some(CommandAction::RenameTerminal))
+        );
         assert!(panel.items.iter().any(|item| item.label == "Clear Terminal"
             && item.command == Some(CommandAction::ClearTerminal)));
 
@@ -11567,6 +11608,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::NewTerminalHere))
         );
+        let commands = app.command_palette_items("rename terminal");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RenameTerminal))
+        );
         let commands = app.command_palette_items("next terminal");
         assert!(
             commands
@@ -12354,6 +12401,51 @@ index 1111111..2222222 100644
         app.close_active_terminal().unwrap();
         assert_eq!(app.terminals.len(), 1);
         assert_eq!(app.active_terminal, 0);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_can_be_renamed_without_restarting_session() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-terminal-rename-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        let terminal_id = app.active_terminal().id;
+        let terminal_count = app.terminals.len();
+        let cwd = app.active_terminal().cwd.clone();
+
+        app.run_command(CommandAction::RenameTerminal).unwrap();
+        assert_eq!(
+            app.prompt.as_ref().map(|prompt| &prompt.kind),
+            Some(&PromptKind::RenameTerminal)
+        );
+        assert_eq!(
+            app.prompt.as_ref().map(|prompt| prompt.input.as_str()),
+            Some("term 1")
+        );
+
+        app.prompt.as_mut().unwrap().input = "  server logs  ".to_owned();
+        app.finish_prompt().unwrap();
+        assert_eq!(app.active_terminal().title, "server logs");
+        assert_eq!(app.active_terminal().id, terminal_id);
+        assert_eq!(app.terminals.len(), terminal_count);
+        assert_eq!(app.active_terminal().cwd, cwd);
+        assert_eq!(app.focus, FocusPanel::Terminal);
+
+        app.run_command(CommandAction::RenameTerminal).unwrap();
+        app.prompt.as_mut().unwrap().input = "   ".to_owned();
+        app.finish_prompt().unwrap();
+        assert_eq!(app.active_terminal().title, "server logs");
+        assert_eq!(
+            app.message.as_deref(),
+            Some("terminal rename requires a title")
+        );
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

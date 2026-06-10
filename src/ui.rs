@@ -1177,6 +1177,7 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::SaveAs => "save as",
         crate::app::PromptKind::SaveAsClose { .. } => "save as then close",
         crate::app::PromptKind::TerminalSearch => "find terminal",
+        crate::app::PromptKind::RenameTerminal => "rename terminal",
         crate::app::PromptKind::GotoLine => "go to line",
         crate::app::PromptKind::QuitDirty => "unsaved: type quit",
     }
