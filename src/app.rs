@@ -53,12 +53,29 @@ pub enum FocusPanel {
     Terminal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarMode {
+    Files,
+    Outline,
+}
+
+impl SidebarMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Files => "files",
+            Self::Outline => "outline",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum HoverTarget {
     #[default]
     None,
     Explorer,
     ExplorerRow(usize),
+    Outline,
+    OutlineRow(usize),
     Editor,
     EditorPane(usize),
     Tab(usize),
@@ -75,6 +92,7 @@ pub enum HoverTarget {
 #[derive(Debug, Clone, Default)]
 pub struct HitRegions {
     pub explorer_area: Option<Rect>,
+    pub outline_area: Option<Rect>,
     pub editor_area: Option<Rect>,
     pub editor_body: Option<Rect>,
     pub editor_panes: Vec<(Rect, usize, usize)>,
@@ -84,6 +102,7 @@ pub struct HitRegions {
     pub terminal_resize: Option<Rect>,
     pub terminal_bodies: Vec<(Rect, usize)>,
     pub explorer_rows: Vec<(Rect, usize)>,
+    pub outline_rows: Vec<(Rect, usize)>,
     pub tabs: Vec<(Rect, usize)>,
     pub tab_closes: Vec<(Rect, usize)>,
     pub terminal_tabs: Vec<(Rect, usize)>,
@@ -147,6 +166,20 @@ impl HitRegions {
             }
         }
 
+        for (rect, index) in &self.outline_rows {
+            if contains(*rect, x, y) {
+                return HoverTarget::OutlineRow(*index);
+            }
+        }
+
+        if self.explorer_area.is_some_and(|rect| contains(rect, x, y)) {
+            return HoverTarget::Explorer;
+        }
+
+        if self.outline_area.is_some_and(|rect| contains(rect, x, y)) {
+            return HoverTarget::Outline;
+        }
+
         for (rect, pane, _) in &self.editor_panes {
             if contains(*rect, x, y) {
                 return HoverTarget::EditorPane(*pane);
@@ -161,10 +194,6 @@ impl HitRegions {
 
         if self.terminal_input.is_some_and(|rect| contains(rect, x, y)) {
             return HoverTarget::TerminalInput;
-        }
-
-        if self.explorer_area.is_some_and(|rect| contains(rect, x, y)) {
-            return HoverTarget::Explorer;
         }
 
         if self.editor_area.is_some_and(|rect| contains(rect, x, y)) {
@@ -1982,6 +2011,9 @@ pub struct EditorLocation {
 pub enum CommandAction {
     QuickOpen,
     OpenFolder,
+    ShowExplorerFiles,
+    ShowOutline,
+    ToggleSidebarMode,
     TriggerSuggest,
     WorkspaceSearch,
     DocumentSymbols,
@@ -2311,6 +2343,9 @@ pub struct App {
     pub closed_tabs: Vec<EditorTab>,
     pub editor_split: Option<usize>,
     pub active_editor_pane: usize,
+    pub sidebar_mode: SidebarMode,
+    pub outline_selected: usize,
+    pub outline_scroll: usize,
     pub focus: FocusPanel,
     pub hover: HoverTarget,
     pub hit_regions: HitRegions,
@@ -2340,6 +2375,7 @@ pub struct App {
     pub quick_panel: Option<QuickPanel>,
     pub completion_state: Option<CompletionState>,
     pub lsp_completion_items: Vec<QuickItem>,
+    pub lsp_document_symbol_path: Option<PathBuf>,
     pub lsp_document_symbol_items: Vec<QuickItem>,
     pub lsp_workspace_symbol_query: Option<String>,
     pub lsp_workspace_symbol_items: Vec<QuickItem>,
@@ -2396,6 +2432,9 @@ impl App {
             closed_tabs: Vec::new(),
             editor_split: None,
             active_editor_pane: 0,
+            sidebar_mode: SidebarMode::Files,
+            outline_selected: 0,
+            outline_scroll: 0,
             focus: FocusPanel::Explorer,
             hover: HoverTarget::None,
             hit_regions: HitRegions::default(),
@@ -2425,6 +2464,7 @@ impl App {
             quick_panel: None,
             completion_state: None,
             lsp_completion_items: Vec::new(),
+            lsp_document_symbol_path: None,
             lsp_document_symbol_items: Vec::new(),
             lsp_workspace_symbol_query: None,
             lsp_workspace_symbol_items: Vec::new(),
@@ -2470,6 +2510,146 @@ impl App {
             &self.workspace_visible_paths,
             self.explorer_filter.as_deref(),
         )
+    }
+
+    pub fn visible_outline_items(&self) -> Vec<QuickItem> {
+        self.document_symbol_items("")
+    }
+
+    fn show_files_sidebar(&mut self) {
+        self.sidebar_mode = SidebarMode::Files;
+        self.focus = FocusPanel::Explorer;
+        self.message = Some("sidebar: files".to_owned());
+    }
+
+    fn show_outline(&mut self) -> Result<()> {
+        self.sidebar_mode = SidebarMode::Outline;
+        self.focus = FocusPanel::Explorer;
+        self.refresh_outline_symbols()?;
+        self.sync_outline_selection_to_cursor();
+        let count = self.visible_outline_items().len();
+        self.message = if count == 0 {
+            Some("outline: no symbols in active editor".to_owned())
+        } else {
+            Some(format!("outline: {count} symbol(s)"))
+        };
+        Ok(())
+    }
+
+    fn toggle_sidebar_mode(&mut self) -> Result<()> {
+        if self.sidebar_mode == SidebarMode::Outline {
+            self.show_files_sidebar();
+            Ok(())
+        } else {
+            self.show_outline()
+        }
+    }
+
+    fn refresh_outline_symbols(&mut self) -> Result<()> {
+        self.refresh_lsp_document_symbol_cache()?;
+        self.outline_selected = self
+            .outline_selected
+            .min(self.visible_outline_items().len().saturating_sub(1));
+        self.ensure_outline_selection_visible();
+        Ok(())
+    }
+
+    fn refresh_lsp_document_symbol_cache(&mut self) -> Result<()> {
+        self.lsp_document_symbol_items.clear();
+        self.lsp_document_symbol_path = self.active_tab().map(|tab| tab.path.clone());
+        if self.active_tab().is_none() {
+            return Ok(());
+        }
+        match self.lsp_document_symbol_items_for_active_tab() {
+            Ok(items) => {
+                self.lsp_document_symbol_items = items;
+            }
+            Err(error) => {
+                self.lsp_document_symbol_path = None;
+                self.last_error = Some(format!("LSP document symbols unavailable: {error}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn cached_lsp_document_symbol_items_for_active_tab(&self) -> Option<Vec<QuickItem>> {
+        let tab = self.active_tab()?;
+        if tab.dirty {
+            return None;
+        }
+        if self.lsp_document_symbol_path.as_ref()? != &tab.path {
+            return None;
+        }
+        (!self.lsp_document_symbol_items.is_empty()).then(|| self.lsp_document_symbol_items.clone())
+    }
+
+    fn move_outline_selection(&mut self, delta: isize) {
+        let len = self.visible_outline_items().len();
+        if len == 0 {
+            self.outline_selected = 0;
+            self.outline_scroll = 0;
+            return;
+        }
+        self.outline_selected = add_signed(self.outline_selected, delta).min(len.saturating_sub(1));
+        self.ensure_outline_selection_visible();
+    }
+
+    fn set_outline_selection(&mut self, index: usize) {
+        let len = self.visible_outline_items().len();
+        if len == 0 {
+            self.outline_selected = 0;
+            self.outline_scroll = 0;
+            return;
+        }
+        self.outline_selected = index.min(len - 1);
+        self.ensure_outline_selection_visible();
+    }
+
+    fn ensure_outline_selection_visible(&mut self) {
+        let height = self.explorer_height.max(1);
+        if self.outline_selected < self.outline_scroll {
+            self.outline_scroll = self.outline_selected;
+        } else if self.outline_selected >= self.outline_scroll + height {
+            self.outline_scroll = self.outline_selected.saturating_sub(height - 1);
+        }
+    }
+
+    fn sync_outline_selection_to_cursor(&mut self) {
+        let Some(tab) = self.active_tab() else {
+            self.outline_selected = 0;
+            self.outline_scroll = 0;
+            return;
+        };
+        let cursor_line = tab.cursor_line;
+        let items = self.visible_outline_items();
+        let Some((index, _)) = items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| item.line.map(|line| (index, line)))
+            .take_while(|(_, line)| *line <= cursor_line)
+            .last()
+        else {
+            self.set_outline_selection(0);
+            return;
+        };
+        self.set_outline_selection(index);
+    }
+
+    fn jump_to_selected_outline_symbol(&mut self) {
+        self.jump_to_outline_symbol(self.outline_selected);
+    }
+
+    fn jump_to_outline_symbol(&mut self, index: usize) {
+        let Some(item) = self.visible_outline_items().get(index).cloned() else {
+            self.message = Some("outline has no symbol to open".to_owned());
+            return;
+        };
+        self.outline_selected = index;
+        self.ensure_outline_selection_visible();
+        let label = item.label.clone();
+        self.open_quick_item(item, None);
+        self.sidebar_mode = SidebarMode::Outline;
+        self.message = Some(format!("outline jumped to {label}"));
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -2651,6 +2831,9 @@ impl App {
             }
             KeyCode::Char('q') if self.focus != FocusPanel::Terminal => self.request_quit(),
             _ => match self.focus {
+                FocusPanel::Explorer if self.sidebar_mode == SidebarMode::Outline => {
+                    self.handle_outline_key(key)?
+                }
                 FocusPanel::Explorer => self.handle_explorer_key(key)?,
                 FocusPanel::Editor => self.handle_editor_key(key)?,
                 FocusPanel::Terminal => self.handle_terminal_key(key)?,
@@ -2748,6 +2931,14 @@ impl App {
                 self.activate_editor_target(&target);
                 self.editor_selection_dragging = false;
                 self.toggle_editor_cursor_from_mouse();
+            }
+            MouseEventKind::Down(MouseButton::Left)
+                if matches!(target, HoverTarget::OutlineRow(_)) =>
+            {
+                if let HoverTarget::OutlineRow(index) = target {
+                    self.focus = FocusPanel::Explorer;
+                    self.jump_to_outline_symbol(index);
+                }
             }
             MouseEventKind::Down(MouseButton::Left)
                 if matches!(target, HoverTarget::ExplorerRow(_))
@@ -3039,6 +3230,17 @@ impl App {
                 self.focus = FocusPanel::Explorer;
                 self.open_quick_panel(QuickPanelKind::ExplorerContextMenu)?;
             }
+            HoverTarget::OutlineRow(index) => {
+                self.outline_selected =
+                    index.min(self.visible_outline_items().len().saturating_sub(1));
+                self.ensure_outline_selection_visible();
+                self.focus = FocusPanel::Explorer;
+                self.open_quick_panel(QuickPanelKind::EditorContextMenu)?;
+            }
+            HoverTarget::Outline => {
+                self.focus = FocusPanel::Explorer;
+                self.open_quick_panel(QuickPanelKind::EditorContextMenu)?;
+            }
             HoverTarget::Editor | HoverTarget::EditorPane(_) => {
                 self.activate_editor_target(&target);
                 self.focus = FocusPanel::Editor;
@@ -3074,6 +3276,9 @@ impl App {
             HoverTarget::Explorer | HoverTarget::ExplorerRow(_) => {
                 self.focus = FocusPanel::Explorer;
             }
+            HoverTarget::Outline | HoverTarget::OutlineRow(_) => {
+                self.focus = FocusPanel::Explorer;
+            }
             HoverTarget::Tab(_)
             | HoverTarget::TabClose(_)
             | HoverTarget::Editor
@@ -3100,6 +3305,8 @@ impl App {
                 self.set_explorer_anchor_to_current();
                 self.open_or_toggle_selected()?;
             }
+            HoverTarget::OutlineRow(index) => self.jump_to_outline_symbol(index),
+            HoverTarget::Outline => {}
             HoverTarget::Tab(index) if index < self.tabs.len() => {
                 self.active_tab = Some(index);
             }
@@ -3161,8 +3368,33 @@ impl App {
             KeyCode::Char('v') => self.compare_selected_files()?,
             KeyCode::Char('o') => self.reveal_active_file()?,
             KeyCode::Char('O') => self.open_selected_folder_as_workspace()?,
+            KeyCode::Char('m') => self.show_outline()?,
             KeyCode::Char('t') => self.new_terminal_here()?,
             KeyCode::F(5) => self.run_selected_explorer_file_in_terminal()?,
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn handle_outline_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Up => self.move_outline_selection(-1),
+            KeyCode::Down => self.move_outline_selection(1),
+            KeyCode::PageUp => self.move_outline_selection(-(self.explorer_height as isize)),
+            KeyCode::PageDown => self.move_outline_selection(self.explorer_height as isize),
+            KeyCode::Home => self.set_outline_selection(0),
+            KeyCode::End => {
+                let last = self.visible_outline_items().len().saturating_sub(1);
+                self.set_outline_selection(last);
+            }
+            KeyCode::Enter => self.jump_to_selected_outline_symbol(),
+            KeyCode::Char('m') => self.show_files_sidebar(),
+            KeyCode::Char('r') => self.refresh_outline_symbols()?,
+            KeyCode::Char('o') => self.reveal_active_file()?,
+            KeyCode::Char('O') => {
+                self.open_quick_panel(QuickPanelKind::DocumentSymbols)?;
+            }
             _ => {}
         }
 
@@ -4509,6 +4741,7 @@ impl App {
     fn scroll_target(&mut self, target: HoverTarget, amount: isize) {
         match target {
             HoverTarget::Explorer | HoverTarget::ExplorerRow(_) => self.scroll_explorer(amount),
+            HoverTarget::Outline | HoverTarget::OutlineRow(_) => self.scroll_outline(amount),
             HoverTarget::Editor
             | HoverTarget::EditorPane(_)
             | HoverTarget::Tab(_)
@@ -4521,6 +4754,9 @@ impl App {
             | HoverTarget::TerminalNew
             | HoverTarget::TerminalResize => self.scroll_terminal(amount),
             HoverTarget::None => match self.focus {
+                FocusPanel::Explorer if self.sidebar_mode == SidebarMode::Outline => {
+                    self.scroll_outline(amount)
+                }
                 FocusPanel::Explorer => self.scroll_explorer(amount),
                 FocusPanel::Editor => self.scroll_editor(amount),
                 FocusPanel::Terminal => self.scroll_terminal(amount),
@@ -4532,6 +4768,13 @@ impl App {
         let len = self.visible_nodes().len();
         let max_scroll = len.saturating_sub(self.explorer_height.max(1));
         self.explorer.scroll = add_signed(self.explorer.scroll, amount).min(max_scroll);
+    }
+
+    fn scroll_outline(&mut self, amount: isize) {
+        let len = self.visible_outline_items().len();
+        let max_scroll = len.saturating_sub(self.explorer_height.max(1));
+        self.outline_scroll = add_signed(self.outline_scroll, amount).min(max_scroll);
+        self.outline_selected = self.outline_selected.min(len.saturating_sub(1));
     }
 
     fn scroll_editor(&mut self, amount: isize) {
@@ -5068,6 +5311,24 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Switch the current workspace root to an existing folder",
             shortcut: "",
             action: CommandAction::OpenFolder,
+        },
+        CommandSpec {
+            label: "Show Explorer Files",
+            detail: "Show the workspace file tree in the left sidebar",
+            shortcut: "Sidebar m",
+            action: CommandAction::ShowExplorerFiles,
+        },
+        CommandSpec {
+            label: "Show Outline",
+            detail: "Show active-file symbols in the left sidebar and jump by clicking rows",
+            shortcut: "Sidebar m",
+            action: CommandAction::ShowOutline,
+        },
+        CommandSpec {
+            label: "Toggle Sidebar Mode",
+            detail: "Switch the left sidebar between file explorer and active-file outline",
+            shortcut: "Sidebar m",
+            action: CommandAction::ToggleSidebarMode,
         },
         CommandSpec {
             label: "Trigger Suggest",
@@ -5847,9 +6108,7 @@ impl App {
             self.lsp_completion_items.clear();
         }
         if kind == QuickPanelKind::DocumentSymbols {
-            self.lsp_document_symbol_items = self.lsp_document_symbol_items_for_active_tab()?;
-        } else {
-            self.lsp_document_symbol_items.clear();
+            self.refresh_lsp_document_symbol_cache()?;
         }
         self.lsp_workspace_symbol_query = None;
         self.lsp_workspace_symbol_items.clear();
@@ -6847,8 +7106,8 @@ impl App {
     }
 
     fn document_symbol_items(&self, query: &str) -> Vec<QuickItem> {
-        if !self.lsp_document_symbol_items.is_empty() {
-            return filter_existing_quick_items(self.lsp_document_symbol_items.clone(), query)
+        if let Some(items) = self.cached_lsp_document_symbol_items_for_active_tab() {
+            return filter_existing_quick_items(items, query)
                 .into_iter()
                 .take(MAX_QUICK_ITEMS)
                 .collect();
@@ -10858,6 +11117,9 @@ impl App {
         match command {
             CommandAction::QuickOpen => self.open_quick_panel(QuickPanelKind::OpenFile)?,
             CommandAction::OpenFolder => self.start_open_folder_prompt(),
+            CommandAction::ShowExplorerFiles => self.show_files_sidebar(),
+            CommandAction::ShowOutline => self.show_outline()?,
+            CommandAction::ToggleSidebarMode => self.toggle_sidebar_mode()?,
             CommandAction::TriggerSuggest => self.trigger_suggest()?,
             CommandAction::WorkspaceSearch => {
                 self.open_quick_panel(QuickPanelKind::WorkspaceSearch)?
@@ -21521,6 +21783,88 @@ src/lib.rs:3:1: note: trailing note
     }
 
     #[test]
+    fn sidebar_outline_lists_symbols_and_jumps_with_keyboard() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-sidebar-outline-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("main.rs"),
+            "pub struct App {}\nimpl App {\n    pub fn run(&self) {}\n}\nfn helper() {}\n",
+        )
+        .unwrap();
+        let root = root.canonicalize().unwrap();
+        let path = root.join("main.rs");
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.run_command(CommandAction::ShowOutline).unwrap();
+
+        assert_eq!(app.sidebar_mode, SidebarMode::Outline);
+        assert_eq!(app.focus, FocusPanel::Explorer);
+        let items = app.visible_outline_items();
+        let run_index = items
+            .iter()
+            .position(|item| item.label == "run")
+            .expect("run symbol");
+        app.set_outline_selection(run_index);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.sidebar_mode, SidebarMode::Outline);
+        assert_eq!(app.focus, FocusPanel::Editor);
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (2, 11));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sidebar_outline_mouse_click_jumps_and_hover_targets_rows() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-sidebar-outline-mouse-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("main.rs"),
+            "fn first() {}\nfn second() {}\nfn third() {}\n",
+        )
+        .unwrap();
+        let root = root.canonicalize().unwrap();
+        let path = root.join("main.rs");
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.run_command(CommandAction::ShowOutline).unwrap();
+        let second = app
+            .visible_outline_items()
+            .iter()
+            .position(|item| item.label == "second")
+            .expect("second symbol");
+        app.hit_regions.outline_rows = vec![(Rect::new(0, 1, 40, 1), second)];
+        app.hit_regions.outline_area = Some(Rect::new(0, 0, 40, 8));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        assert_eq!(app.hover, HoverTarget::OutlineRow(second));
+        assert_eq!(app.sidebar_mode, SidebarMode::Outline);
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (1, 3));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn document_symbol_panel_prefers_cached_lsp_symbols() {
         let root = std::env::temp_dir().join(format!(
             "tscode-test-lsp-document-symbols-{}",
@@ -21528,11 +21872,17 @@ src/lib.rs:3:1: note: trailing note
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("main.rs"),
+            "fn heuristic_only() {}\nfn semantic_run() {}\n",
+        )
+        .unwrap();
+        let root = root.canonicalize().unwrap();
         let path = root.join("main.rs");
-        fs::write(&path, "fn heuristic_only() {}\nfn semantic_run() {}\n").unwrap();
 
         let mut app = App::new(root.clone()).unwrap();
         app.open_file(&path);
+        app.lsp_document_symbol_path = Some(path.clone());
         app.lsp_document_symbol_items = vec![QuickItem {
             label: "semantic_run".to_owned(),
             detail: "LSP mock-symbols  line 2  function".to_owned(),
@@ -21550,6 +21900,42 @@ src/lib.rs:3:1: note: trailing note
 
         let empty = app.document_symbol_items("heuristic");
         assert!(empty.is_empty());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn document_symbol_cache_is_ignored_for_other_active_files() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-lsp-document-symbol-cache-path-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("one.rs"), "fn one() {}\n").unwrap();
+        fs::write(root.join("two.rs"), "fn two() {}\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let one = root.join("one.rs");
+        let two = root.join("two.rs");
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&one);
+        app.lsp_document_symbol_path = Some(one.clone());
+        app.lsp_document_symbol_items = vec![QuickItem {
+            label: "semantic_one".to_owned(),
+            detail: "LSP mock-symbols  line 1  function".to_owned(),
+            path: one.clone(),
+            line: Some(0),
+            col: Some(3),
+            preview: Some("fn one() {}".to_owned()),
+            command: None,
+        }];
+
+        app.open_file(&two);
+        let items = app.visible_outline_items();
+        assert!(items.iter().any(|item| item.label == "two"));
+        assert!(!items.iter().any(|item| item.label == "semantic_one"));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

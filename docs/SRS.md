@@ -116,6 +116,10 @@ When ignored/generated entries are hidden, the explorer, quick open, workspace s
 
 Explorer `v`, the command palette, and the explorer context menu shall include a Compare Selected Files action. The action shall require exactly two selected regular files, read their current on-disk contents, reject binary, non-UTF-8, or oversized inputs without modifying either file, and open a read-only editor tab containing a unified diff. Repeating the same comparison shall reuse and refresh the same synthetic compare tab. Save, edit, replace, format, rename, and workspace mutation commands shall treat the compare tab as read-only.
 
+### R-118 Sidebar Outline
+
+The left sidebar shall support Files and Outline modes. Files mode shall show the real filesystem explorer. Outline mode shall show symbols for the active editor buffer. Pressing `m` while the sidebar is focused and command palette actions Show Outline, Show Explorer Files, and Toggle Sidebar Mode shall switch modes. Outline mode shall request installed language-server document symbols when available and shall fall back to local active-buffer symbol extraction when the language server is absent, cannot start, returns no symbols, or the active buffer is dirty/stale relative to a cached symbol response. Outline rows shall visually highlight on mouse hover, support wheel and keyboard scrolling, move selection with arrow and page keys, and jump the editor cursor to the selected symbol on mouse click or `Enter` while preserving Outline mode.
+
 ## 4. Editor Requirements
 
 ### R-201 Tabs

@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     app::{
         App, ClipboardAction, ExternalFileState, FocusPanel, HoverTarget, ProblemSeverity,
-        editor_visual_rows,
+        SidebarMode, editor_visual_rows,
     },
     fs_tree::VisibleNode,
     lsp::{LspDocumentHighlight, LspDocumentHighlightKind},
@@ -54,7 +54,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Length(32), Constraint::Min(30)])
         .split(root_chunks[1]);
 
-    draw_explorer(frame, app, body[0]);
+    match app.sidebar_mode {
+        SidebarMode::Files => draw_explorer(frame, app, body[0]),
+        SidebarMode::Outline => draw_outline(frame, app, body[0]),
+    }
 
     if app.terminal_maximized {
         draw_terminal(frame, app, body[1]);
@@ -77,8 +80,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn draw_title(frame: &mut Frame, app: &App, area: Rect) {
     let text = format!(
-        " tscode  {}  focus:{} ",
+        " tscode  {}  sidebar:{}  focus:{} ",
         app.root.display(),
+        app.sidebar_mode.label(),
         focus_name(app.focus)
     );
     frame.render_widget(
@@ -301,6 +305,60 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
         let prefix = format!("{selection_marker}{indent}{marker} {}", node.name);
         let suffix = explorer_node_suffix(node, app.git_status_marker(&node.path, node.is_dir));
         let text = fit_with_suffix(&prefix, &suffix, row_area.width as usize);
+        frame.render_widget(Paragraph::new(text).style(style), row_area);
+    }
+}
+
+fn draw_outline(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.hit_regions.outline_area = Some(area);
+    let focused = app.focus == FocusPanel::Explorer;
+    let active = app
+        .active_tab()
+        .map(|tab| tab.title.clone())
+        .unwrap_or_else(|| "no file".to_owned());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(
+            " Outline  m files  r refresh  O quick  {} ",
+            truncate_width(&active, 24)
+        ))
+        .border_style(border_style(focused));
+    let inner = block.inner(area);
+    frame.render_widget(block.style(Style::default().bg(PANEL_BG)), area);
+
+    app.explorer_height = inner.height as usize;
+    let items = app.visible_outline_items();
+    let max_scroll = items.len().saturating_sub(app.explorer_height.max(1));
+    app.outline_scroll = app.outline_scroll.min(max_scroll);
+    app.outline_selected = app.outline_selected.min(items.len().saturating_sub(1));
+
+    if items.is_empty() {
+        frame.render_widget(
+            Paragraph::new("Open a source file to see symbols.")
+                .style(Style::default().fg(MUTED).bg(PANEL_BG)),
+            inner,
+        );
+        return;
+    }
+
+    for (row, item) in items
+        .iter()
+        .enumerate()
+        .skip(app.outline_scroll)
+        .take(inner.height as usize)
+    {
+        let y = inner.y + (row - app.outline_scroll) as u16;
+        let row_area = Rect::new(inner.x, y, inner.width, 1);
+        app.hit_regions.outline_rows.push((row_area, row));
+        let selected = focused && app.outline_selected == row;
+        let hovered = app.hover == HoverTarget::OutlineRow(row);
+        let style = row_style(selected, hovered);
+        let line = item
+            .line
+            .map(|line| format!(" {}", line + 1))
+            .unwrap_or_default();
+        let prefix = format!("  {}  {}", item.label, item.detail);
+        let text = fit_with_suffix(&prefix, &line, row_area.width as usize);
         frame.render_widget(Paragraph::new(text).style(style), row_area);
     }
 }
@@ -1480,6 +1538,8 @@ fn hover_name(hover: &HoverTarget) -> String {
         HoverTarget::None => "none".to_owned(),
         HoverTarget::Explorer => "explorer".to_owned(),
         HoverTarget::ExplorerRow(index) => format!("explorer row {index}"),
+        HoverTarget::Outline => "outline".to_owned(),
+        HoverTarget::OutlineRow(index) => format!("outline row {index}"),
         HoverTarget::Editor => "editor".to_owned(),
         HoverTarget::EditorPane(index) => format!("editor pane {index}"),
         HoverTarget::Tab(index) => format!("tab {index}"),

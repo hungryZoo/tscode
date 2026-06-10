@@ -98,6 +98,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can search text across the workspace, including unsaved edits in open buffers, see file/line previews, and jump to a matching location.
 - As a developer, I can list functions, types, classes, interfaces, modules, and similar code symbols in the active file or across the workspace, then jump to the selected symbol.
 - As a developer, I can trigger code suggestions at the editor cursor, choose from installed language-server suggestions plus workspace symbols, identifiers, unsaved open-buffer words, and file-type keywords, and insert the selected suggestion as an undoable edit.
+- As a developer, I can switch the left sidebar from the file tree to an active-file Outline, scroll or hover that symbol list, and click or press `Enter` on a symbol to jump in the editor.
 - As a developer, I can hover a symbol in the editor with the mouse and see lightweight definition/reference information without moving the cursor or opening a panel.
 - As a developer, I can run Show Hover from the command palette or editor context menu and see hover documentation from an installed language server without leaving the terminal.
 - As a developer, I can request Signature Help at the editor cursor and see installed-language-server call signatures plus active parameter documentation without leaving the terminal.
@@ -175,6 +176,7 @@ Keyboard fallback:
 - Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, compare selected files, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
 - Explorer `s`, the context menu, and the command palette change sorting between name, type, modified time, and size while preserving folders-first grouping
 - Explorer `t` opens a new integrated terminal in the selected folder or selected file's parent folder
+- Sidebar `m` and the command palette switch the left sidebar between Files and Outline; Outline rows highlight on hover, scroll under the wheel, and activate on click or `Enter`
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the terminal clipboard
 - Explorer `/`, `.`, and `i` perform visible-tree filtering, dotfile visibility toggling, and ignored/generated-entry visibility toggling backed by `.gitignore`, `.ignore`, global Git ignore rules, and built-in generated-folder names
 - `Ctrl-P` opens the quick file picker
