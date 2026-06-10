@@ -912,7 +912,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 "No language-server references match the current query."
             }
             crate::app::QuickPanelKind::Problems => {
-                "No problems collected. Run Workspace Check from the command palette."
+                "No problems collected. Run Workspace Check or Run LSP Diagnostics from the command palette."
             }
             crate::app::QuickPanelKind::SourceControl => {
                 "No Git changes found, or this workspace is not inside a Git repository."

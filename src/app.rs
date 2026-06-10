@@ -1729,6 +1729,7 @@ pub enum CommandAction {
     RenameSymbol,
     WorkspaceReplace,
     RunWorkspaceCheck,
+    RunLspDiagnostics,
     ShowProblems,
     ShowSourceControl,
     RunTask,
@@ -3820,8 +3821,14 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::RunWorkspaceCheck,
         },
         CommandSpec {
+            label: "Run LSP Diagnostics",
+            detail: "Ask the installed language server for diagnostics on the active editor buffer",
+            shortcut: "",
+            action: CommandAction::RunLspDiagnostics,
+        },
+        CommandSpec {
             label: "Show Problems",
-            detail: "Show the last collected workspace diagnostics",
+            detail: "Show the last collected workspace or language-server diagnostics",
             shortcut: "",
             action: CommandAction::ShowProblems,
         },
@@ -4734,6 +4741,12 @@ impl App {
                 detail: "Open LSP, workspace symbol, and keyword suggestions".to_owned(),
                 shortcut: "Ctrl-Space",
                 action: CommandAction::TriggerSuggest,
+            },
+            ContextMenuAction {
+                label: "Run LSP Diagnostics",
+                detail: "Collect language-server diagnostics for this buffer".to_owned(),
+                shortcut: "",
+                action: CommandAction::RunLspDiagnostics,
             },
             ContextMenuAction {
                 label: "Format Document",
@@ -6996,6 +7009,29 @@ impl App {
         Ok(())
     }
 
+    fn run_lsp_diagnostics(&mut self) -> Result<()> {
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            self.message = Some("no language server configured for active editor".to_owned());
+            return Ok(());
+        };
+        let server = lsp::server_name_for_path(&position.path).unwrap_or_else(|| "LSP".to_owned());
+        self.message = Some(format!("running LSP diagnostics via {server}"));
+
+        let diagnostics = lsp::diagnostics(&position)?;
+        self.problems = lsp_diagnostics_to_problem_items(&self.root, diagnostics);
+        let problem_count = self.problems.len();
+        self.open_quick_panel(QuickPanelKind::Problems)?;
+
+        self.message = if problem_count == 0 {
+            Some(format!("LSP diagnostics via {server}: no problems"))
+        } else {
+            Some(format!(
+                "LSP diagnostics via {server}: {problem_count} problem(s)"
+            ))
+        };
+        Ok(())
+    }
+
     fn select_all_active_tab(&mut self) {
         if let Some(tab) = self.active_tab_mut() {
             tab.select_all();
@@ -7758,6 +7794,7 @@ impl App {
             CommandAction::RenameSymbol => self.start_rename_symbol_prompt(),
             CommandAction::WorkspaceReplace => self.start_workspace_replace_prompt(),
             CommandAction::RunWorkspaceCheck => self.run_workspace_check()?,
+            CommandAction::RunLspDiagnostics => self.run_lsp_diagnostics()?,
             CommandAction::ShowProblems => self.open_quick_panel(QuickPanelKind::Problems)?,
             CommandAction::ShowSourceControl => {
                 self.refresh_git_status();
@@ -10756,6 +10793,46 @@ fn parse_problem_items(output: &str, root: &Path) -> Vec<QuickItem> {
     items
 }
 
+fn lsp_diagnostics_to_problem_items(
+    root: &Path,
+    diagnostics: Vec<lsp::LspDiagnostic>,
+) -> Vec<QuickItem> {
+    diagnostics
+        .into_iter()
+        .take(MAX_QUICK_ITEMS)
+        .map(|diagnostic| {
+            let relative = relative_path(root, &diagnostic.path);
+            let line = diagnostic.line + 1;
+            let col = diagnostic.col + 1;
+            let mut source = format!("LSP {}", diagnostic.server);
+            if let Some(name) = diagnostic.source.as_deref().filter(|name| !name.is_empty()) {
+                source.push_str(" / ");
+                source.push_str(name);
+            }
+            if let Some(code) = diagnostic.code.as_deref().filter(|code| !code.is_empty()) {
+                source.push_str(" [");
+                source.push_str(code);
+                source.push(']');
+            }
+            QuickItem {
+                label: format!(
+                    "{} {}:{}:{}",
+                    diagnostic.severity.label(),
+                    relative,
+                    line,
+                    col
+                ),
+                detail: diagnostic.message,
+                path: diagnostic.path,
+                line: Some(diagnostic.line),
+                col: Some(diagnostic.col),
+                preview: Some(source),
+                command: None,
+            }
+        })
+        .collect()
+}
+
 fn parse_problem_line(line: &str, root: &Path) -> Option<QuickItem> {
     for (colon_byte, _) in line.match_indices(':') {
         let path_part = clean_problem_path_part(&line[..colon_byte]);
@@ -11332,6 +11409,12 @@ mod tests {
         assert_eq!(app.focus, FocusPanel::Editor);
         let panel = app.quick_panel.as_ref().unwrap();
         assert_eq!(panel.kind, QuickPanelKind::EditorContextMenu);
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RunLspDiagnostics))
+        );
         let toggle_index = panel
             .items
             .iter()
@@ -12712,6 +12795,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::RunWorkspaceCheck))
         );
+        let commands = app.command_palette_items("lsp diagnostics");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RunLspDiagnostics))
+        );
         let commands = app.command_palette_items("show problems");
         assert!(
             commands
@@ -14023,6 +14112,45 @@ SyntaxError: invalid syntax
         assert_eq!(items[1].detail, "undefined: missing");
         assert_eq!(items[2].label, "error bad.py:1:1");
         assert_eq!(items[2].detail, "invalid syntax");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lsp_diagnostics_map_to_problem_items_for_existing_gutter_ui() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-lsp-problems-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn broken() {\n    missing();\n}\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let lib = root.join("src/lib.rs");
+
+        let items = lsp_diagnostics_to_problem_items(
+            &root,
+            vec![lsp::LspDiagnostic {
+                path: lib.clone(),
+                line: 1,
+                col: 4,
+                severity: lsp::LspDiagnosticSeverity::Error,
+                message: "cannot find function `missing`".to_owned(),
+                source: Some("mock-checker".to_owned()),
+                code: Some("E0425".to_owned()),
+                server: "mock-lsp".to_owned(),
+            }],
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "error src/lib.rs:2:5");
+        assert_eq!(items[0].detail, "cannot find function `missing`");
+        assert_eq!(items[0].path, lib);
+        assert_eq!(items[0].line, Some(1));
+        assert_eq!(items[0].col, Some(4));
+        assert_eq!(
+            items[0].preview.as_deref(),
+            Some("LSP mock-lsp / mock-checker [E0425]")
+        );
 
         let _ = fs::remove_dir_all(root);
     }

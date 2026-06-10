@@ -90,7 +90,8 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can rename the symbol under the editor cursor across workspace files while open buffers receive undoable edits and longer identifiers with the same prefix are left intact.
 - As a developer, I can replace text across real workspace files while clean open tabs stay synchronized and dirty open buffers are not overwritten.
 - As a developer, I can run a workspace check for supported project types, see compiler diagnostics in a Problems panel, filter the collected diagnostics, and jump directly to the source file and line.
-- As a developer, I can see collected compiler diagnostics marked directly in the editor gutter and status bar while editing the affected file.
+- As a developer, I can run language-server diagnostics for the active in-memory buffer from the command palette or editor context menu and inspect the results in the Problems panel.
+- As a developer, I can see collected compiler or language-server diagnostics marked directly in the editor gutter and status bar while editing the affected file.
 - As a developer, I can run detected project tasks from `.vscode/tasks.json`, `package.json` scripts, Cargo, Make, Go, and Python projects in a new integrated PTY terminal.
 - As a developer, I can send the current editor selection, or the current line when nothing is selected, directly into the integrated terminal shell.
 - As a developer, I can clean up trailing spaces and tabs in the active file through the command palette, save the cleaned file, and undo the cleanup if needed.
@@ -156,9 +157,10 @@ Keyboard fallback:
 - `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, `Ctrl-R`, and `F2` provide document symbols, workspace symbols, LSP-first go-to-definition, LSP-first find-references, and LSP-first semantic rename code navigation
 - `Ctrl-Space` or the command palette opens code suggestions for the identifier at the editor cursor, including installed language-server candidates when available
 - The command palette and editor context menu provide Show Hover for installed language-server hover documentation
+- The command palette and editor context menu provide Run LSP Diagnostics for active-buffer language-server diagnostics
 - Mouse hover over an editor identifier shows lightweight symbol definition/reference information
 - Editor gutter fold markers, `Alt-[`, `Alt-]`, the command palette, and the editor context menu provide code fold/unfold actions
-- The command palette provides Run Workspace Check and Show Problems actions for project diagnostics
+- The command palette provides Run Workspace Check, Run LSP Diagnostics, and Show Problems actions for project diagnostics
 - The command palette provides a Source Control action for Git changed files and diff hunks
 - `Ctrl-Shift-B` or the command palette opens Run Task for detected workspace tasks
 - `F2` or the command palette asks the installed language server for semantic rename first and falls back to renaming the identifier across visible workspace text files

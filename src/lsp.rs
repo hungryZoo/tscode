@@ -54,6 +54,39 @@ pub struct LspCompletion {
     pub server: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspDiagnosticSeverity {
+    Error,
+    Warning,
+    Information,
+    Hint,
+    Unknown,
+}
+
+impl LspDiagnosticSeverity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Information => "note",
+            Self::Hint => "help",
+            Self::Unknown => "problem",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspDiagnostic {
+    pub path: PathBuf,
+    pub line: usize,
+    pub col: usize,
+    pub severity: LspDiagnosticSeverity,
+    pub message: String,
+    pub source: Option<String>,
+    pub code: Option<String>,
+    pub server: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspWorkspaceEdit {
     pub edits: Vec<LspTextEdit>,
@@ -108,6 +141,13 @@ pub fn completions(position: &DocumentPosition) -> Result<Vec<LspCompletion>> {
         return Ok(Vec::new());
     };
     request_completions_with_config(position, &config)
+}
+
+pub fn diagnostics(position: &DocumentPosition) -> Result<Vec<LspDiagnostic>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(Vec::new());
+    };
+    request_diagnostics_with_config(position, &config)
 }
 
 pub fn rename(position: &DocumentPosition, new_name: &str) -> Result<Option<LspWorkspaceEdit>> {
@@ -192,6 +232,98 @@ fn request_completions_with_config(
         return Ok(Vec::new());
     };
     Ok(parse_completions(response.result.as_ref(), &config.name))
+}
+
+fn request_diagnostics_with_config(
+    position: &DocumentPosition,
+    config: &LanguageServerConfig,
+) -> Result<Vec<LspDiagnostic>> {
+    let Ok(mut process) = spawn_lsp(config, &position.root) else {
+        return Ok(Vec::new());
+    };
+
+    let deadline = Instant::now() + request_timeout();
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "rootUri": path_to_file_uri(&position.root),
+            "capabilities": {},
+            "clientInfo": {
+                "name": "tscode",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }
+    });
+    if send_message(&mut process.stdin, &initialize).is_err() {
+        process.kill();
+        return Ok(Vec::new());
+    }
+    if next_response(&process.messages, 1, deadline).is_none() {
+        process.kill();
+        return Ok(Vec::new());
+    }
+
+    let initialized = json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    });
+    let did_open = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": path_to_file_uri(&position.path),
+                "languageId": config.language_id,
+                "version": 1,
+                "text": position.text
+            }
+        }
+    });
+
+    if send_message(&mut process.stdin, &initialized).is_err()
+        || send_message(&mut process.stdin, &did_open).is_err()
+    {
+        process.kill();
+        return Ok(Vec::new());
+    }
+
+    let mut diagnostics = Vec::new();
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match process.messages.recv_timeout(remaining) {
+            Ok(Ok(value)) => {
+                if let Some(items) = parse_publish_diagnostics(&value, position, &config.name) {
+                    diagnostics = items;
+                    if !diagnostics.is_empty() {
+                        break;
+                    }
+                }
+            }
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+
+    let shutdown = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "shutdown",
+        "params": null
+    });
+    let exit = json!({
+        "jsonrpc": "2.0",
+        "method": "exit",
+        "params": null
+    });
+    let _ = send_message(&mut process.stdin, &shutdown);
+    let _ = next_response(&process.messages, 3, Instant::now() + SHUTDOWN_TIMEOUT);
+    let _ = send_message(&mut process.stdin, &exit);
+    process.finish();
+
+    Ok(diagnostics)
 }
 
 fn request_rename_with_config(
@@ -664,6 +796,69 @@ fn parse_completions(result: Option<&Value>, server: &str) -> Vec<LspCompletion>
         .collect()
 }
 
+fn parse_publish_diagnostics(
+    value: &Value,
+    position: &DocumentPosition,
+    server: &str,
+) -> Option<Vec<LspDiagnostic>> {
+    if value.get("method").and_then(Value::as_str) != Some("textDocument/publishDiagnostics") {
+        return None;
+    }
+
+    let params = value.get("params")?;
+    let uri = params.get("uri").and_then(Value::as_str)?;
+    let path = file_uri_to_path(uri)?;
+    let diagnostics = params.get("diagnostics").and_then(Value::as_array)?;
+    let items = diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            let range = diagnostic.get("range")?;
+            let start = range.get("start")?;
+            let line = start.get("line")?.as_u64()? as usize;
+            let utf16_col = start.get("character")?.as_u64()? as usize;
+            let message = diagnostic.get("message")?.as_str()?.trim();
+            if message.is_empty() {
+                return None;
+            }
+            let line_text = line_text_for_path(&path, line, position).unwrap_or_default();
+            Some(LspDiagnostic {
+                path: path.clone(),
+                line,
+                col: utf16_col_to_char_col(&line_text, utf16_col),
+                severity: LspDiagnosticSeverity::from_lsp_value(diagnostic.get("severity")),
+                message: message.to_owned(),
+                source: diagnostic
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                code: diagnostic_code(diagnostic.get("code")),
+                server: server.to_owned(),
+            })
+        })
+        .collect::<Vec<_>>();
+    Some(items)
+}
+
+impl LspDiagnosticSeverity {
+    fn from_lsp_value(value: Option<&Value>) -> Self {
+        match value.and_then(Value::as_u64) {
+            Some(1) => Self::Error,
+            Some(2) => Self::Warning,
+            Some(3) => Self::Information,
+            Some(4) => Self::Hint,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+fn diagnostic_code(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
 fn parse_workspace_edit(result: Option<&Value>, server: &str) -> Option<LspWorkspaceEdit> {
     let result = result?;
     if result.is_null() {
@@ -911,6 +1106,154 @@ mod tests {
         assert_eq!(parsed.edits[1].path, file_b);
         assert_eq!(parsed.edits[1].end_line, 2);
         assert_eq!(parsed.edits[1].new_text, "renamed");
+    }
+
+    #[test]
+    fn parses_publish_diagnostics_notification() {
+        let root = env::temp_dir().join(format!("tscode-lsp-diagnostics-{}", std::process::id()));
+        let file = root.join("main.rs");
+        let text = "fn main() {\n    let icon = \"🦀\";\n}\n";
+        let position = DocumentPosition {
+            root,
+            path: file.clone(),
+            text: text.to_owned(),
+            line: 1,
+            col: 0,
+        };
+        let value = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": path_to_file_uri(&file),
+                "diagnostics": [
+                    {
+                        "range": {
+                            "start": {
+                                "line": 1,
+                                "character": "    let icon = \"🦀\"".encode_utf16().count()
+                            },
+                            "end": { "line": 1, "character": 99 }
+                        },
+                        "severity": 1,
+                        "source": "mock",
+                        "code": 123,
+                        "message": "expected semicolon"
+                    },
+                    {
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": 0, "character": 2 }
+                        },
+                        "severity": 4,
+                        "message": "hint text"
+                    }
+                ]
+            }
+        });
+
+        let diagnostics =
+            parse_publish_diagnostics(&value, &position, "mock-lsp").expect("diagnostics");
+        assert_eq!(diagnostics.len(), 2);
+        assert_eq!(diagnostics[0].path, file);
+        assert_eq!(diagnostics[0].line, 1);
+        assert_eq!(diagnostics[0].col, "    let icon = \"🦀\"".chars().count());
+        assert_eq!(diagnostics[0].severity, LspDiagnosticSeverity::Error);
+        assert_eq!(diagnostics[0].source.as_deref(), Some("mock"));
+        assert_eq!(diagnostics[0].code.as_deref(), Some("123"));
+        assert_eq!(diagnostics[1].severity, LspDiagnosticSeverity::Hint);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_publish_diagnostics_from_mock_stdio_language_server() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!("tscode-lsp-diagnostics-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "fn main() {\n    missing();\n}\n").unwrap();
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": path_to_file_uri(&file),
+                "diagnostics": [
+                    {
+                        "range": {
+                            "start": { "line": 1, "character": 4 },
+                            "end": { "line": 1, "character": 11 }
+                        },
+                        "severity": 1,
+                        "source": "mock-checker",
+                        "code": "E0425",
+                        "message": "cannot find function `missing`"
+                    }
+                ]
+            }
+        })
+        .to_string();
+        let server = root.join("mock-diagnostics-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"textDocumentSync":1}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+send_msg '{}'
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":3,"result":null}}'
+read_msg >/dev/null
+"#,
+                notification
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-diagnostics".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: file,
+            text: "fn main() {\n    missing();\n}\n".to_owned(),
+            line: 1,
+            col: 4,
+        };
+
+        let diagnostics = request_diagnostics_with_config(&position, &config).unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].server, "mock-diagnostics");
+        assert_eq!(diagnostics[0].severity, LspDiagnosticSeverity::Error);
+        assert_eq!(diagnostics[0].message, "cannot find function `missing`");
+        assert_eq!(diagnostics[0].source.as_deref(), Some("mock-checker"));
+        assert_eq!(diagnostics[0].code.as_deref(), Some("E0425"));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
