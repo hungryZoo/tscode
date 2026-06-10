@@ -16,7 +16,7 @@ The prerelease includes a real filesystem explorer, editable tabbed code buffers
 curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | sh
 ```
 
-The installer detects OS and CPU architecture, downloads the newest GitHub Release asset, and installs `tscode` into `~/.local/bin` unless `TSCODE_INSTALL_DIR` is set.
+The installer detects OS and CPU architecture, downloads the newest GitHub Release asset with retry and stalled-transfer timeouts, and installs `tscode` into `~/.local/bin` unless `TSCODE_INSTALL_DIR` is set.
 
 To install a specific tag:
 

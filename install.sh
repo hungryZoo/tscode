@@ -12,6 +12,31 @@ need() {
     fi
 }
 
+curl_stream() {
+    curl -fsSL \
+        --retry "${TSCODE_CURL_RETRIES:-3}" \
+        --retry-delay "${TSCODE_CURL_RETRY_DELAY:-2}" \
+        --connect-timeout "${TSCODE_CURL_CONNECT_TIMEOUT:-20}" \
+        --max-time "${TSCODE_CURL_MAX_TIME:-300}" \
+        --speed-time "${TSCODE_CURL_SPEED_TIME:-30}" \
+        --speed-limit "${TSCODE_CURL_SPEED_LIMIT:-1}" \
+        "$@"
+}
+
+curl_download() {
+    download_url="$1"
+    output_path="$2"
+    curl -fL \
+        --retry "${TSCODE_CURL_RETRIES:-3}" \
+        --retry-delay "${TSCODE_CURL_RETRY_DELAY:-2}" \
+        --connect-timeout "${TSCODE_CURL_CONNECT_TIMEOUT:-20}" \
+        --max-time "${TSCODE_CURL_MAX_TIME:-300}" \
+        --speed-time "${TSCODE_CURL_SPEED_TIME:-30}" \
+        --speed-limit "${TSCODE_CURL_SPEED_LIMIT:-1}" \
+        "$download_url" \
+        -o "$output_path"
+}
+
 detect_target() {
     os="$(uname -s | tr '[:upper:]' '[:lower:]')"
     arch="$(uname -m | tr '[:upper:]' '[:lower:]')"
@@ -57,7 +82,7 @@ resolve_version() {
 
     need curl
     need awk
-    version="$(curl -fsSL "https://api.github.com/repos/$repo/releases?per_page=100" \
+    version="$(curl_stream "https://api.github.com/repos/$repo/releases?per_page=100" \
         | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
         | awk '
             /^v[0-9]+\.[0-9]+\.[0-9]+(-pre\.[0-9]+)?$/ {
@@ -104,7 +129,7 @@ download_and_install() {
     archive="$tmp/$asset"
 
     echo "Downloading $url"
-    curl -fL "$url" -o "$archive"
+    curl_download "$url" "$archive"
 
     case "$archive_ext" in
         tar.gz)

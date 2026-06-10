@@ -536,7 +536,7 @@ The release workflow shall produce `.deb` and `.rpm` packages for supported Linu
 
 ### R-603 Installer
 
-`install.sh` shall detect OS and CPU architecture, download the matching GitHub release artifact, and install it into a writable path.
+`install.sh` shall detect OS and CPU architecture, download the matching GitHub release artifact, and install it into a writable path. Installer GitHub API and release-asset downloads shall use retry, connection-timeout, total-timeout, and stalled-transfer limits so a dead CDN connection fails or retries instead of hanging indefinitely.
 
 When `TSCODE_VERSION` is unset or set to `latest`, the installer shall choose the highest semantic release tag available from GitHub releases instead of trusting API response order.
 

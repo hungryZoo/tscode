@@ -234,5 +234,5 @@ GitHub Actions should build and upload release artifacts automatically for tagge
 - The integrated terminal runs a real PTY shell and forwards interactive input.
 - Terminal sessions update unlocked tab titles from OSC 0/2 reports, preserve user-renamed titles, and forward child-requested terminal mouse events with the correct xterm coordinate encoding.
 - Cross-platform packaging workflow exists.
-- `install.sh` detects OS/architecture and installs the matching release binary.
+- `install.sh` detects OS/architecture, retries stalled GitHub downloads, and installs the matching release binary.
 - A GitHub prerelease contains release notes, supported platforms, `install.sh`, and build artifacts.

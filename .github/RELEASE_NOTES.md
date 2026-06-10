@@ -104,6 +104,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Terminal apps that request mouse events now receive xterm-compatible mouse down, release, drag, move, and wheel events through the PTY, including SGR, default, and UTF-8 coordinate encodings.
 - Release CI now builds `aarch64-unknown-linux-gnu` with the Ubuntu `gcc-aarch64-linux-gnu` linker instead of the older cross Docker image path, avoiding a proc-macro resolution failure seen in the prerelease pipeline.
 - Installer latest-version resolution now compares semantic prerelease tags so `pre.10` sorts after `pre.9` even when the GitHub API returns prereleases out of lexical order.
+- Installer GitHub API and release-asset downloads now use retry, connection timeout, total timeout, and stalled-transfer detection so an idle CDN connection does not hang the install forever.
 - Keyboard fallback for focus cycling, navigation, scrolling, command entry, and exit.
 
 ## Install

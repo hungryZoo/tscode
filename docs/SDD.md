@@ -221,7 +221,7 @@ The repository includes:
 - `dist/` helper scripts for packaging
 - Cargo metadata suitable for `cargo-deb` and `cargo-generate-rpm`
 
-The release workflow builds archive artifacts on macOS, Linux, and Windows runners. Linux package jobs generate `.deb` and `.rpm` packages. The workflow uploads all assets to a GitHub prerelease for tags matching `v*`.
+The release workflow builds archive artifacts on macOS, Linux, and Windows runners. Linux package jobs generate `.deb` and `.rpm` packages. The workflow uploads all assets to a GitHub prerelease for tags matching `v*`. The installer keeps the public `curl | sh` path simple, then applies retry, connection-timeout, total-timeout, and low-speed abort options to its internal GitHub API and release-asset downloads, with `TSCODE_CURL_*` environment variables available for unusually slow networks.
 
 ## 9. Risks and Mitigations
 
