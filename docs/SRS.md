@@ -140,7 +140,7 @@ The command palette shall include a Save As action for the active editor tab. Th
 
 ### R-208C Editor Context Menu
 
-Right-clicking the editor body or an editor tab shall focus the editor and open a mouse-selectable context menu. Right-clicking the editor body shall update the editor cursor to the clicked buffer location before opening the menu. The menu shall expose actions for save, copy, cut, paste, select all, find, replace, go to line, go to definition, find references, rename symbol, trigger suggest, format document, fold/unfold, toggle line comment, run selection/current line in terminal, copy absolute file path, copy relative file path, revert file, and close active tab. Activating a menu item shall call the same editor, workspace, terminal, or clipboard command used by keyboard shortcuts and the command palette.
+Right-clicking the editor body or an editor tab shall focus the editor and open a mouse-selectable context menu. Right-clicking the editor body shall update the editor cursor to the clicked buffer location before opening the menu. The menu shall expose actions for save, copy, cut, paste, select all, find, replace, go to line, go to definition, find references, code action, rename symbol, trigger suggest, format document, fold/unfold, toggle line comment, run selection/current line in terminal, copy absolute file path, copy relative file path, revert file, and close active tab. Activating a menu item shall call the same editor, workspace, terminal, or clipboard command used by keyboard shortcuts and the command palette.
 
 ### R-208D Dirty Tab Close Confirmation
 
@@ -285,6 +285,10 @@ Moving the mouse over an identifier in the editor body shall compute a lightweig
 ### R-236D Language Server Hover
 
 The command palette and editor context menu shall include a Show Hover action. When invoked with an active editor cursor in a file type with a configured or discoverable language server, the app shall start the server over stdio, perform JSON-RPC/LSP initialization, publish the current in-memory buffer through `textDocument/didOpen`, request `textDocument/hover`, and display non-empty hover contents in a quick panel. If the server is absent, fails, times out, or returns no hover contents, the app shall report a clear status message and keep the editor usable.
+
+### R-236E Code Actions
+
+The command palette and editor context menu shall include a Code Action action. When invoked with an active editor cursor in a file type with a configured or discoverable language server, the app shall start the server over stdio, publish the current in-memory buffer through `textDocument/didOpen`, request `textDocument/codeAction` for the current cursor range, and include known active-buffer diagnostics in the request context when available. Returned actions shall open in a filterable quick panel. Selecting an action that contains a `WorkspaceEdit` shall apply text edits to open editor buffers as undoable dirty edits without writing their backing files, and shall write edits targeting closed files to disk after range validation. Returned command-only actions shall be listed with a clear unsupported-command status instead of being silently ignored. If the server is absent, fails, times out, or returns no actions, the app shall report a clear status message and keep the editor usable.
 
 ### R-237 Format Document
 

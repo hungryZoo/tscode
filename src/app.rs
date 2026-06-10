@@ -1630,6 +1630,7 @@ pub struct PromptState {
 pub enum QuickPanelKind {
     OpenFile,
     Completions,
+    CodeActions,
     DirtyClose { index: usize },
     ExplorerContextMenu,
     EditorContextMenu,
@@ -1724,6 +1725,7 @@ pub enum CommandAction {
     ShowHover,
     GoToDefinition,
     FindReferences,
+    CodeAction,
     GoBack,
     GoForward,
     RenameSymbol,
@@ -2005,6 +2007,7 @@ pub struct App {
     pub quick_panel: Option<QuickPanel>,
     pub completion_state: Option<CompletionState>,
     pub lsp_completion_items: Vec<QuickItem>,
+    pub lsp_code_actions: Vec<lsp::LspCodeAction>,
     pub editor_hover: Option<EditorHoverInfo>,
     pub quick_panel_height: usize,
     pub explorer_multi_selection: BTreeSet<PathBuf>,
@@ -2079,6 +2082,7 @@ impl App {
             quick_panel: None,
             completion_state: None,
             lsp_completion_items: Vec::new(),
+            lsp_code_actions: Vec::new(),
             editor_hover: None,
             quick_panel_height: 0,
             explorer_multi_selection: BTreeSet::new(),
@@ -3791,6 +3795,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::FindReferences,
         },
         CommandSpec {
+            label: "Code Action",
+            detail: "Ask an installed language server for quick fixes and refactors at the editor cursor",
+            shortcut: "",
+            action: CommandAction::CodeAction,
+        },
+        CommandSpec {
             label: "Go Back",
             detail: "Return to the previous editor navigation location",
             shortcut: "Alt-Left",
@@ -4326,6 +4336,9 @@ impl App {
             self.completion_state = None;
             self.lsp_completion_items.clear();
         }
+        if kind != QuickPanelKind::CodeActions {
+            self.lsp_code_actions.clear();
+        }
         self.quick_panel = Some(QuickPanel {
             kind,
             query,
@@ -4346,6 +4359,7 @@ impl App {
         let items = match kind {
             QuickPanelKind::OpenFile => self.quick_open_items(&query)?,
             QuickPanelKind::Completions => self.completion_items(&query)?,
+            QuickPanelKind::CodeActions => self.code_action_items(&query),
             QuickPanelKind::DirtyClose { index } => self.dirty_close_items(index, &query),
             QuickPanelKind::ExplorerContextMenu => self.explorer_context_menu_items(&query),
             QuickPanelKind::EditorContextMenu => self.editor_context_menu_items(&query),
@@ -4731,6 +4745,12 @@ impl App {
                 action: CommandAction::FindReferences,
             },
             ContextMenuAction {
+                label: "Code Action",
+                detail: format!("Request quick fixes and refactors for {symbol}"),
+                shortcut: "",
+                action: CommandAction::CodeAction,
+            },
+            ContextMenuAction {
                 label: "Rename Symbol",
                 detail: format!("Rename {symbol} across workspace files"),
                 shortcut: "F2",
@@ -5062,6 +5082,37 @@ impl App {
             }
         }
         Ok(items)
+    }
+
+    fn code_action_items(&self, query: &str) -> Vec<QuickItem> {
+        let active_path = self
+            .active_tab()
+            .map(|tab| tab.path.clone())
+            .unwrap_or_else(|| self.root.clone());
+        let items = self
+            .lsp_code_actions
+            .iter()
+            .enumerate()
+            .map(|(index, action)| {
+                let path = action
+                    .edit
+                    .as_ref()
+                    .and_then(|edit| edit.edits.first())
+                    .map(|edit| edit.path.clone())
+                    .unwrap_or_else(|| active_path.clone());
+                QuickItem {
+                    label: action.title.clone(),
+                    detail: code_action_detail(action),
+                    path,
+                    line: Some(index),
+                    col: None,
+                    preview: code_action_preview(action),
+                    command: None,
+                }
+            })
+            .take(MAX_QUICK_ITEMS)
+            .collect::<Vec<_>>();
+        filter_existing_quick_items(items, query)
     }
 
     fn workspace_search_items(&self, query: &str) -> Result<Vec<QuickItem>> {
@@ -7032,6 +7083,26 @@ impl App {
         Ok(())
     }
 
+    fn run_code_actions(&mut self) -> Result<()> {
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            self.message = Some("no language server configured for active editor".to_owned());
+            return Ok(());
+        };
+        let server = lsp::server_name_for_path(&position.path).unwrap_or_else(|| "LSP".to_owned());
+        self.message = Some(format!("requesting code actions via {server}"));
+
+        let diagnostics = lsp::diagnostics(&position).unwrap_or_default();
+        self.lsp_code_actions = lsp::code_actions(&position, &diagnostics)?;
+        let count = self.lsp_code_actions.len();
+        self.open_quick_panel(QuickPanelKind::CodeActions)?;
+        self.message = if count == 0 {
+            Some(format!("no code actions returned by {server}"))
+        } else {
+            Some(format!("LSP code actions via {server}: {count} action(s)"))
+        };
+        Ok(())
+    }
+
     fn select_all_active_tab(&mut self) {
         if let Some(tab) = self.active_tab_mut() {
             tab.select_all();
@@ -7700,6 +7771,14 @@ impl App {
             return;
         }
 
+        if kind == QuickPanelKind::CodeActions {
+            self.quick_panel = None;
+            if let Err(error) = self.apply_code_action_item(item) {
+                self.last_error = Some(error.to_string());
+            }
+            return;
+        }
+
         if kind == QuickPanelKind::LspHover {
             self.quick_panel = None;
             self.focus = FocusPanel::Editor;
@@ -7773,6 +7852,52 @@ impl App {
         });
     }
 
+    fn apply_code_action_item(&mut self, item: QuickItem) -> Result<()> {
+        let Some(index) = item.line else {
+            self.message = Some("code action is no longer available".to_owned());
+            return Ok(());
+        };
+        let Some(action) = self.lsp_code_actions.get(index).cloned() else {
+            self.message = Some("code action is no longer available".to_owned());
+            return Ok(());
+        };
+        self.lsp_code_actions.clear();
+
+        let title = action.title.clone();
+        let Some(edit) = action.edit else {
+            self.focus = FocusPanel::Editor;
+            self.message = Some(
+                action
+                    .command_title
+                    .map(|command| {
+                        format!("code action '{title}' requires unsupported LSP command: {command}")
+                    })
+                    .unwrap_or_else(|| {
+                        format!("code action '{title}' did not include a workspace edit")
+                    }),
+            );
+            return Ok(());
+        };
+
+        match self.apply_lsp_workspace_edit(edit)? {
+            Some(summary) => {
+                self.focus = FocusPanel::Editor;
+                self.ensure_editor_cursor_visible();
+                self.message = Some(format!(
+                    "applied code action '{title}' via {}: {} edit(s), {} open buffer(s), {} saved file(s)",
+                    summary.server, summary.edit_count, summary.open_count, summary.file_count
+                ));
+            }
+            None => {
+                self.focus = FocusPanel::Editor;
+                self.message = Some(format!(
+                    "code action '{title}' produced no applicable edits"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn run_command(&mut self, command: CommandAction) -> Result<()> {
         match command {
             CommandAction::QuickOpen => self.open_quick_panel(QuickPanelKind::OpenFile)?,
@@ -7789,6 +7914,7 @@ impl App {
             CommandAction::ShowHover => self.show_lsp_hover_under_cursor()?,
             CommandAction::GoToDefinition => self.go_to_definition_under_cursor()?,
             CommandAction::FindReferences => self.find_references_under_cursor()?,
+            CommandAction::CodeAction => self.run_code_actions()?,
             CommandAction::GoBack => self.go_back(),
             CommandAction::GoForward => self.go_forward(),
             CommandAction::RenameSymbol => self.start_rename_symbol_prompt(),
@@ -9401,6 +9527,51 @@ fn filter_existing_quick_items(items: Vec<QuickItem>, query: &str) -> Vec<QuickI
             .is_some()
         })
         .collect()
+}
+
+fn code_action_detail(action: &lsp::LspCodeAction) -> String {
+    let mut parts = vec![format!("LSP {}", action.server)];
+    if let Some(kind) = action.kind.as_deref().filter(|kind| !kind.is_empty()) {
+        parts.push(kind.to_owned());
+    }
+    if action.is_preferred {
+        parts.push("preferred".to_owned());
+    }
+    if let Some(edit) = &action.edit {
+        let file_count = edit
+            .edits
+            .iter()
+            .map(|edit| canonical_existing_path(&edit.path))
+            .collect::<HashSet<_>>()
+            .len();
+        parts.push(format!(
+            "{} edit(s) in {} file(s)",
+            edit.edits.len(),
+            file_count
+        ));
+    } else if action.command_title.is_some() {
+        parts.push("command action".to_owned());
+    } else {
+        parts.push("no workspace edit".to_owned());
+    }
+    parts.join("  ")
+}
+
+fn code_action_preview(action: &lsp::LspCodeAction) -> Option<String> {
+    if let Some(edit) = &action.edit {
+        let mut paths = edit
+            .edits
+            .iter()
+            .map(|edit| edit.path.display().to_string())
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+        return (!paths.is_empty()).then(|| compact_preview(&paths.join(", ")));
+    }
+    action
+        .command_title
+        .as_deref()
+        .map(|title| format!("Command execution is not supported yet: {title}"))
 }
 
 fn lsp_completion_insert_text_is_plain(text: &str) -> bool {
@@ -11623,6 +11794,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::RunLspDiagnostics))
         );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::CodeAction))
+        );
         let toggle_index = panel
             .items
             .iter()
@@ -13057,6 +13234,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::FindReferences))
         );
+        let commands = app.command_palette_items("code action");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::CodeAction))
+        );
         let commands = app.command_palette_items("rename symbol");
         assert!(
             commands
@@ -13716,6 +13899,64 @@ mod tests {
             "fn main() {\n    old_name();\n}\n"
         );
         assert_eq!(fs::read_to_string(&lib).unwrap(), "pub fn new_name() {}\n");
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(canonical_root);
+    }
+
+    #[test]
+    fn code_action_panel_applies_lsp_workspace_edit_to_open_buffer() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-code-action-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("main.rs"), "fn main() {\n    old_name();\n}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let main = canonical_root.join("main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&main);
+        app.lsp_code_actions = vec![lsp::LspCodeAction {
+            title: "Replace old_name with new_name".to_owned(),
+            kind: Some("quickfix".to_owned()),
+            is_preferred: true,
+            edit: Some(lsp::LspWorkspaceEdit {
+                server: "mock-code-action".to_owned(),
+                edits: vec![lsp::LspTextEdit {
+                    path: main.clone(),
+                    start_line: 1,
+                    start_utf16_col: "    ".chars().count(),
+                    end_line: 1,
+                    end_utf16_col: "    old_name".chars().count(),
+                    new_text: "new_name".to_owned(),
+                }],
+            }),
+            command_title: None,
+            server: "mock-code-action".to_owned(),
+        }];
+
+        app.open_quick_panel(QuickPanelKind::CodeActions).unwrap();
+        let panel = app.quick_panel.as_ref().expect("code action panel");
+        assert_eq!(panel.kind, QuickPanelKind::CodeActions);
+        assert_eq!(panel.items.len(), 1);
+        assert_eq!(panel.items[0].label, "Replace old_name with new_name");
+        assert!(panel.items[0].detail.contains("1 edit"));
+
+        app.activate_selected_quick_item();
+
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.text(), "fn main() {\n    new_name();\n}\n");
+        assert!(tab.dirty);
+        assert_eq!(
+            fs::read_to_string(&main).unwrap(),
+            "fn main() {\n    old_name();\n}\n"
+        );
+        assert!(app.lsp_code_actions.is_empty());
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("applied code action"))
+        );
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(canonical_root);

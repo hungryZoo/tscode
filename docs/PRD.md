@@ -86,6 +86,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can run Show Hover from the command palette or editor context menu and see hover documentation from an installed language server without leaving the terminal.
 - As a developer, I can jump from the symbol under the editor cursor to an installed language-server definition first, falling back to a likely workspace definition without leaving the terminal.
 - As a developer, I can list installed-language-server references first, fall back to whole-word workspace references for the symbol under the editor cursor, and jump to any occurrence.
+- As a developer, I can request installed-language-server code actions at the editor cursor, filter the returned quick fixes/refactors, and apply workspace edits without leaving the terminal.
 - As a developer, I can move backward and forward through previous editor locations after definition, reference, search, line, or terminal-output jumps.
 - As a developer, I can rename the symbol under the editor cursor across workspace files while open buffers receive undoable edits and longer identifiers with the same prefix are left intact.
 - As a developer, I can replace text across real workspace files while clean open tabs stay synchronized and dirty open buffers are not overwritten.
@@ -157,6 +158,7 @@ Keyboard fallback:
 - `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, `Ctrl-R`, and `F2` provide document symbols, workspace symbols, LSP-first go-to-definition, LSP-first find-references, and LSP-first semantic rename code navigation
 - `Ctrl-Space` or the command palette opens code suggestions for the identifier at the editor cursor, including installed language-server candidates when available
 - The command palette and editor context menu provide Show Hover for installed language-server hover documentation
+- The command palette and editor context menu provide Code Action for installed language-server quick fixes/refactors; returned workspace edits update open buffers as undoable edits and closed files on disk after validation
 - The command palette and editor context menu provide Run LSP Diagnostics for active-buffer language-server diagnostics
 - Mouse hover over an editor identifier shows lightweight symbol definition/reference information
 - Editor gutter fold markers, `Alt-[`, `Alt-]`, the command palette, and the editor context menu provide code fold/unfold actions
@@ -168,7 +170,7 @@ Keyboard fallback:
 - `Ctrl-N` or the command palette creates an editable Untitled tab without touching disk until Save As
 - The command palette provides Save As for writing the active editor buffer to a new path and retargeting the tab
 - `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions; `Ctrl-S` on an Untitled tab opens Save As, and dirty tab close opens Save and Close / Don't Save / Cancel choices
-- Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, definition/references/rename/suggest, format, fold/unfold, comments, send-to-terminal, path-copy, revert, and close-tab actions
+- Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, definition/references/code-action/rename/suggest, format, fold/unfold, comments, send-to-terminal, path-copy, revert, and close-tab actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor
 - `Shift` with arrow keys and mouse drag select editor text; mouse drag can continue outside the visible editor edge to extend the range while scrolling
 - `Enter` preserves indentation and adds one extra indent level after opening braces/brackets/parentheses

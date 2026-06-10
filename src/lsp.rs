@@ -54,6 +54,16 @@ pub struct LspCompletion {
     pub server: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspCodeAction {
+    pub title: String,
+    pub kind: Option<String>,
+    pub is_preferred: bool,
+    pub edit: Option<LspWorkspaceEdit>,
+    pub command_title: Option<String>,
+    pub server: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LspDiagnosticSeverity {
     Error,
@@ -148,6 +158,16 @@ pub fn diagnostics(position: &DocumentPosition) -> Result<Vec<LspDiagnostic>> {
         return Ok(Vec::new());
     };
     request_diagnostics_with_config(position, &config)
+}
+
+pub fn code_actions(
+    position: &DocumentPosition,
+    diagnostics: &[LspDiagnostic],
+) -> Result<Vec<LspCodeAction>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(Vec::new());
+    };
+    request_code_actions_with_config(position, diagnostics, &config)
 }
 
 pub fn rename(position: &DocumentPosition, new_name: &str) -> Result<Option<LspWorkspaceEdit>> {
@@ -324,6 +344,23 @@ fn request_diagnostics_with_config(
     process.finish();
 
     Ok(diagnostics)
+}
+
+fn request_code_actions_with_config(
+    position: &DocumentPosition,
+    diagnostics: &[LspDiagnostic],
+    config: &LanguageServerConfig,
+) -> Result<Vec<LspCodeAction>> {
+    let Some(response) = run_lsp_request(
+        position,
+        config,
+        "textDocument/codeAction",
+        code_action_params(position, diagnostics),
+    )?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(parse_code_actions(response.result.as_ref(), &config.name))
 }
 
 fn request_rename_with_config(
@@ -579,6 +616,74 @@ fn text_document_position_params(position: &DocumentPosition) -> Value {
             "character": char_col_to_utf16(line_text, position.col)
         }
     })
+}
+
+fn code_action_params(position: &DocumentPosition, diagnostics: &[LspDiagnostic]) -> Value {
+    let line_text = position.text.lines().nth(position.line).unwrap_or_default();
+    let utf16_col = char_col_to_utf16(line_text, position.col);
+    let diagnostics = diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic_to_lsp_value(diagnostic, position))
+        .collect::<Vec<_>>();
+    json!({
+        "textDocument": {
+            "uri": path_to_file_uri(&position.path)
+        },
+        "range": {
+            "start": {
+                "line": position.line,
+                "character": utf16_col
+            },
+            "end": {
+                "line": position.line,
+                "character": utf16_col
+            }
+        },
+        "context": {
+            "diagnostics": diagnostics,
+            "only": ["quickfix", "refactor", "source"]
+        }
+    })
+}
+
+fn diagnostic_to_lsp_value(
+    diagnostic: &LspDiagnostic,
+    position: &DocumentPosition,
+) -> Option<Value> {
+    if !same_path(&diagnostic.path, &position.path) {
+        return None;
+    }
+    let line_text = line_text_for_path(&diagnostic.path, diagnostic.line, position)?;
+    let line_len = line_text.chars().count();
+    let start_col = diagnostic.col.min(line_len);
+    let end_col = if start_col < line_len {
+        start_col + 1
+    } else {
+        start_col
+    };
+    let mut value = json!({
+        "range": {
+            "start": {
+                "line": diagnostic.line,
+                "character": char_col_to_utf16(&line_text, start_col)
+            },
+            "end": {
+                "line": diagnostic.line,
+                "character": char_col_to_utf16(&line_text, end_col)
+            }
+        },
+        "severity": diagnostic.severity.as_lsp_number(),
+        "message": diagnostic.message
+    });
+    if let Some(object) = value.as_object_mut() {
+        if let Some(source) = &diagnostic.source {
+            object.insert("source".to_owned(), Value::String(source.clone()));
+        }
+        if let Some(code) = &diagnostic.code {
+            object.insert("code".to_owned(), Value::String(code.clone()));
+        }
+    }
+    Some(value)
 }
 
 fn language_server_for_path(path: &Path) -> Option<LanguageServerConfig> {
@@ -849,6 +954,16 @@ impl LspDiagnosticSeverity {
             _ => Self::Unknown,
         }
     }
+
+    fn as_lsp_number(self) -> u64 {
+        match self {
+            Self::Error => 1,
+            Self::Warning => 2,
+            Self::Information => 3,
+            Self::Hint => 4,
+            Self::Unknown => 3,
+        }
+    }
 }
 
 fn diagnostic_code(value: Option<&Value>) -> Option<String> {
@@ -857,6 +972,50 @@ fn diagnostic_code(value: Option<&Value>) -> Option<String> {
         Value::Number(number) => Some(number.to_string()),
         _ => None,
     }
+}
+
+fn parse_code_actions(result: Option<&Value>, server: &str) -> Vec<LspCodeAction> {
+    let Some(result) = result else {
+        return Vec::new();
+    };
+    let Some(actions) = result.as_array() else {
+        return Vec::new();
+    };
+
+    actions
+        .iter()
+        .filter_map(|action| {
+            let title = action.get("title")?.as_str()?.trim();
+            if title.is_empty() {
+                return None;
+            }
+
+            let edit = parse_workspace_edit(action.get("edit"), server);
+            let command_title = action
+                .get("command")
+                .and_then(|command| {
+                    command
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .or_else(|| command.as_str().map(|_| title))
+                })
+                .map(str::to_owned);
+            Some(LspCodeAction {
+                title: title.to_owned(),
+                kind: action
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                is_preferred: action
+                    .get("isPreferred")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                edit,
+                command_title,
+                server: server.to_owned(),
+            })
+        })
+        .collect()
 }
 
 fn parse_workspace_edit(result: Option<&Value>, server: &str) -> Option<LspWorkspaceEdit> {
@@ -1109,6 +1268,52 @@ mod tests {
     }
 
     #[test]
+    fn parses_code_actions_with_workspace_edits_and_commands() {
+        let root = env::temp_dir().join(format!("tscode-lsp-code-action-{}", std::process::id()));
+        let file = root.join("main.rs");
+        let actions = json!([
+            {
+                "title": "Import missing item",
+                "kind": "quickfix",
+                "isPreferred": true,
+                "edit": {
+                    "changes": {
+                        path_to_file_uri(&file): [
+                            {
+                                "range": {
+                                    "start": { "line": 0, "character": 0 },
+                                    "end": { "line": 0, "character": 0 }
+                                },
+                                "newText": "use crate::thing;\n"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "title": "Run command action",
+                "command": "mock.runAction"
+            }
+        ]);
+
+        let parsed = parse_code_actions(Some(&actions), "mock-actions");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].title, "Import missing item");
+        assert_eq!(parsed[0].kind.as_deref(), Some("quickfix"));
+        assert!(parsed[0].is_preferred);
+        let edit = parsed[0].edit.as_ref().expect("workspace edit");
+        assert_eq!(edit.server, "mock-actions");
+        assert_eq!(edit.edits.len(), 1);
+        assert_eq!(edit.edits[0].path, file);
+        assert_eq!(edit.edits[0].new_text, "use crate::thing;\n");
+        assert_eq!(
+            parsed[1].command_title.as_deref(),
+            Some("Run command action")
+        );
+        assert!(parsed[1].edit.is_none());
+    }
+
+    #[test]
     fn parses_publish_diagnostics_notification() {
         let root = env::temp_dir().join(format!("tscode-lsp-diagnostics-{}", std::process::id()));
         let file = root.join("main.rs");
@@ -1252,6 +1457,109 @@ read_msg >/dev/null
         assert_eq!(diagnostics[0].message, "cannot find function `missing`");
         assert_eq!(diagnostics[0].source.as_deref(), Some("mock-checker"));
         assert_eq!(diagnostics[0].code.as_deref(), Some("E0425"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_code_actions_from_mock_stdio_language_server() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!("tscode-lsp-code-action-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "fn main() {\n    old_name();\n}\n").unwrap();
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": [
+                {
+                    "title": "Replace old_name with new_name",
+                    "kind": "quickfix",
+                    "isPreferred": true,
+                    "edit": {
+                        "changes": {
+                            path_to_file_uri(&file): [
+                                {
+                                    "range": {
+                                        "start": { "line": 1, "character": 4 },
+                                        "end": { "line": 1, "character": 12 }
+                                    },
+                                    "newText": "new_name"
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        })
+        .to_string();
+        let server = root.join("mock-code-action-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"codeActionProvider":true}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+body=$(read_msg)
+case "$body" in
+  *textDocument/codeAction*) send_msg '{}' ;;
+  *) send_msg '{{"jsonrpc":"2.0","id":2,"result":[]}}' ;;
+esac
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":3,"result":null}}'
+read_msg >/dev/null
+"#,
+                response
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-code-action".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: file.clone(),
+            text: fs::read_to_string(&file).unwrap(),
+            line: 1,
+            col: 4,
+        };
+
+        let actions = request_code_actions_with_config(&position, &[], &config).unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Replace old_name with new_name");
+        assert_eq!(actions[0].server, "mock-code-action");
+        let edit = actions[0].edit.as_ref().expect("workspace edit");
+        assert_eq!(edit.edits.len(), 1);
+        assert_eq!(edit.edits[0].path, file.canonicalize().unwrap());
+        assert_eq!(edit.edits[0].new_text, "new_name");
 
         let _ = fs::remove_dir_all(root);
     }
