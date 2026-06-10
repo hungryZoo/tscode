@@ -1823,6 +1823,7 @@ pub enum PromptKind {
     Rename(PathBuf),
     DeletePaths(Vec<PathBuf>),
     ExplorerFilter,
+    OpenFolder,
     Search,
     ReplaceFind { all: bool },
     ReplaceWith { needle: String, all: bool },
@@ -1955,6 +1956,7 @@ pub struct EditorLocation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandAction {
     QuickOpen,
+    OpenFolder,
     TriggerSuggest,
     WorkspaceSearch,
     DocumentSymbols,
@@ -2009,6 +2011,7 @@ pub enum CommandAction {
     CancelCloseTab,
     CloseSavedTabs,
     OpenSelectedExplorerItem,
+    OpenSelectedFolderAsWorkspace,
     NewFile,
     NewFolder,
     RenameSelected,
@@ -3114,6 +3117,7 @@ impl App {
             KeyCode::Char('y') => self.duplicate_selected()?,
             KeyCode::Char('v') => self.compare_selected_files()?,
             KeyCode::Char('o') => self.reveal_active_file()?,
+            KeyCode::Char('O') => self.open_selected_folder_as_workspace()?,
             KeyCode::Char('t') => self.new_terminal_here()?,
             KeyCode::F(5) => self.run_selected_explorer_file_in_terminal()?,
             _ => {}
@@ -3740,6 +3744,122 @@ impl App {
         } else {
             self.open_file_to_side(&node.path);
         }
+        Ok(())
+    }
+
+    fn open_selected_folder_as_workspace(&mut self) -> Result<()> {
+        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+            self.message = Some("select a folder to open as workspace".to_owned());
+            return Ok(());
+        };
+        if !node.is_dir {
+            self.message = Some(format!(
+                "select a folder to open as workspace, not {}",
+                relative_path(&self.root, &node.path)
+            ));
+            return Ok(());
+        }
+        self.open_workspace_root(node.path)
+    }
+
+    fn open_folder_from_prompt(&mut self, input: String) -> Result<()> {
+        let Some(path) = resolve_prompt_path(&self.root, &input) else {
+            self.message = Some("open folder cancelled".to_owned());
+            return Ok(());
+        };
+        self.open_workspace_root(path)
+    }
+
+    fn open_workspace_root(&mut self, path: PathBuf) -> Result<()> {
+        let root = match path.canonicalize() {
+            Ok(path) => path,
+            Err(error) => {
+                self.message = Some(format!("open folder failed: {error}"));
+                return Ok(());
+            }
+        };
+        if !root.is_dir() {
+            self.message = Some(format!(
+                "open folder target is not a folder: {}",
+                root.display()
+            ));
+            return Ok(());
+        }
+        if root == self.root {
+            self.focus = FocusPanel::Explorer;
+            self.message = Some(format!("folder already open: {}", root.display()));
+            return Ok(());
+        }
+        if let Some(label) = self.dirty_tab_label() {
+            self.message = Some(format!(
+                "open folder blocked by unsaved editor tab: {label}; save or close it first"
+            ));
+            return Ok(());
+        }
+
+        let explorer = FsTree::new(root.clone())?;
+        let terminal = TerminalSession::new(1, root.clone())?;
+        let (git_statuses, git_dirty_dirs) = load_git_status(&root);
+        let git_branch = git_top_level(&root).and_then(|top_level| git_current_branch(&top_level));
+        let workspace_snapshot =
+            workspace_snapshot(&root, self.show_hidden, self.show_ignored).ok();
+        let workspace_visible_paths =
+            workspace_visible_paths(&root, self.show_hidden, self.show_ignored).unwrap_or_else(
+                |_| {
+                    let mut paths = HashSet::new();
+                    paths.insert(root.clone());
+                    paths
+                },
+            );
+
+        self.kill_terminal_sessions();
+        self.root = root.clone();
+        self.explorer = explorer;
+        self.tabs.clear();
+        self.active_tab = None;
+        self.editor_split = None;
+        self.active_editor_pane = 0;
+        self.focus = FocusPanel::Explorer;
+        self.hover = HoverTarget::None;
+        self.hit_regions.clear();
+        self.terminals = vec![terminal];
+        self.active_terminal = 0;
+        self.split_terminal = None;
+        self.next_terminal_id = 2;
+        self.next_untitled_id = 1;
+        self.terminal_maximized = false;
+        self.terminal_resize_dragging = false;
+        self.editor_selection_dragging = false;
+        self.last_error = None;
+        self.prompt = None;
+        self.search_needle = None;
+        self.explorer_filter = None;
+        self.quick_panel = None;
+        self.completion_state = None;
+        self.lsp_completion_items.clear();
+        self.lsp_document_symbol_items.clear();
+        self.lsp_workspace_symbol_query = None;
+        self.lsp_workspace_symbol_items.clear();
+        self.lsp_code_actions.clear();
+        self.editor_hover = None;
+        self.quick_panel_height = 0;
+        self.explorer_multi_selection.clear();
+        self.explorer_selection_anchor = None;
+        self.explorer_clipboard = None;
+        self.explorer_drag = None;
+        self.git_statuses = git_statuses;
+        self.git_dirty_dirs = git_dirty_dirs;
+        self.git_branch = git_branch;
+        self.navigation_back.clear();
+        self.navigation_forward.clear();
+        self.terminal_selection = None;
+        self.terminal_search = None;
+        self.problems.clear();
+        self.pending_clipboard_export = None;
+        self.workspace_snapshot = workspace_snapshot;
+        self.workspace_visible_paths = workspace_visible_paths;
+        self.last_workspace_tree_check = Instant::now();
+        self.message = Some(format!("opened folder {}", root.display()));
         Ok(())
     }
 
@@ -4787,6 +4907,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::QuickOpen,
         },
         CommandSpec {
+            label: "Open Folder",
+            detail: "Switch the current workspace root to an existing folder",
+            shortcut: "",
+            action: CommandAction::OpenFolder,
+        },
+        CommandSpec {
             label: "Trigger Suggest",
             detail: "Complete the identifier at the editor cursor from workspace symbols and words",
             shortcut: "Ctrl-Space",
@@ -5480,6 +5606,10 @@ impl App {
         self.start_prompt(PromptKind::WorkspaceReplaceFind, &initial);
     }
 
+    fn start_open_folder_prompt(&mut self) {
+        self.start_prompt(PromptKind::OpenFolder, "");
+    }
+
     fn start_new_file_prompt(&mut self) {
         let initial = self.new_item_prompt_prefix();
         self.start_prompt(PromptKind::NewFile, &initial);
@@ -5840,6 +5970,18 @@ impl App {
                 action: CommandAction::ToggleIgnoredFiles,
             },
         ];
+
+        if node.is_dir {
+            specs.insert(
+                2,
+                ContextMenuAction {
+                    label: "Open Folder as Workspace",
+                    detail: format!("Switch the workspace root to {relative}"),
+                    shortcut: "O",
+                    action: CommandAction::OpenSelectedFolderAsWorkspace,
+                },
+            );
+        }
 
         if !node.is_dir {
             specs.insert(
@@ -7380,6 +7522,7 @@ impl App {
                 }
             }
             PromptKind::ExplorerFilter => self.set_explorer_filter(prompt.input),
+            PromptKind::OpenFolder => self.open_folder_from_prompt(prompt.input)?,
             PromptKind::Search => self.search_active(prompt.input),
             PromptKind::ReplaceFind { all } => self.replace_find_from_prompt(prompt.input, all),
             PromptKind::ReplaceWith { needle, all } => {
@@ -10270,6 +10413,16 @@ impl App {
             .map(|tab| relative_path(&self.root, &tab.path))
     }
 
+    fn dirty_tab_label(&self) -> Option<String> {
+        self.tabs.iter().find(|tab| tab.dirty).map(|tab| {
+            if tab.untitled {
+                tab.title.clone()
+            } else {
+                relative_path(&self.root, &tab.path)
+            }
+        })
+    }
+
     fn close_clean_tabs_for_removed_paths(&mut self, paths: &[PathBuf]) {
         if paths.is_empty() {
             return;
@@ -10411,6 +10564,7 @@ impl App {
     fn run_command(&mut self, command: CommandAction) -> Result<()> {
         match command {
             CommandAction::QuickOpen => self.open_quick_panel(QuickPanelKind::OpenFile)?,
+            CommandAction::OpenFolder => self.start_open_folder_prompt(),
             CommandAction::TriggerSuggest => self.trigger_suggest()?,
             CommandAction::WorkspaceSearch => {
                 self.open_quick_panel(QuickPanelKind::WorkspaceSearch)?
@@ -10510,6 +10664,9 @@ impl App {
             }
             CommandAction::CloseSavedTabs => self.close_saved_tabs(),
             CommandAction::OpenSelectedExplorerItem => self.open_or_toggle_selected()?,
+            CommandAction::OpenSelectedFolderAsWorkspace => {
+                self.open_selected_folder_as_workspace()?
+            }
             CommandAction::NewFile => self.start_new_file_prompt(),
             CommandAction::NewFolder => self.start_new_dir_prompt(),
             CommandAction::RenameSelected => self.prompt_rename(),
@@ -11328,11 +11485,15 @@ impl App {
         self.message = Some(format!("terminal: {}", self.active_terminal().title));
     }
 
-    #[cfg(test)]
-    fn kill_all_terminals(&mut self) {
+    fn kill_terminal_sessions(&mut self) {
         for terminal in &mut self.terminals {
             let _ = terminal.shell.kill();
         }
+    }
+
+    #[cfg(test)]
+    fn kill_all_terminals(&mut self) {
+        self.kill_terminal_sessions();
     }
 
     fn toggle_terminal_focus(&mut self) {
@@ -15609,7 +15770,14 @@ mod tests {
 
         let mut app = App::new(root.clone()).unwrap();
         let canonical_root = app.root.clone();
+        let canonical_src = src.canonicalize().unwrap();
         let canonical_file = file.canonicalize().unwrap();
+        app.explorer.reveal(&canonical_src).unwrap();
+        assert!(app.explorer_context_menu_items("").iter().any(|item| {
+            item.label == "Open Folder as Workspace"
+                && item.command == Some(CommandAction::OpenSelectedFolderAsWorkspace)
+        }));
+
         app.explorer.reveal(&canonical_file).unwrap();
         assert!(app.explorer_context_menu_items("").iter().any(|item| {
             item.label == "Run File in Terminal"
@@ -15635,6 +15803,133 @@ mod tests {
         app.run_command(CommandAction::DuplicateSelectedExplorerItem)
             .unwrap();
         assert!(canonical_root.join("main copy.rs").is_file());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn open_folder_switches_workspace_root_explorer_and_terminal() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-open-folder-{}", std::process::id()));
+        let first = root.join("first");
+        let second = root.join("second");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(second.join("src")).unwrap();
+        fs::write(first.join("old.txt"), "old\n").unwrap();
+        fs::write(second.join("src/new.txt"), "new\n").unwrap();
+
+        let canonical_first = first.canonicalize().unwrap();
+        let canonical_second = second.canonicalize().unwrap();
+        let mut app = App::new(canonical_first.clone()).unwrap();
+        app.open_file(&canonical_first.join("old.txt"));
+        assert_eq!(app.tabs.len(), 1);
+
+        app.run_command(CommandAction::OpenFolder).unwrap();
+        assert_eq!(
+            app.prompt.as_ref().map(|prompt| &prompt.kind),
+            Some(&PromptKind::OpenFolder)
+        );
+        app.prompt.as_mut().unwrap().input = canonical_second.to_string_lossy().to_string();
+        app.finish_prompt().unwrap();
+
+        assert_eq!(app.root, canonical_second);
+        assert!(app.tabs.is_empty());
+        assert_eq!(app.focus, FocusPanel::Explorer);
+        assert_eq!(app.terminals.len(), 1);
+        assert_eq!(app.active_terminal, 0);
+        assert_eq!(app.active_terminal().cwd, app.root);
+        assert_eq!(app.next_terminal_id, 2);
+        assert!(app.quick_panel.is_none());
+        assert!(app.prompt.is_none());
+        assert_eq!(
+            app.visible_nodes().first().map(|node| node.path.clone()),
+            Some(app.root.clone())
+        );
+        assert!(app.visible_nodes().iter().any(|node| node.name == "src"));
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("opened folder"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn open_selected_folder_as_workspace_uses_explorer_selection() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-open-selected-folder-{}",
+            std::process::id()
+        ));
+        let child = root.join("child");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&child).unwrap();
+        fs::write(child.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+        let canonical_child = child.canonicalize().unwrap();
+        let mut app = App::new(canonical_root).unwrap();
+        app.explorer.reveal(&canonical_child).unwrap();
+
+        app.run_command(CommandAction::OpenSelectedFolderAsWorkspace)
+            .unwrap();
+
+        assert_eq!(app.root, canonical_child);
+        assert_eq!(app.focus, FocusPanel::Explorer);
+        assert_eq!(app.active_terminal().cwd, app.root);
+        assert_eq!(
+            app.visible_nodes().first().map(|node| node.path.clone()),
+            Some(app.root.clone())
+        );
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("opened folder"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn open_folder_blocks_dirty_file_backed_and_untitled_tabs() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-open-folder-dirty-{}",
+            std::process::id()
+        ));
+        let first = root.join("first");
+        let second = root.join("second");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let canonical_first = first.canonicalize().unwrap();
+        let canonical_second = second.canonicalize().unwrap();
+        let file = canonical_first.join("main.rs");
+        let mut app = App::new(canonical_first.clone()).unwrap();
+        app.open_file(&file);
+        app.active_tab_mut().unwrap().insert_text("// dirty\n");
+        app.open_workspace_root(canonical_second.clone()).unwrap();
+        assert_eq!(app.root, canonical_first);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(app.message.as_deref().is_some_and(
+            |message| message.contains("open folder blocked") && message.contains("main.rs")
+        ));
+        app.kill_all_terminals();
+
+        let mut app = App::new(first.clone()).unwrap();
+        app.run_command(CommandAction::NewUntitledFile).unwrap();
+        app.active_tab_mut().unwrap().insert_text("scratch\n");
+        app.open_workspace_root(canonical_second).unwrap();
+        assert_eq!(app.root, canonical_first);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(app.message.as_deref().is_some_and(
+            |message| message.contains("open folder blocked") && message.contains("Untitled-1")
+        ));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
@@ -17480,6 +17775,13 @@ mod tests {
         assert!(commands.iter().any(|item| {
             item.command == Some(CommandAction::RestartTerminal) && item.label == "Restart Terminal"
         }));
+
+        let commands = app.command_palette_items("open folder");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::OpenFolder))
+        );
 
         let commands = app.command_palette_items("go line");
         assert!(

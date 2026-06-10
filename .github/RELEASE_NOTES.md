@@ -7,6 +7,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Mouse-first file explorer with real filesystem reads, expand/collapse, file open, hover, and wheel scrolling.
 - `tscode path/to/file` now opens the file immediately, uses its parent directory as the workspace root, reveals it in the explorer, and starts the integrated terminal in that parent directory.
 - `tscode --help`/`--version` now print CLI metadata before entering raw mode, making installer and package verification work without an interactive terminal.
+- Open Folder from the command palette or explorer Open Folder as Workspace (`O`/right-click) now switches the current workspace root to another existing folder, rebuilds the explorer, and starts a fresh PTY terminal there while blocking dirty editor tabs.
 - Explorer sorting can now be changed by keyboard (`s`), command palette, or right-click context menu between name, type, modified time, and size while keeping folders first and preserving the selected path.
 - Explorer copy, cut, paste, duplicate, and reveal-active-file actions backed by real filesystem operations.
 - Explorer New File/New Folder now prefill the selected folder path, create items under the selected folder or selected file's parent, reveal new folders, open new files, and refuse workspace-escaping paths.

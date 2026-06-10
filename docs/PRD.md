@@ -39,6 +39,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can run `tscode ~/project` and immediately see the directory tree.
 - As a developer, I can run `tscode path/to/file.rs` and start in that file while the explorer and terminal use its parent folder.
 - As a developer, I can run `tscode --help` or `tscode --version` from scripts or installers without requiring an interactive terminal.
+- As a developer, I can switch the current workspace to another existing folder from the command palette or explorer without restarting the SSH session.
 - As a developer, I can click folders to expand or collapse them.
 - As a developer, I can click files to open them in editor tabs.
 - As a developer, I can click editor tabs to switch files.
@@ -167,6 +168,7 @@ Keyboard fallback:
 - Explorer drag/drop moves selected rows into the highlighted target folder, and `Alt`+drag copies selected rows instead of moving them
 - Explorer `Ctrl-Enter`, the explorer context menu, and the command palette open the selected file to the side while preserving the current editor pane
 - Explorer `c`, `x`, `p`, `y`, `v`, and `o` perform copy, cut, paste, duplicate, compare-selected-files, and reveal-active-file actions
+- Explorer `O`, the explorer context menu, and command palette Open Folder switch to an existing folder as the workspace root after protecting dirty open buffers
 - Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, compare selected files, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
 - Explorer `s`, the context menu, and the command palette change sorting between name, type, modified time, and size while preserving folders-first grouping
 - Explorer `t` opens a new integrated terminal in the selected folder or selected file's parent folder

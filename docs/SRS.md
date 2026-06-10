@@ -82,6 +82,10 @@ The explorer shall duplicate the selected file, folder, or active multi-selectio
 
 The explorer shall reveal the active editor file by expanding parent folders and selecting the file row.
 
+### R-110A Open Folder as Workspace
+
+The command palette shall provide an Open Folder action that accepts an existing relative or absolute directory path. The explorer shall provide Open Folder as Workspace for the selected folder through `O` and the right-click context menu. Opening a different folder shall replace the workspace root, rebuild the explorer from the real filesystem, close existing clean tabs, clear split-editor, search, quick-panel, navigation, terminal-selection, problem, source-control, and explorer-operation state, and create one new integrated terminal rooted in the new workspace. The action shall refuse non-directory targets, missing paths, and any open dirty file-backed or Untitled editor tab so unsaved edits are not silently lost.
+
 ### R-111 Explorer Visibility Controls
 
 The explorer shall support a visible-tree text filter, dot-prefixed entry visibility toggling, and generated-folder visibility toggling for common generated directories such as `target`, `dist`, `build`, and `node_modules`.
@@ -102,7 +106,7 @@ The explorer shall detect externally-created, externally-deleted, renamed, and m
 
 ### R-115 Explorer Context Menu
 
-Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, open to side, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, compare selected files, rename, delete, New Terminal Here, refresh, collapse folders, sort mode selection, toggle hidden files, and toggle generated folders. When a multi-selection is active, applicable copy, cut, duplicate, delete, and path-copy actions shall apply to the whole selected set, compare selected files shall be available for exactly two selected regular files, and rename shall remain a single-item action. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
+Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, open to side, Open Folder as Workspace for folders, Run File in Terminal for supported files, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, compare selected files, rename, delete, New Terminal Here, refresh, collapse folders, sort mode selection, toggle hidden files, and toggle generated folders. When a multi-selection is active, applicable copy, cut, duplicate, delete, and path-copy actions shall apply to the whole selected set, compare selected files shall be available for exactly two selected regular files, and rename shall remain a single-item action. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
 
 ### R-116 Ignore-Aware Workspace Visibility
 

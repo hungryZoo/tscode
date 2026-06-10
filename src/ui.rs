@@ -256,7 +256,7 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(
-            " Explorer  / filter  s sort:{sort}  . hidden  i generated  n/N new  e rename  D delete  c copy  x cut  p paste  y dup  o reveal  r refresh  {hidden} {ignored}{filter}{selection} "
+            " Explorer  / filter  s sort:{sort}  . hidden  i generated  n/N new  e rename  D delete  c copy  x cut  p paste  y dup  o reveal  O open  r refresh  {hidden} {ignored}{filter}{selection} "
         ))
         .border_style(border_style(focused));
     let inner = block.inner(area);
@@ -1468,6 +1468,7 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::Rename(_) => "rename",
         crate::app::PromptKind::DeletePaths(_) => "delete: type yes",
         crate::app::PromptKind::ExplorerFilter => "explorer filter",
+        crate::app::PromptKind::OpenFolder => "open folder",
         crate::app::PromptKind::Search => "find",
         crate::app::PromptKind::ReplaceFind { all } => {
             if *all {
