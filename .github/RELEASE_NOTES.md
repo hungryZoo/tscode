@@ -50,6 +50,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Collected workspace and language-server diagnostics now appear in the editor with severity gutter badges, subtle line backgrounds, active-file problem counts, and active-line status messages.
 - Terminal file-reference clicks now recognize richer compiler, test, traceback, and stack-frame output including quoted paths, Python `File "path", line N` lines, and `path(line,column)` references.
 - Terminal file-reference clicks now also recognize Node/Jest/TypeScript stack frames like `at fn (path:line:column)`, including paths with spaces inside the parentheses.
+- Terminal link hover/click now recognizes `http://`, `https://`, and percent-encoded `file://...:line:column` URLs; web URLs are copied through the internal/OSC52 clipboard, and file URLs open directly in the editor.
 - Run Selection in Terminal with `Ctrl-Enter` or the command palette sends selected editor text, or the current editor line when there is no selection, to the active PTY shell and focuses the integrated terminal.
 - Editable tabbed code buffers with line numbers, syntax highlighting, dirty markers, cursor movement, paste, save, repeated search, undo, and redo.
 - New Untitled File with `Ctrl-N` or the command palette creates a real editable scratch tab without touching disk; Save File opens Save As, Save All reports dirty Untitled tabs, and Save As retargets the tab to the new file.

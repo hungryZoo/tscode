@@ -706,7 +706,14 @@ fn draw_terminal_pane(
                 app.terminal_selection_columns_for_terminal_row(terminal_index, row_index as u16);
             let search_ranges =
                 app.terminal_search_ranges_for_terminal_row(terminal_index, row_index as u16);
-            Line::from(terminal_row_spans(row, selection, &search_ranges))
+            let link_ranges =
+                app.terminal_link_ranges_for_terminal_row(terminal_index, row_index as u16);
+            Line::from(terminal_row_spans(
+                row,
+                selection,
+                &search_ranges,
+                &link_ranges,
+            ))
         })
         .collect::<Vec<_>>();
 
@@ -1190,8 +1197,9 @@ fn terminal_row_spans(
     row: Vec<TerminalSpan>,
     selection: Option<(usize, usize)>,
     search_ranges: &[(usize, usize, bool)],
+    link_ranges: &[(usize, usize)],
 ) -> Vec<Span<'static>> {
-    if selection.is_none() && search_ranges.is_empty() {
+    if selection.is_none() && search_ranges.is_empty() && link_ranges.is_empty() {
         return row
             .into_iter()
             .map(|span| Span::styled(span.text, terminal_style(span.style)))
@@ -1208,7 +1216,8 @@ fn terminal_row_spans(
         let mut current_style = None::<Style>;
 
         for ch in chars {
-            let style = terminal_cell_overlay_style(base_style, col, selection, search_ranges);
+            let style =
+                terminal_cell_overlay_style(base_style, col, selection, search_ranges, link_ranges);
             if current_style == Some(style) {
                 current_text.push(ch);
             } else {
@@ -1246,12 +1255,20 @@ fn terminal_cell_overlay_style(
     col: usize,
     selection: Option<(usize, usize)>,
     search_ranges: &[(usize, usize, bool)],
+    link_ranges: &[(usize, usize)],
 ) -> Style {
-    let mut style = if selection.is_some_and(|(start, end)| col >= start && col < end) {
-        terminal_selection_style(base_style)
+    let mut style = if link_ranges
+        .iter()
+        .any(|(start, end)| col >= *start && col < *end)
+    {
+        terminal_link_style(base_style)
     } else {
         base_style
     };
+
+    if selection.is_some_and(|(start, end)| col >= start && col < end) {
+        style = terminal_selection_style(base_style);
+    }
 
     for (start, end, active) in search_ranges {
         if col >= *start && col < *end {
@@ -1272,6 +1289,10 @@ fn terminal_search_style(style: Style, active: bool) -> Style {
     } else {
         style.fg(Color::White).bg(SEARCH_BG)
     }
+}
+
+fn terminal_link_style(style: Style) -> Style {
+    style.fg(ACCENT).add_modifier(Modifier::UNDERLINED)
 }
 
 fn terminal_style(style: TerminalStyle) -> Style {

@@ -51,6 +51,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can see ANSI-colored command output such as compiler errors, `git status`, and `ls --color` without losing terminal styling.
 - As a developer, I can use shell editing shortcuts such as `Alt-Backspace`, `Ctrl-Backspace`, `Ctrl-/`, and `Ctrl-6` in the integrated terminal and have them reach readline/zsh/fish-style shells as terminal bytes.
 - As a developer, I can click common compiler, test, traceback, and stack-frame file references printed by the shell and jump to that source location in the editor.
+- As a developer, I can hover and click terminal web/file URLs, copy web URLs through the terminal clipboard, and jump from `file://` URLs to source locations.
 - As a developer, I can drag across visible terminal output, see the selected cells highlighted, copy that text, and paste it back into the active shell with terminal-safe shortcuts.
 - As a developer, I can search the integrated terminal's visible output and scrollback, see matches highlighted, and jump between matches without losing the PTY session.
 - As a developer, I can edit text, save files, create files/folders, rename, delete, and refresh the explorer.

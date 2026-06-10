@@ -9709,20 +9709,79 @@ impl App {
         let Some(line) = self.active_terminal().shell.row_text(row) else {
             return false;
         };
-        let Some(reference) = terminal_file_reference_at(&line, col as usize, &self.root) else {
+        let Some(candidate) = terminal_link_candidate_at(&line, col as usize, &self.root) else {
             return false;
         };
 
-        self.push_navigation_location_for_jump(&reference.path, reference.line, reference.col);
-        self.open_file(&reference.path);
-        if let Some(line) = reference.line
-            && let Some(tab) = self.active_tab_mut()
-        {
-            tab.set_cursor(line, reference.col.unwrap_or(0));
-            self.ensure_editor_cursor_visible();
+        match candidate.link {
+            TerminalLink::File(reference) => {
+                self.push_navigation_location_for_jump(
+                    &reference.path,
+                    reference.line,
+                    reference.col,
+                );
+                self.open_file(&reference.path);
+                if let Some(line) = reference.line
+                    && let Some(tab) = self.active_tab_mut()
+                {
+                    tab.set_cursor(line, reference.col.unwrap_or(0));
+                    self.ensure_editor_cursor_visible();
+                }
+                self.message = Some(format!("opened {}", reference.path.display()));
+            }
+            TerminalLink::Url(url) => {
+                let count = url.chars().count();
+                self.editor_clipboard = Some(url.clone());
+                if self.queue_clipboard_export(&url) {
+                    self.message = Some(format!("copied terminal URL ({count} char(s))"));
+                } else {
+                    self.message = Some(
+                        "copied terminal URL internally; URL too large for terminal clipboard"
+                            .to_owned(),
+                    );
+                }
+            }
         }
-        self.message = Some(format!("opened {}", reference.path.display()));
         true
+    }
+
+    pub fn terminal_link_ranges_for_terminal_row(
+        &self,
+        terminal_index: usize,
+        row: u16,
+    ) -> Vec<(usize, usize)> {
+        let Some(terminal) = self.terminals.get(terminal_index) else {
+            return Vec::new();
+        };
+        if terminal.shell.mouse_protocol_mode() != vt100::MouseProtocolMode::None {
+            return Vec::new();
+        }
+        let Some((body, _)) = self
+            .hit_regions
+            .terminal_bodies
+            .iter()
+            .find(|(body, index)| {
+                *index == terminal_index
+                    && contains(
+                        *body,
+                        self.hit_regions.last_mouse_x,
+                        self.hit_regions.last_mouse_y,
+                    )
+            })
+            .copied()
+        else {
+            return Vec::new();
+        };
+        if self.hit_regions.last_mouse_y.saturating_sub(body.y) != row {
+            return Vec::new();
+        }
+        let col = self.hit_regions.last_mouse_x.saturating_sub(body.x) as usize;
+        let Some(line) = terminal.shell.row_text(row) else {
+            return Vec::new();
+        };
+        terminal_link_candidate_at(&line, col, &self.root)
+            .map(|candidate| vec![(candidate.start, candidate.end)])
+            .unwrap_or_default()
     }
 
     fn next_tab(&mut self) {
@@ -13132,15 +13191,65 @@ struct FileReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum TerminalLink {
+    File(FileReference),
+    Url(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TerminalLinkCandidate {
+    start: usize,
+    end: usize,
+    link: TerminalLink,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TerminalReferenceCandidate {
     start: usize,
     end: usize,
     reference: FileReference,
 }
 
+fn terminal_link_candidate_at(
+    line: &str,
+    char_col: usize,
+    root: &Path,
+) -> Option<TerminalLinkCandidate> {
+    if let Some(candidate) = terminal_url_candidate_at(line, char_col, root) {
+        return Some(candidate);
+    }
+
+    if let Some(candidate) = terminal_token_reference_candidate_at(line, char_col, root) {
+        return Some(TerminalLinkCandidate {
+            start: candidate.start,
+            end: candidate.end,
+            link: TerminalLink::File(candidate.reference),
+        });
+    }
+
+    terminal_reference_candidates(line, root)
+        .into_iter()
+        .filter(|candidate| char_col >= candidate.start && char_col < candidate.end)
+        .min_by_key(|candidate| candidate.end.saturating_sub(candidate.start))
+        .map(|candidate| TerminalLinkCandidate {
+            start: candidate.start,
+            end: candidate.end,
+            link: TerminalLink::File(candidate.reference),
+        })
+}
+
+#[cfg(test)]
 fn terminal_file_reference_at(line: &str, char_col: usize, root: &Path) -> Option<FileReference> {
-    if let Some(reference) = terminal_token_reference_at(line, char_col, root) {
+    if let Some(TerminalLinkCandidate {
+        link: TerminalLink::File(reference),
+        ..
+    }) = terminal_url_candidate_at(line, char_col, root)
+    {
         return Some(reference);
+    }
+
+    if let Some(candidate) = terminal_token_reference_candidate_at(line, char_col, root) {
+        return Some(candidate.reference);
     }
 
     terminal_reference_candidates(line, root)
@@ -13150,7 +13259,11 @@ fn terminal_file_reference_at(line: &str, char_col: usize, root: &Path) -> Optio
         .map(|candidate| candidate.reference)
 }
 
-fn terminal_token_reference_at(line: &str, char_col: usize, root: &Path) -> Option<FileReference> {
+fn terminal_token_reference_candidate_at(
+    line: &str,
+    char_col: usize,
+    root: &Path,
+) -> Option<TerminalReferenceCandidate> {
     let chars = line.chars().collect::<Vec<_>>();
     if chars.is_empty() {
         return None;
@@ -13170,7 +13283,121 @@ fn terminal_token_reference_at(line: &str, char_col: usize, root: &Path) -> Opti
     }
 
     let token = chars[start..end].iter().collect::<String>();
-    parse_terminal_reference_token(&token, root)
+    parse_terminal_reference_token(&token, root).map(|reference| TerminalReferenceCandidate {
+        start,
+        end,
+        reference,
+    })
+}
+
+fn terminal_url_candidate_at(
+    line: &str,
+    char_col: usize,
+    root: &Path,
+) -> Option<TerminalLinkCandidate> {
+    terminal_url_candidates(line, root)
+        .into_iter()
+        .filter(|candidate| char_col >= candidate.start && char_col < candidate.end)
+        .min_by_key(|candidate| candidate.end.saturating_sub(candidate.start))
+}
+
+fn terminal_url_candidates(line: &str, root: &Path) -> Vec<TerminalLinkCandidate> {
+    let mut candidates = Vec::new();
+    for scheme in ["https://", "http://", "file://"] {
+        let mut search_start = 0;
+        while let Some(offset) = line[search_start..].find(scheme) {
+            let start_byte = search_start + offset;
+            let raw_end_byte = terminal_url_raw_end(line, start_byte);
+            let trimmed_end_byte =
+                start_byte + terminal_url_trimmed_len(&line[start_byte..raw_end_byte]);
+            if trimmed_end_byte <= start_byte {
+                search_start = raw_end_byte.max(start_byte + scheme.len());
+                continue;
+            }
+            let url = &line[start_byte..trimmed_end_byte];
+            let link = if scheme == "file://" {
+                parse_file_url_reference(url, root).map(TerminalLink::File)
+            } else {
+                Some(TerminalLink::Url(url.to_owned()))
+            };
+            if let Some(link) = link {
+                candidates.push(TerminalLinkCandidate {
+                    start: byte_to_char_index(line, start_byte),
+                    end: byte_to_char_index(line, trimmed_end_byte),
+                    link,
+                });
+            }
+            search_start = raw_end_byte.max(start_byte + scheme.len());
+        }
+    }
+    candidates
+}
+
+fn terminal_url_raw_end(line: &str, start_byte: usize) -> usize {
+    for (offset, c) in line[start_byte..].char_indices() {
+        if c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '<' | '>') {
+            return start_byte + offset;
+        }
+    }
+    line.len()
+}
+
+fn terminal_url_trimmed_len(url: &str) -> usize {
+    let mut end = url.len();
+    while let Some((index, ch)) = previous_char(url, end) {
+        let trim = matches!(ch, '.' | ',' | ';' | ':' | '!' | '?')
+            || (ch == ')' && unmatched_closing_suffix(&url[..end], '(', ')'))
+            || (ch == ']' && unmatched_closing_suffix(&url[..end], '[', ']'))
+            || (ch == '}' && unmatched_closing_suffix(&url[..end], '{', '}'));
+        if !trim {
+            break;
+        }
+        end = index;
+    }
+    end
+}
+
+fn previous_char(text: &str, end: usize) -> Option<(usize, char)> {
+    text.get(..end)?.char_indices().last()
+}
+
+fn unmatched_closing_suffix(text: &str, opening: char, closing: char) -> bool {
+    text.chars().filter(|c| *c == closing).count() > text.chars().filter(|c| *c == opening).count()
+}
+
+fn parse_file_url_reference(url: &str, root: &Path) -> Option<FileReference> {
+    let rest = url.strip_prefix("file://")?;
+    let path_start = rest.find('/')?;
+    let decoded = percent_decode_url_path(&rest[path_start..])?;
+    parse_trailing_terminal_reference(&decoded, root)
+        .or_else(|| file_reference_from_parts(&decoded, None, None, root))
+}
+
+fn percent_decode_url_path(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hi = *bytes.get(index + 1)?;
+            let lo = *bytes.get(index + 2)?;
+            output.push(url_hex_value(hi)? * 16 + url_hex_value(lo)?);
+            index += 3;
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(output).ok()
+}
+
+fn url_hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn terminal_reference_candidates(line: &str, root: &Path) -> Vec<TerminalReferenceCandidate> {
@@ -17481,6 +17708,115 @@ src/lib.rs:3:1: note: trailing note
         assert_eq!(absolute_node_ref.line, Some(10));
         assert_eq!(absolute_node_ref.col, Some(14));
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_link_parser_handles_web_and_file_urls() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-terminal-links-{}", std::process::id()));
+        let src = root.join("space dir");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("app.rs"), "fn main() {}\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let app_file = root.join("space dir/app.rs");
+
+        let web_line = "open https://example.com/a_(b)?q=1).";
+        let web =
+            terminal_link_candidate_at(web_line, web_line.find("example").unwrap(), &root).unwrap();
+        assert_eq!(
+            web.link,
+            TerminalLink::Url("https://example.com/a_(b)?q=1".to_owned())
+        );
+
+        let encoded_path = app_file.to_string_lossy().replace(' ', "%20");
+        let file_line = format!("trace file://localhost{encoded_path}:4:2");
+        let file = terminal_link_candidate_at(&file_line, file_line.find("app.rs").unwrap(), &root)
+            .unwrap();
+        assert_eq!(
+            file.link,
+            TerminalLink::File(FileReference {
+                path: app_file,
+                line: Some(3),
+                col: Some(1),
+            })
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_url_click_copies_url_and_hover_highlights_range() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-terminal-url-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut app = App::new(root.clone()).unwrap();
+        let line = "visit https://example.com/docs";
+
+        app.active_terminal_mut().shell.clear();
+        app.active_terminal_mut().shell.resize(5, 240);
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(line.as_bytes());
+
+        let url_start = line.find("https://").unwrap();
+        app.hit_regions.terminal_bodies = vec![(Rect::new(0, 0, 80, 5), 0)];
+        app.hit_regions.last_mouse_x = (url_start + 2) as u16;
+        app.hit_regions.last_mouse_y = 0;
+        assert_eq!(
+            app.terminal_link_ranges_for_terminal_row(0, 0),
+            vec![(url_start, line.len())]
+        );
+
+        assert!(app.open_terminal_reference(0, (url_start + 3) as u16));
+        assert_eq!(
+            app.editor_clipboard.as_deref(),
+            Some("https://example.com/docs")
+        );
+        assert_eq!(
+            app.take_clipboard_export().as_deref(),
+            Some("https://example.com/docs")
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_file_url_click_opens_file_location() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-terminal-file-url-{}",
+            std::process::id()
+        ));
+        let src = root.join("space dir");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("app.rs"), "fn main() {}\nfn next() {}\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let app_file = root.join("space dir/app.rs");
+        let encoded_path = app_file.to_string_lossy().replace(' ', "%20");
+        let line = format!("open file://localhost{encoded_path}:2:4");
+        let mut app = App::new(root.clone()).unwrap();
+
+        app.active_terminal_mut().shell.clear();
+        app.active_terminal_mut().shell.resize(5, 240);
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(line.as_bytes());
+
+        let click_col = line.find("app.rs").unwrap();
+        let rendered = app.active_terminal().shell.row_text(0).unwrap_or_default();
+        assert!(
+            app.open_terminal_reference(0, click_col as u16),
+            "rendered row={rendered:?}, line={line:?}, click_col={click_col}"
+        );
+        assert_eq!(app.active_tab().unwrap().path, app_file);
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (1, 3));
+
+        app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
 

@@ -418,6 +418,10 @@ When the child terminal application enables bracketed paste mode, paste events s
 
 Clicking a visible shell output token that resolves to an existing workspace file path, optionally followed by `:line` or `:line:column`, shall open that file in the editor and move the cursor to the referenced location. The reference parser shall also recognize quoted paths with trailing line/column suffixes, Python traceback lines such as `File "path", line N`, parenthesized stack-frame formats such as `path(line,column)`, and Node/Jest/TypeScript stack frames such as `at fn (path:line:column)` when the resolved file exists.
 
+### R-314A Terminal Web and File Links
+
+When the child terminal app has not requested xterm mouse reporting, moving the mouse over a visible `http://`, `https://`, or `file://` link shall visually underline the link range. Clicking an `http://` or `https://` link shall copy the URL to the internal clipboard and queue an OSC52 terminal clipboard export when it is within the configured size limit. Clicking a percent-decoded `file://` URL that resolves to an existing file, optionally followed by `:line` or `:line:column`, shall open that file in the editor and move the cursor to the referenced location.
+
 ### R-315 Terminal Mouse Pass-Through
 
 When the child terminal application requests xterm mouse events, terminal mouse down, release, drag, move, and wheel events shall be forwarded to the PTY instead of being interpreted as source-reference clicks or scrollback movement. The forwarded encoding shall follow the requested xterm mouse mode and coordinate encoding, including SGR, default, and UTF-8 encodings where the parser exposes them.
