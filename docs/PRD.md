@@ -110,6 +110,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can clear the integrated terminal viewport or restart the PTY shell without restarting the whole application.
 - As a developer, I can see which terminal session is active, where it is running, whether it is live, its exit code or termination signal after the shell exits, whether its child app reported a title, and whether scrollback or terminal child modes are active.
 - As a developer, I can focus the integrated terminal quickly, maximize it when command output needs more space, and resize its normal panel height by dragging the panel border or using commands.
+- As a developer, I can click Node/Jest/TypeScript stack frames such as `at fn (path:line:column)` in terminal output and jump directly to the referenced file location.
 - As a developer, I can create multiple integrated terminal sessions, switch between them, close them, and keep each shell's state independent.
 - As a developer, I can split the active integrated terminal into side-by-side PTY panes, click either pane to focus that shell, and close one pane without killing the other shell.
 - As a developer, I can rename terminal sessions so long-running shells, tasks, and logs stay recognizable without restarting them, and that chosen name is not overwritten by later shell title reports.

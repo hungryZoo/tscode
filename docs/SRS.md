@@ -412,7 +412,7 @@ When the child terminal application enables bracketed paste mode, paste events s
 
 ### R-314 Terminal File References
 
-Clicking a visible shell output token that resolves to an existing workspace file path, optionally followed by `:line` or `:line:column`, shall open that file in the editor and move the cursor to the referenced location. The reference parser shall also recognize quoted paths with trailing line/column suffixes, Python traceback lines such as `File "path", line N`, and parenthesized stack-frame formats such as `path(line,column)` when the resolved file exists.
+Clicking a visible shell output token that resolves to an existing workspace file path, optionally followed by `:line` or `:line:column`, shall open that file in the editor and move the cursor to the referenced location. The reference parser shall also recognize quoted paths with trailing line/column suffixes, Python traceback lines such as `File "path", line N`, parenthesized stack-frame formats such as `path(line,column)`, and Node/Jest/TypeScript stack frames such as `at fn (path:line:column)` when the resolved file exists.
 
 ### R-315 Terminal Mouse Pass-Through
 

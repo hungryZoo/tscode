@@ -13038,6 +13038,7 @@ fn terminal_reference_candidates(line: &str, root: &Path) -> Vec<TerminalReferen
     let mut candidates = Vec::new();
     collect_python_file_references(line, root, &mut candidates);
     collect_quoted_trailing_references(line, root, &mut candidates);
+    collect_parenthesized_path_references(line, root, &mut candidates);
     collect_parenthesized_line_references(line, root, &mut candidates);
     candidates
 }
@@ -13167,6 +13168,34 @@ fn collect_parenthesized_line_references(
     }
 }
 
+fn collect_parenthesized_path_references(
+    line: &str,
+    root: &Path,
+    candidates: &mut Vec<TerminalReferenceCandidate>,
+) {
+    for (paren_start, _) in line.match_indices('(') {
+        let Some(paren_end_offset) = line[paren_start + 1..].find(')') else {
+            continue;
+        };
+        let inside_start = paren_start + 1;
+        let paren_end = inside_start + paren_end_offset;
+        let inside = &line[inside_start..paren_end];
+        let (trim_start, trim_end) = trim_bounds(inside);
+        if trim_start >= trim_end {
+            continue;
+        }
+        let trimmed = &inside[trim_start..trim_end];
+        let Some(reference) = parse_terminal_reference_token(trimmed, root) else {
+            continue;
+        };
+        candidates.push(TerminalReferenceCandidate {
+            start: byte_to_char_index(line, inside_start + trim_start),
+            end: byte_to_char_index(line, inside_start + trim_end),
+            reference,
+        });
+    }
+}
+
 fn terminal_reference_path_starts(input: &str) -> Vec<usize> {
     let mut starts = vec![0];
     for (index, c) in input.char_indices() {
@@ -13217,6 +13246,12 @@ fn parse_parenthesized_line_column(input: &str) -> Option<(usize, Option<usize>)
         .and_then(|part| part.parse::<usize>().ok())
         .map(|col| col.saturating_sub(1));
     Some((line, col))
+}
+
+fn trim_bounds(input: &str) -> (usize, usize) {
+    let start = input.len().saturating_sub(input.trim_start().len());
+    let end = input.trim_end().len();
+    (start, end)
 }
 
 fn byte_to_char_index(text: &str, byte_index: usize) -> usize {
@@ -17239,6 +17274,24 @@ src/lib.rs:3:1: note: trailing note
         assert_eq!(ts_ref.path, ts);
         assert_eq!(ts_ref.line, Some(8));
         assert_eq!(ts_ref.col, Some(12));
+
+        let node_line = "    at render (space dir/app.ts:10:14)";
+        let node_ref =
+            terminal_file_reference_at(node_line, node_line.find("10:14").unwrap(), &root).unwrap();
+        assert_eq!(node_ref.path, ts);
+        assert_eq!(node_ref.line, Some(9));
+        assert_eq!(node_ref.col, Some(13));
+
+        let absolute_node_line = format!("    at Object.<anonymous> ({}:11:15)", ts.display());
+        let absolute_node_ref = terminal_file_reference_at(
+            &absolute_node_line,
+            absolute_node_line.find("app.ts").unwrap(),
+            &root,
+        )
+        .unwrap();
+        assert_eq!(absolute_node_ref.path, ts);
+        assert_eq!(absolute_node_ref.line, Some(10));
+        assert_eq!(absolute_node_ref.col, Some(14));
 
         let _ = fs::remove_dir_all(root);
     }
