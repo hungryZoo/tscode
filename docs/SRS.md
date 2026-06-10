@@ -244,7 +244,7 @@ The editor shall support jumping to one-based `line` or `line:column` input thro
 
 ### R-220 Save All
 
-The command palette shall include a save-all command that writes every dirty file-backed editor tab to disk when the backing file is clean. It shall skip dirty Untitled tabs and dirty tabs with external disk conflicts, and it shall report the skipped counts.
+`Ctrl-k` followed by `s`, the command palette, and the editor context menu shall include a Save All command that writes every dirty file-backed editor tab to disk when the backing file is clean. It shall skip dirty Untitled tabs and dirty tabs with external disk conflicts, and it shall report the skipped counts. The `Ctrl-k` chord shall not intercept terminal focus or prompt/quick-panel `Ctrl-k` text-editing behavior.
 
 ### R-221 Editor Selection
 

@@ -206,7 +206,7 @@ Keyboard fallback:
 - `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
 - `Ctrl-N` or the command palette creates an editable Untitled tab without touching disk until Save As
 - The command palette provides Save As for writing the active editor buffer to a new path and retargeting the tab
-- `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, `Ctrl-W`, and `Ctrl-Shift-T` provide editor save/search/replace/history/tab-close/reopen-closed-editor actions; `Ctrl-S` on an Untitled tab opens Save As, and dirty tab close opens Save and Close / Don't Save / Cancel choices
+- `Ctrl-S`, `Ctrl-K S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, `Ctrl-W`, and `Ctrl-Shift-T` provide editor save/save-all/search/replace/history/tab-close/reopen-closed-editor actions; `Ctrl-S` on an Untitled tab opens Save As, `Ctrl-K S` saves every dirty file-backed tab while skipping dirty Untitled or disk-conflicted tabs, and dirty tab close opens Save and Close / Don't Save / Cancel choices
 - `Ctrl-\`, the command palette, and the editor context menu split the active editor into a side-by-side pane; Close Editor Split returns to a single editor pane
 - Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, bookmarks, signature-help, symbol highlights, definition/call-hierarchy/references/code-action/rename/suggest, format, fold/unfold, comments, send-to-terminal, path-copy, revert, close-tab, and reopen-closed-editor actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor

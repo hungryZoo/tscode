@@ -2484,6 +2484,11 @@ impl GitStatusEntry {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingKeyChord {
+    CtrlK,
+}
+
 pub struct App {
     pub root: PathBuf,
     pub explorer: FsTree,
@@ -2547,6 +2552,7 @@ pub struct App {
     pub terminal_command_history: Vec<String>,
     pub problems: Vec<QuickItem>,
     pending_clipboard_export: Option<String>,
+    pending_key_chord: Option<PendingKeyChord>,
     workspace_snapshot: Option<WorkspaceSnapshot>,
     workspace_visible_paths: HashSet<PathBuf>,
     last_workspace_tree_check: Instant,
@@ -2638,6 +2644,7 @@ impl App {
             terminal_command_history: Vec::new(),
             problems: Vec::new(),
             pending_clipboard_export: None,
+            pending_key_chord: None,
             workspace_snapshot,
             workspace_visible_paths,
             last_workspace_tree_check: Instant::now(),
@@ -2818,6 +2825,12 @@ impl App {
             return self.handle_prompt_key(key);
         }
 
+        if let Some(chord) = self.pending_key_chord.take()
+            && self.handle_pending_key_chord(chord, key)?
+        {
+            return Ok(());
+        }
+
         if !matches!(self.focus, FocusPanel::Terminal) && key.code == KeyCode::F(1) {
             self.open_quick_panel(QuickPanelKind::CommandPalette)?;
             return Ok(());
@@ -2874,6 +2887,14 @@ impl App {
                 }
                 KeyCode::Char('j') if !terminal_child_owns_keyboard => {
                     self.toggle_terminal_maximized();
+                    return Ok(());
+                }
+                KeyCode::Char('k')
+                    if key.modifiers == KeyModifiers::CONTROL
+                        && !matches!(self.focus, FocusPanel::Terminal) =>
+                {
+                    self.pending_key_chord = Some(PendingKeyChord::CtrlK);
+                    self.message = Some("Ctrl-K chord: press S to Save All".to_owned());
                     return Ok(());
                 }
                 _ if matches!(self.focus, FocusPanel::Terminal) => {}
@@ -5754,7 +5775,7 @@ fn command_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             label: "Save All",
             detail: "Write all dirty editor tabs to disk",
-            shortcut: "",
+            shortcut: "Ctrl-K S",
             action: CommandAction::SaveAll,
         },
         CommandSpec {
@@ -6729,6 +6750,12 @@ impl App {
                 detail: format!("Write {relative} to disk"),
                 shortcut: "Ctrl-S",
                 action: CommandAction::SaveFile,
+            },
+            ContextMenuAction {
+                label: "Save All",
+                detail: "Write every dirty file-backed editor tab to disk".to_owned(),
+                shortcut: "Ctrl-K S",
+                action: CommandAction::SaveAll,
             },
             ContextMenuAction {
                 label: "Open to Side",
@@ -11944,6 +11971,34 @@ impl App {
             CommandAction::DecreaseTerminalHeight => self.resize_terminal_panel(-2),
         }
         Ok(())
+    }
+
+    fn handle_pending_key_chord(&mut self, chord: PendingKeyChord, key: KeyEvent) -> Result<bool> {
+        match chord {
+            PendingKeyChord::CtrlK => {
+                if matches!(self.focus, FocusPanel::Terminal) {
+                    self.message = Some("Ctrl-K chord cancelled".to_owned());
+                    return Ok(false);
+                }
+
+                match key.code {
+                    KeyCode::Char('s') | KeyCode::Char('S')
+                        if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+                    {
+                        self.save_all_tabs();
+                        Ok(true)
+                    }
+                    KeyCode::Esc => {
+                        self.message = Some("Ctrl-K chord cancelled".to_owned());
+                        Ok(true)
+                    }
+                    _ => {
+                        self.message = Some("Ctrl-K chord cancelled".to_owned());
+                        Ok(false)
+                    }
+                }
+            }
+        }
     }
 
     fn send_terminal_mouse_click(&mut self) {
@@ -19152,6 +19207,73 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::NewUntitledFile))
         );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(canonical_root);
+    }
+
+    #[test]
+    fn ctrl_k_s_chord_saves_all_dirty_file_backed_tabs() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-save-all-chord-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.rs");
+        let second = root.join("second.rs");
+        fs::write(&first, "fn first() {}\n").unwrap();
+        fs::write(&second, "fn second() {}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        let first = canonical_root.join("first.rs");
+        let second = canonical_root.join("second.rs");
+
+        app.open_file(&first);
+        app.active_tab_mut().unwrap().insert_text("// saved one\n");
+        app.open_file(&second);
+        app.active_tab_mut().unwrap().insert_text("// saved two\n");
+        app.run_command(CommandAction::NewUntitledFile).unwrap();
+        app.active_tab_mut().unwrap().insert_text("scratch");
+        assert_eq!(app.tabs.iter().filter(|tab| tab.dirty).count(), 3);
+
+        app.focus = FocusPanel::Editor;
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.pending_key_chord, Some(PendingKeyChord::CtrlK));
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Ctrl-K chord: press S to Save All")
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&first).unwrap(),
+            "// saved one\nfn first() {}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&second).unwrap(),
+            "// saved two\nfn second() {}\n"
+        );
+        assert!(
+            app.tabs
+                .iter()
+                .filter(|tab| !tab.untitled)
+                .all(|tab| !tab.dirty)
+        );
+        assert!(app.tabs.iter().any(|tab| tab.untitled && tab.dirty));
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("saved 2 dirty tab(s)")
+                    && message.contains("skipped 1 untitled tab"))
+        );
+
+        app.focus = FocusPanel::Terminal;
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.pending_key_chord, None);
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(canonical_root);
