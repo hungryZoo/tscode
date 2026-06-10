@@ -1831,6 +1831,7 @@ pub enum PromptKind {
     RenameSymbol { old: String },
     SaveAs,
     SaveAsClose { index: usize },
+    CreateGitBranch,
     CommitStagedSourceControlChanges,
     CommitAllSourceControlChanges(Vec<PathBuf>),
     DiscardSourceControlPath(PathBuf),
@@ -1871,6 +1872,7 @@ pub enum QuickPanelKind {
     LspReferences,
     Problems,
     SourceControl,
+    Branches,
     Tasks,
     CommandPalette,
 }
@@ -1977,6 +1979,9 @@ pub enum CommandAction {
     RunLspDiagnostics,
     ShowProblems,
     ShowSourceControl,
+    ShowGitBranches,
+    CheckoutGitBranch,
+    CreateGitBranch,
     OpenSourceControlDiff,
     StageSourceControlItem,
     UnstageSourceControlItem,
@@ -2311,6 +2316,7 @@ pub struct App {
     pub editor_clipboard: Option<String>,
     pub git_statuses: HashMap<PathBuf, GitStatusKind>,
     pub git_dirty_dirs: HashSet<PathBuf>,
+    pub git_branch: Option<String>,
     pub navigation_back: Vec<EditorLocation>,
     pub navigation_forward: Vec<EditorLocation>,
     pub terminal_selection: Option<TerminalSelection>,
@@ -2337,6 +2343,7 @@ impl App {
         let explorer = FsTree::new(root.clone())?;
         let terminal = TerminalSession::new(1, root.clone())?;
         let (git_statuses, git_dirty_dirs) = load_git_status(&root);
+        let git_branch = git_top_level(&root).and_then(|top_level| git_current_branch(&top_level));
         let workspace_snapshot = workspace_snapshot(&root, true, false).ok();
         let workspace_visible_paths =
             workspace_visible_paths(&root, true, false).unwrap_or_else(|_| {
@@ -2392,6 +2399,7 @@ impl App {
             editor_clipboard: None,
             git_statuses,
             git_dirty_dirs,
+            git_branch,
             navigation_back: Vec::new(),
             navigation_forward: Vec::new(),
             terminal_selection: None,
@@ -4919,6 +4927,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::ShowSourceControl,
         },
         CommandSpec {
+            label: "Git Checkout Branch",
+            detail: "List local Git branches and switch the workspace branch",
+            shortcut: "",
+            action: CommandAction::ShowGitBranches,
+        },
+        CommandSpec {
+            label: "Git Create Branch",
+            detail: "Prompt for a branch name, create it, and switch to it",
+            shortcut: "",
+            action: CommandAction::CreateGitBranch,
+        },
+        CommandSpec {
             label: "Stage All Changes",
             detail: "Stage every current Git working tree change",
             shortcut: "",
@@ -5551,6 +5571,7 @@ impl App {
             QuickPanelKind::LspReferences => filter_existing_quick_items(existing_items, &query),
             QuickPanelKind::Problems => self.problem_items(&query),
             QuickPanelKind::SourceControl => self.source_control_items(&query)?,
+            QuickPanelKind::Branches => self.branch_items(&query)?,
             QuickPanelKind::Tasks => self.task_items(&query),
             QuickPanelKind::CommandPalette => self.command_palette_items(&query),
         };
@@ -6680,6 +6701,32 @@ impl App {
         entries.sort_by(|left, right| {
             relative_path(&top_level, &left.path).cmp(&relative_path(&top_level, &right.path))
         });
+        let current_branch = git_current_branch(&top_level);
+
+        items.push(QuickItem {
+            label: format!(
+                "B Checkout Branch{}",
+                current_branch
+                    .as_ref()
+                    .map(|branch| format!(" ({branch})"))
+                    .unwrap_or_default()
+            ),
+            detail: "list local branches and switch with dirty-buffer protection".to_owned(),
+            path: top_level.clone(),
+            line: None,
+            col: None,
+            preview: None,
+            command: Some(CommandAction::ShowGitBranches),
+        });
+        items.push(QuickItem {
+            label: "+ Create Branch".to_owned(),
+            detail: "prompt for a new branch name and check it out".to_owned(),
+            path: top_level.clone(),
+            line: None,
+            col: None,
+            preview: None,
+            command: Some(CommandAction::CreateGitBranch),
+        });
 
         if entries.iter().any(GitStatusEntry::can_stage) {
             items.push(QuickItem {
@@ -6831,6 +6878,41 @@ impl App {
         }
 
         Ok(items.into_iter().take(MAX_QUICK_ITEMS).collect())
+    }
+
+    fn branch_items(&self, query: &str) -> Result<Vec<QuickItem>> {
+        let Some(top_level) = git_top_level(&self.root) else {
+            return Ok(Vec::new());
+        };
+
+        let current = git_current_branch(&top_level);
+        let mut items = vec![QuickItem {
+            label: "+ Create Branch".to_owned(),
+            detail: "prompt for a new branch name and check it out".to_owned(),
+            path: top_level.clone(),
+            line: None,
+            col: None,
+            preview: None,
+            command: Some(CommandAction::CreateGitBranch),
+        }];
+        for branch in git_local_branches(&top_level)? {
+            let is_current = current.as_deref() == Some(branch.as_str());
+            items.push(QuickItem {
+                label: if is_current {
+                    format!("* {branch}")
+                } else {
+                    format!("  {branch}")
+                },
+                detail: branch,
+                path: top_level.clone(),
+                line: None,
+                col: None,
+                preview: is_current.then(|| "current branch".to_owned()),
+                command: Some(CommandAction::CheckoutGitBranch),
+            });
+        }
+
+        Ok(filter_existing_quick_items(items, query))
     }
 
     fn task_items(&self, query: &str) -> Vec<QuickItem> {
@@ -7289,6 +7371,9 @@ impl App {
                 if let Some(saved_index) = self.save_tab_as_from_prompt(index, prompt.input)? {
                     self.close_tab_without_prompt(saved_index, "saved and closed");
                 }
+            }
+            PromptKind::CreateGitBranch => {
+                self.create_git_branch_from_prompt(prompt.input)?;
             }
             PromptKind::CommitStagedSourceControlChanges => {
                 self.commit_staged_source_control_changes_confirmed(prompt.input)?;
@@ -7781,6 +7866,8 @@ impl App {
 
     fn refresh_git_status(&mut self) {
         let (statuses, dirty_dirs) = load_git_status(&self.root);
+        self.git_branch =
+            git_top_level(&self.root).and_then(|top_level| git_current_branch(&top_level));
         self.git_statuses = statuses;
         self.git_dirty_dirs = dirty_dirs;
     }
@@ -9717,6 +9804,26 @@ impl App {
             }
         }
 
+        if kind == QuickPanelKind::Branches {
+            match item.command {
+                Some(CommandAction::CreateGitBranch) => {
+                    self.quick_panel = None;
+                    if let Err(error) = self.prompt_create_git_branch() {
+                        self.last_error = Some(error.to_string());
+                    }
+                    return;
+                }
+                Some(CommandAction::CheckoutGitBranch) => {
+                    self.quick_panel = None;
+                    if let Err(error) = self.checkout_git_branch(&item.detail) {
+                        self.last_error = Some(error.to_string());
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         if let Some(command) = item.command {
             self.quick_panel = None;
             if let Err(error) = self.run_command(command) {
@@ -9750,6 +9857,62 @@ impl App {
             self.search_needle = Some(query);
         }
         self.message = Some(format!("opened {}", item.path.display()));
+    }
+
+    fn prompt_create_git_branch(&mut self) -> Result<()> {
+        let _ = git_top_level(&self.root).context("not a git repository")?;
+        self.start_prompt(PromptKind::CreateGitBranch, "");
+        self.message = Some("enter new Git branch name".to_owned());
+        Ok(())
+    }
+
+    fn create_git_branch_from_prompt(&mut self, branch: String) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        let branch = branch.trim();
+        if branch.is_empty() {
+            self.message = Some("create branch cancelled: empty branch name".to_owned());
+            return Ok(());
+        }
+        validate_git_branch_name(&top_level, branch)?;
+        if let Some(label) = self.dirty_tabs_under_paths(std::slice::from_ref(&top_level)) {
+            self.message = Some(format!(
+                "create branch blocked by unsaved editor tab: {label}; save or close it first"
+            ));
+            return Ok(());
+        }
+        create_and_checkout_git_branch(&top_level, branch)?;
+        self.after_git_branch_switch(format!("created and checked out {branch}"))
+    }
+
+    fn checkout_git_branch(&mut self, branch: &str) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        let branch = branch.trim();
+        if branch.is_empty() {
+            self.message = Some("select a Git branch to check out".to_owned());
+            return Ok(());
+        }
+        if git_current_branch(&top_level).as_deref() == Some(branch) {
+            self.message = Some(format!("already on {branch}"));
+            return Ok(());
+        }
+        if let Some(label) = self.dirty_tabs_under_paths(std::slice::from_ref(&top_level)) {
+            self.message = Some(format!(
+                "checkout blocked by unsaved editor tab: {label}; save or close it first"
+            ));
+            return Ok(());
+        }
+        checkout_git_branch(&top_level, branch)?;
+        self.after_git_branch_switch(format!("checked out {branch}"))
+    }
+
+    fn after_git_branch_switch(&mut self, message: String) -> Result<()> {
+        self.refresh_explorer_preserving_selection(false)?;
+        self.update_workspace_snapshot();
+        self.check_external_file_changes();
+        self.refresh_git_status();
+        self.open_quick_panel(QuickPanelKind::Branches)?;
+        self.message = Some(message);
+        Ok(())
     }
 
     fn open_source_control_diff(&mut self, path: &Path) -> Result<()> {
@@ -10185,6 +10348,17 @@ impl App {
                 }
                 self.open_quick_panel(QuickPanelKind::SourceControl)?;
             }
+            CommandAction::ShowGitBranches => {
+                self.refresh_git_status();
+                if git_top_level(&self.root).is_none() {
+                    self.message = Some("not a git repository".to_owned());
+                }
+                self.open_quick_panel(QuickPanelKind::Branches)?;
+            }
+            CommandAction::CheckoutGitBranch => {
+                self.message = Some("select a Git branch to check out".to_owned());
+            }
+            CommandAction::CreateGitBranch => self.prompt_create_git_branch()?,
             CommandAction::OpenSourceControlDiff => {
                 self.message = Some("select a Source Control file row to open its diff".to_owned());
             }
@@ -11741,6 +11915,72 @@ fn git_top_level(root: &Path) -> Option<PathBuf> {
     }
     let path = PathBuf::from(path);
     Some(path.canonicalize().unwrap_or(path))
+}
+
+fn git_current_branch(top_level: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(top_level)
+        .args(["branch", "--show-current"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !branch.is_empty() {
+            return Some(branch);
+        }
+    }
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(top_level)
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let head = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!head.is_empty()).then(|| format!("HEAD@{head}"))
+}
+
+fn git_local_branches(top_level: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(top_level)
+        .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+        .output()
+        .context("failed to list Git branches")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git for-each-ref failed: {}",
+            git_output_message(&output)
+        ));
+    }
+    let mut branches = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    branches.sort();
+    branches.dedup();
+    Ok(branches)
+}
+
+fn validate_git_branch_name(top_level: &Path, branch: &str) -> Result<()> {
+    if branch.starts_with('-') || branch.chars().any(char::is_control) {
+        return Err(anyhow!("invalid Git branch name: {branch}"));
+    }
+    run_git_command(top_level, &["check-ref-format", "--branch", branch])
+}
+
+fn checkout_git_branch(top_level: &Path, branch: &str) -> Result<()> {
+    run_git_command(top_level, &["checkout", branch])
+}
+
+fn create_and_checkout_git_branch(top_level: &Path, branch: &str) -> Result<()> {
+    run_git_command(top_level, &["checkout", "-b", branch])
 }
 
 #[cfg(test)]
@@ -18255,6 +18495,13 @@ index 1111111..2222222 100644
                 .any(|item| item.label == "+ Stage All Changes"
                     && item.command == Some(CommandAction::StageAllChanges))
         );
+        assert!(panel.items.iter().any(|item| {
+            item.label.starts_with("B Checkout Branch")
+                && item.command == Some(CommandAction::ShowGitBranches)
+        }));
+        assert!(panel.items.iter().any(|item| {
+            item.label == "+ Create Branch" && item.command == Some(CommandAction::CreateGitBranch)
+        }));
         assert!(panel.items.iter().any(|item| item.label == "M src/lib.rs"));
         assert!(panel.items.iter().any(|item| item.label == "M src/lib.rs"
             && item.command == Some(CommandAction::OpenSourceControlDiff)));
@@ -18285,6 +18532,125 @@ index 1111111..2222222 100644
         assert_eq!(app.focus, FocusPanel::Editor);
         assert_eq!(app.active_tab().unwrap().path, lib);
         assert_eq!(app.active_tab().unwrap().cursor_position(), (1, 0));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn git_branch_panel_checks_out_and_creates_branches_with_dirty_buffer_protection() {
+        if !git_available() {
+            return;
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-git-branches-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    1\n}\n").unwrap();
+
+        init_git_repo(&root);
+        assert_git(&root, &["add", "src/lib.rs"]);
+        assert_git(
+            &root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+            ],
+        );
+        let initial_branch = git_current_branch(&root).unwrap();
+        assert_git(&root, &["checkout", "-q", "-b", "feature"]);
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    2\n}\n").unwrap();
+        assert_git(&root, &["add", "src/lib.rs"]);
+        assert_git(
+            &root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "feature edit",
+            ],
+        );
+        assert_git(&root, &["checkout", "-q", &initial_branch]);
+
+        let canonical_root = root.canonicalize().unwrap();
+        let lib = canonical_root.join("src/lib.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        assert_eq!(app.git_branch.as_deref(), Some(initial_branch.as_str()));
+        app.open_file(&lib);
+        assert!(app.active_tab().unwrap().text().contains("1"));
+
+        app.run_command(CommandAction::ShowGitBranches).unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.kind, QuickPanelKind::Branches);
+        assert!(panel.items.iter().any(|item| {
+            item.label == format!("* {initial_branch}")
+                && item.command == Some(CommandAction::CheckoutGitBranch)
+        }));
+        assert!(panel.items.iter().any(|item| {
+            item.label == "  feature" && item.command == Some(CommandAction::CheckoutGitBranch)
+        }));
+
+        select_quick_item(&mut app, "  feature");
+        app.activate_selected_quick_item();
+        assert_eq!(
+            git_current_branch(&canonical_root).as_deref(),
+            Some("feature")
+        );
+        assert_eq!(app.git_branch.as_deref(), Some("feature"));
+        assert!(app.active_tab().unwrap().text().contains("2"));
+
+        app.active_tab_mut().unwrap().insert_text("// unsaved\n");
+        app.run_command(CommandAction::ShowGitBranches).unwrap();
+        select_quick_item(&mut app, &format!("  {initial_branch}"));
+        app.activate_selected_quick_item();
+        assert_eq!(
+            git_current_branch(&canonical_root).as_deref(),
+            Some("feature")
+        );
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("blocked by unsaved editor tab"))
+        );
+
+        app.revert_active_tab().unwrap();
+        app.run_command(CommandAction::ShowGitBranches).unwrap();
+        select_quick_item(&mut app, &format!("  {initial_branch}"));
+        app.activate_selected_quick_item();
+        assert_eq!(
+            git_current_branch(&canonical_root).as_deref(),
+            Some(initial_branch.as_str())
+        );
+        assert_eq!(app.git_branch.as_deref(), Some(initial_branch.as_str()));
+        assert!(app.active_tab().unwrap().text().contains("1"));
+
+        app.run_command(CommandAction::CreateGitBranch).unwrap();
+        assert_eq!(
+            app.prompt.as_ref().map(|prompt| &prompt.kind),
+            Some(&PromptKind::CreateGitBranch)
+        );
+        app.prompt.as_mut().unwrap().input = "topic".to_owned();
+        app.finish_prompt().unwrap();
+        assert_eq!(
+            git_current_branch(&canonical_root).as_deref(),
+            Some("topic")
+        );
+        assert_eq!(app.git_branch.as_deref(), Some("topic"));
+        assert!(
+            git_local_branches(&canonical_root)
+                .unwrap()
+                .iter()
+                .any(|branch| branch == "topic")
+        );
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

@@ -203,11 +203,17 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             )
         })
         .unwrap_or_default();
+    let branch = app
+        .git_branch
+        .as_ref()
+        .map(|branch| format!("  branch:{branch}"))
+        .unwrap_or_default();
     let text = format!(
-        " {} tabs:{}  hover:{}{}{}{}{}{} ",
+        " {} tabs:{}  hover:{}{}{}{}{}{}{} ",
         active,
         app.tabs.len(),
         hover_name(&app.hover),
+        branch,
         hover_detail,
         clipboard,
         editor_clipboard,
@@ -1009,6 +1015,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         crate::app::QuickPanelKind::LspReferences => " LSP References  Ctrl-R ",
         crate::app::QuickPanelKind::Problems => " Problems ",
         crate::app::QuickPanelKind::SourceControl => " Source Control ",
+        crate::app::QuickPanelKind::Branches => " Git Branches ",
         crate::app::QuickPanelKind::Tasks => " Run Task  Ctrl-Shift-B ",
         crate::app::QuickPanelKind::CommandPalette => " Command Palette  F1 / Ctrl-Shift-P ",
     };
@@ -1090,6 +1097,9 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             crate::app::QuickPanelKind::SourceControl => {
                 "No Git changes found, or this workspace is not inside a Git repository."
+            }
+            crate::app::QuickPanelKind::Branches => {
+                "No local Git branches found, or this workspace is not inside a Git repository."
             }
             crate::app::QuickPanelKind::Tasks => {
                 "No tasks detected from .vscode/tasks.json, package.json, Cargo.toml, Makefile, go.mod, or pyproject.toml."
@@ -1478,6 +1488,7 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::RenameSymbol { .. } => "rename symbol",
         crate::app::PromptKind::SaveAs => "save as",
         crate::app::PromptKind::SaveAsClose { .. } => "save as then close",
+        crate::app::PromptKind::CreateGitBranch => "create branch",
         crate::app::PromptKind::CommitStagedSourceControlChanges => "commit staged: message",
         crate::app::PromptKind::CommitAllSourceControlChanges(_) => "commit all: message",
         crate::app::PromptKind::DiscardSourceControlPath(_) => "discard: type discard",
