@@ -56,7 +56,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Command palette Trim Trailing Whitespace removes spaces and tabs at line ends in the active editor buffer as one undoable edit, then saves cleanly to the real file when `Ctrl-S` or Save File is used.
 - Command palette Revert File and Reload File From Disk reload the active editor tab from disk, discard unsaved buffer edits, clear per-tab edit history, reset dirty/external-file markers, and refresh Git status markers.
 - Opening files now canonicalizes paths before tab lookup, avoiding duplicate tabs and broken relative-path behavior when the OS exposes aliases such as `/tmp` and `/private/tmp`.
-- File explorer actions for refresh, new file, new folder, rename, and delete with confirmation; folder rename/delete keeps open tabs in sync.
+- File explorer actions for refresh, new file, new folder, rename, and delete with confirmation; folder rename/delete keeps open tabs in sync, and explorer delete now refuses to discard unsaved dirty open tabs.
 - Explorer collapse-all is available through the command palette.
 - Tab close support through the tab `x`, middle click, or `Ctrl-W`, with a mouse-selectable Save and Close / Don't Save / Cancel panel for dirty tabs, including Save As then close for Untitled tabs.
 - File save preserves existing trailing newlines.

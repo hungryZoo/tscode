@@ -52,7 +52,7 @@ The explorer shall visually highlight the row under the mouse cursor.
 
 ### R-107 Open Tab Synchronization
 
-Renaming a file or folder shall update matching open tab paths. Deleting a file or folder shall close matching open tabs.
+Renaming a file or folder shall update matching open tab paths. Deleting a file or folder shall close matching clean open tabs. If the delete target contains a dirty open file-backed tab, the application shall refuse the filesystem delete, keep all matching tabs open, keep the dirty buffer contents intact, and tell the user to save, close, or discard the unsaved tab first.
 
 ### R-108 Explorer Clipboard
 

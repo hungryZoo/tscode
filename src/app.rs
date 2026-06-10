@@ -5474,6 +5474,33 @@ impl App {
             self.message = Some("refusing to delete workspace root".to_owned());
             return Ok(());
         }
+
+        let dirty_open_tabs = self
+            .tabs
+            .iter()
+            .filter(|tab| !tab.untitled && tab.dirty && tab.path.starts_with(&path))
+            .map(|tab| relative_path(&self.root, &tab.path))
+            .collect::<Vec<_>>();
+        if !dirty_open_tabs.is_empty() {
+            let first = &dirty_open_tabs[0];
+            let suffix = dirty_open_tabs
+                .len()
+                .checked_sub(1)
+                .filter(|count| *count > 0)
+                .map(|count| format!(" and {count} more"))
+                .unwrap_or_default();
+            self.message = Some(format!(
+                "delete blocked by unsaved tab: {first}{suffix}; save, close, or discard it first"
+            ));
+            return Ok(());
+        }
+
+        let active_path = self
+            .active_tab
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| tab.path.clone());
+        let active_index = self.active_tab;
+
         if path.is_dir() {
             fs::remove_dir_all(&path)?;
         } else {
@@ -5489,11 +5516,18 @@ impl App {
         {
             self.explorer_clipboard = None;
         }
-        if self.tabs.is_empty() {
-            self.active_tab = None;
+        self.active_tab = if self.tabs.is_empty() {
+            None
+        } else if let Some(active_path) = active_path {
+            self.tabs
+                .iter()
+                .position(|tab| tab.path == active_path)
+                .or_else(|| {
+                    active_index.map(|index| index.saturating_sub(1).min(self.tabs.len() - 1))
+                })
         } else {
-            self.active_tab = Some(self.active_tab.unwrap_or(0).min(self.tabs.len() - 1));
-        }
+            Some(0)
+        };
         self.refresh_explorer()?;
         self.message = Some(format!("deleted {}", path.display()));
         Ok(())
@@ -13487,6 +13521,77 @@ src/lib.rs:3:1: note: trailing note
         );
 
         assert_eq!(unique_copy_path(&source), root.join("src copy 2"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deleting_explorer_folder_refuses_to_discard_dirty_open_tabs() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-delete-dirty-folder-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let canonical_src = canonical_root.join("src");
+        let file = canonical_root.join("src/main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&file);
+        app.active_tab_mut().unwrap().insert_text("// unsaved\n");
+
+        app.delete_path(canonical_src.clone()).unwrap();
+
+        assert!(canonical_src.exists());
+        assert!(file.exists());
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active_tab().unwrap().path, file);
+        assert!(app.active_tab().unwrap().dirty);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("delete blocked by unsaved tab"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deleting_explorer_folder_closes_clean_tabs_and_preserves_other_active_tab() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-delete-clean-folder-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join("README.md"), "# docs\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let canonical_src = canonical_root.join("src");
+        let deleted_file = canonical_root.join("src/main.rs");
+        let kept_file = canonical_root.join("README.md");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&deleted_file);
+        app.open_file(&kept_file);
+        assert_eq!(app.active_tab().unwrap().path, kept_file);
+
+        app.delete_path(canonical_src.clone()).unwrap();
+
+        assert!(!canonical_src.exists());
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active_tab().unwrap().path, kept_file);
+        assert!(
+            app.tabs
+                .iter()
+                .all(|tab| tab.untitled || !tab.path.starts_with(&canonical_src))
+        );
+
+        app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
 

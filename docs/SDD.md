@@ -56,7 +56,7 @@ The explorer stores a tree of `FsNode` values. Directories are loaded lazily whe
 
 When the workspace is inside a Git repository, `App` shells out to `git status --porcelain=v1 -z --untracked-files=all` at startup, after explorer refreshes, and after editor saves. The parser maps porcelain records to absolute paths and derives dirty parent-directory markers so the renderer can show file-level badges such as `git:M` or `git:?` and folder-level `git:*` badges without mixing Git state into the filesystem tree nodes. Source Control also shells out to `git diff --unified=0 --no-ext-diff --no-color --find-renames HEAD --`, with a fallback for repositories without `HEAD`, then parses diff file headers and hunk ranges into clickable source locations.
 
-Explorer clipboard state stores copy/cut intent and the source path. Paste performs real filesystem copy or move operations, recursively copies directories, creates non-conflicting copy names, and updates open editor tab paths after moves.
+Explorer clipboard state stores copy/cut intent and the source path. Paste performs real filesystem copy or move operations, recursively copies directories, creates non-conflicting copy names, and updates open editor tab paths after moves. Explorer delete closes clean open tabs under the deleted path, prunes navigation history for those paths, and refuses the filesystem delete when any matching file-backed tab is dirty so unsaved editor contents cannot be discarded by a tree operation.
 
 ### Editor
 
