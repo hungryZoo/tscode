@@ -74,6 +74,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can right-click inside the editor and run common editing, navigation, formatting, path-copy, terminal-send, revert, and tab actions from a mouse-selectable context menu.
 - As a developer, I can right-click the integrated terminal and run terminal copy/paste/search/session-management actions from a mouse-selectable context menu when the shell application is not owning mouse input.
 - As a developer, I can select text with the keyboard or mouse, copy or cut it to both the editor clipboard and a terminal clipboard export where supported, then paste it back into the editor.
+- As a developer, I can press `Ctrl-C` or `Ctrl-X` without selecting text and have the current line copied or cut like a normal code editor.
 - As a developer, I can drag across code with the mouse, continue dragging past the visible editor edge to scroll, and keep the selected text available to copy, cut, replace, or send to the terminal.
 - As a developer, I can `Alt`+click inside the editor to place multiple cursors and type the same edit at every clicked location.
 - As a developer, I can use `Ctrl-D` and `Ctrl-Shift-L` to select the next or all active-file occurrences of the current word or selection, then replace the selected occurrences together as one undoable edit.

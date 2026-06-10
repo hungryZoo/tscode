@@ -1394,6 +1394,12 @@ impl EditorTab {
         )
     }
 
+    fn current_line_clipboard_text(&self) -> Option<String> {
+        let mut text = self.lines.get(self.cursor_line)?.clone();
+        text.push('\n');
+        Some(text)
+    }
+
     fn delete_selection(&mut self) -> Option<String> {
         let ranges = self.selection_ranges();
         if ranges.is_empty() {
@@ -8177,14 +8183,26 @@ impl App {
     }
 
     fn copy_editor_selection(&mut self) {
-        let Some(text) = self.active_tab().and_then(EditorTab::selected_text) else {
-            self.message = Some("no editor selection to copy".to_owned());
+        let Some(tab) = self.active_tab() else {
+            self.message = Some("no active editor tab".to_owned());
+            return;
+        };
+        let copied_line = tab.selected_text().is_none();
+        let Some(text) = tab
+            .selected_text()
+            .or_else(|| tab.current_line_clipboard_text())
+        else {
+            self.message = Some("no editor text to copy".to_owned());
             return;
         };
         let count = text.chars().count();
         self.editor_clipboard = Some(text.clone());
         if self.queue_clipboard_export(&text) {
-            self.message = Some(format!("copied {count} char(s) to clipboard"));
+            self.message = if copied_line {
+                Some("copied current line to clipboard".to_owned())
+            } else {
+                Some(format!("copied {count} char(s) to clipboard"))
+            };
         } else {
             self.message = Some(format!(
                 "copied {count} char(s) internally; selection too large for terminal clipboard"
@@ -8199,15 +8217,27 @@ impl App {
         let Some(tab) = self.active_tab_mut() else {
             return;
         };
-        let Some(text) = tab.delete_selection() else {
-            self.message = Some("no editor selection to cut".to_owned());
+        let mut cut_line = false;
+        let Some(text) = tab.delete_selection().or_else(|| {
+            cut_line = true;
+            let text = tab.current_line_clipboard_text();
+            if text.is_some() {
+                tab.delete_line();
+            }
+            text
+        }) else {
+            self.message = Some("no editor text to cut".to_owned());
             return;
         };
         let count = text.chars().count();
         self.editor_clipboard = Some(text.clone());
         self.ensure_editor_cursor_visible();
         if self.queue_clipboard_export(&text) {
-            self.message = Some(format!("cut {count} char(s) to clipboard"));
+            self.message = if cut_line {
+                Some("cut current line to clipboard".to_owned())
+            } else {
+                Some(format!("cut {count} char(s) to clipboard"))
+            };
         } else {
             self.message = Some(format!(
                 "cut {count} char(s) internally; selection too large for terminal clipboard"
@@ -14818,6 +14848,55 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "fn main() {\n    println!(\"hi\");\n}\n"
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_copy_and_cut_without_selection_use_current_line() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-line-copy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.focus = FocusPanel::Editor;
+        app.active_tab_mut().unwrap().set_cursor(1, 2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.editor_clipboard.as_deref(), Some("beta\n"));
+        assert_eq!(app.take_clipboard_export().as_deref(), Some("beta\n"));
+        assert_eq!(
+            app.message.as_deref(),
+            Some("copied current line to clipboard")
+        );
+        assert_eq!(
+            app.active_tab().unwrap().lines,
+            vec!["alpha", "beta", "gamma"]
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.editor_clipboard.as_deref(), Some("beta\n"));
+        assert_eq!(app.take_clipboard_export().as_deref(), Some("beta\n"));
+        assert_eq!(
+            app.message.as_deref(),
+            Some("cut current line to clipboard")
+        );
+        assert_eq!(app.active_tab().unwrap().lines, vec!["alpha", "gamma"]);
+        assert!(app.active_tab().unwrap().dirty);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(
+            app.active_tab().unwrap().lines,
+            vec!["alpha", "beta", "gamma"]
         );
 
         app.kill_all_terminals();

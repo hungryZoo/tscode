@@ -224,7 +224,7 @@ The editor shall support text selection with `Shift` plus arrow keys and with mo
 
 ### R-222 Editor Clipboard
 
-When editor focus is active, `Ctrl-a` shall select the full buffer, `Ctrl-c` shall copy the selected text to an internal editor clipboard, `Ctrl-x` shall cut the selected text to that clipboard, and `Ctrl-v` shall paste that clipboard at the cursor or replace the active selection. `Ctrl-c` and `Ctrl-x` shall also queue an OSC52 terminal clipboard export for selections within the configured terminal-safe size limit.
+When editor focus is active, `Ctrl-a` shall select the full buffer, `Ctrl-c` shall copy the selected text to an internal editor clipboard, `Ctrl-x` shall cut the selected text to that clipboard, and `Ctrl-v` shall paste that clipboard at the cursor or replace the active selection. If there is no active editor selection, `Ctrl-c` shall copy the current line including its trailing newline and `Ctrl-x` shall cut the current line including its trailing newline as one undoable edit. `Ctrl-c` and `Ctrl-x` shall also queue an OSC52 terminal clipboard export for copied or cut text within the configured terminal-safe size limit.
 
 ### R-223 Selection Replacement
 
@@ -548,6 +548,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use `Ctrl-shift-\`, the command palette, or the editor context menu to jump between matching brackets, including a nested pair, then confirm `Alt-left` returns to the previous cursor location.
 - Use `Shift-alt-a`, the command palette, or the editor context menu to toggle a block comment on a selection and on the current line, then undo and confirm the original text and selection are restored.
 - Select all text, cut it, paste it back, save, and confirm file contents on disk.
+- With no editor selection, press `Ctrl-c` and confirm the current line plus newline is copied; press `Ctrl-x` and confirm the current line is removed, then paste it back and confirm the buffer is restored.
 - Drag in the editor, including past the bottom/right visible edge, confirm the selection extends while the viewport scrolls, then copy or cut the selected text and confirm the clipboard/file contents match the selected range.
 - Type brackets/quotes and press `Enter` inside a brace pair, then confirm auto-pairing, skip-over, paired deletion, and auto-indent behavior.
 - Use line editing commands, save, and confirm file contents on disk.

@@ -66,6 +66,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Editor smart editing now preserves indentation on newline, adds one extra indent level after opening braces/brackets/parentheses, and splits immediate closing pairs onto their own line.
 - Editor auto-pairs for brackets, braces, parentheses, quotes, apostrophes, and backticks support insertion, selection wrapping, skip-over, and paired Backspace deletion.
 - Internal editor clipboard support for `Ctrl-A`, `Ctrl-C`, `Ctrl-X`, and `Ctrl-V`, including replacing selected ranges as single undoable edits.
+- Editor `Ctrl-C` and `Ctrl-X` now copy or cut the current line when there is no active selection, including the trailing newline, so line clipboard behavior matches normal code editors.
 - Editor copy/cut now also exports selected text through OSC52 terminal clipboard integration where the host terminal allows it.
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the same terminal clipboard export without disturbing explorer file copy/cut state.
 - Editor line commands for indent/outdent, duplicate, delete, move up/down, and toggle comments now work on selected line ranges as one undoable edit, while still supporting the current line when no selection is active.
