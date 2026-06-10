@@ -3,7 +3,7 @@ use std::{
     env, fs,
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -1764,6 +1764,10 @@ pub enum CommandAction {
     RunLspDiagnostics,
     ShowProblems,
     ShowSourceControl,
+    StageSourceControlItem,
+    UnstageSourceControlItem,
+    StageAllChanges,
+    UnstageAllChanges,
     RunTask,
     NewUntitledFile,
     SaveFile,
@@ -2003,6 +2007,24 @@ impl GitStatusKind {
             Self::Untracked => "Untracked",
             Self::Conflicted => "Conflicted",
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitStatusEntry {
+    path: PathBuf,
+    kind: GitStatusKind,
+    index: u8,
+    worktree: u8,
+}
+
+impl GitStatusEntry {
+    fn can_stage(&self) -> bool {
+        self.index == b'?' || self.worktree == b'?' || self.worktree != b' '
+    }
+
+    fn can_unstage(&self) -> bool {
+        self.index != b' ' && self.index != b'?'
     }
 }
 
@@ -3944,6 +3966,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::ShowSourceControl,
         },
         CommandSpec {
+            label: "Stage All Changes",
+            detail: "Stage every current Git working tree change",
+            shortcut: "",
+            action: CommandAction::StageAllChanges,
+        },
+        CommandSpec {
+            label: "Unstage All Changes",
+            detail: "Remove every staged Git change from the index",
+            shortcut: "",
+            action: CommandAction::UnstageAllChanges,
+        },
+        CommandSpec {
             label: "Run Task",
             detail: "Detect workspace tasks and run one in a real integrated PTY terminal",
             shortcut: "Ctrl-Shift-B",
@@ -5576,25 +5610,71 @@ impl App {
             return Ok(Vec::new());
         };
 
-        let (statuses, _) = load_git_status(&self.root);
+        let mut entries = load_git_status_entries(&self.root);
         let mut items = Vec::new();
-        let mut changed_files = statuses.into_iter().collect::<Vec<_>>();
-        changed_files.sort_by(|(left, _), (right, _)| {
-            relative_path(&top_level, left).cmp(&relative_path(&top_level, right))
+        entries.sort_by(|left, right| {
+            relative_path(&top_level, &left.path).cmp(&relative_path(&top_level, &right.path))
         });
 
-        for (path, status) in changed_files {
+        if entries.iter().any(GitStatusEntry::can_stage) {
+            items.push(QuickItem {
+                label: "+ Stage All Changes".to_owned(),
+                detail: "git add -A".to_owned(),
+                path: top_level.clone(),
+                line: None,
+                col: None,
+                preview: None,
+                command: Some(CommandAction::StageAllChanges),
+            });
+        }
+        if entries.iter().any(GitStatusEntry::can_unstage) {
+            items.push(QuickItem {
+                label: "- Unstage All Changes".to_owned(),
+                detail: "git restore --staged .".to_owned(),
+                path: top_level.clone(),
+                line: None,
+                col: None,
+                preview: None,
+                command: Some(CommandAction::UnstageAllChanges),
+            });
+        }
+
+        for entry in entries {
+            let path = entry.path.clone();
+            let status = entry.kind;
             let relative = relative_path(&top_level, &path);
             let preview = (!path.is_file()).then(|| "not available in working tree".to_owned());
             items.push(QuickItem {
                 label: format!("{} {relative}", status.short_label()),
                 detail: status.description().to_owned(),
-                path,
+                path: path.clone(),
                 line: None,
                 col: None,
                 preview,
                 command: None,
             });
+            if entry.can_stage() {
+                items.push(QuickItem {
+                    label: format!("+ Stage {relative}"),
+                    detail: "git add".to_owned(),
+                    path: path.clone(),
+                    line: None,
+                    col: None,
+                    preview: None,
+                    command: Some(CommandAction::StageSourceControlItem),
+                });
+            }
+            if entry.can_unstage() {
+                items.push(QuickItem {
+                    label: format!("- Unstage {relative}"),
+                    detail: "git restore --staged".to_owned(),
+                    path,
+                    line: None,
+                    col: None,
+                    preview: None,
+                    command: Some(CommandAction::UnstageSourceControlItem),
+                });
+            }
         }
 
         for hunk in load_git_diff_hunks(&self.root, &top_level) {
@@ -8289,6 +8369,26 @@ impl App {
             return;
         }
 
+        if kind == QuickPanelKind::SourceControl {
+            match item.command {
+                Some(CommandAction::StageSourceControlItem) => {
+                    self.quick_panel = None;
+                    if let Err(error) = self.stage_source_control_path(&item.path) {
+                        self.last_error = Some(error.to_string());
+                    }
+                    return;
+                }
+                Some(CommandAction::UnstageSourceControlItem) => {
+                    self.quick_panel = None;
+                    if let Err(error) = self.unstage_source_control_path(&item.path) {
+                        self.last_error = Some(error.to_string());
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         if let Some(command) = item.command {
             self.quick_panel = None;
             if let Err(error) = self.run_command(command) {
@@ -8322,6 +8422,39 @@ impl App {
             self.search_needle = Some(query);
         }
         self.message = Some(format!("opened {}", item.path.display()));
+    }
+
+    fn stage_source_control_path(&mut self, path: &Path) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        let relative = relative_path(&top_level, path);
+        stage_git_path(&top_level, path)?;
+        self.reopen_source_control_with_message(format!("staged {relative}"))
+    }
+
+    fn unstage_source_control_path(&mut self, path: &Path) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        let relative = relative_path(&top_level, path);
+        unstage_git_path(&top_level, path)?;
+        self.reopen_source_control_with_message(format!("unstaged {relative}"))
+    }
+
+    fn stage_all_source_control_changes(&mut self) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        stage_all_git_changes(&top_level)?;
+        self.reopen_source_control_with_message("staged all changes".to_owned())
+    }
+
+    fn unstage_all_source_control_changes(&mut self) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        unstage_all_git_changes(&top_level)?;
+        self.reopen_source_control_with_message("unstaged all changes".to_owned())
+    }
+
+    fn reopen_source_control_with_message(&mut self, message: String) -> Result<()> {
+        self.refresh_git_status();
+        self.open_quick_panel(QuickPanelKind::SourceControl)?;
+        self.message = Some(message);
+        Ok(())
     }
 
     fn apply_completion_item(&mut self, item: QuickItem) {
@@ -8464,6 +8597,16 @@ impl App {
                 }
                 self.open_quick_panel(QuickPanelKind::SourceControl)?;
             }
+            CommandAction::StageSourceControlItem => {
+                self.message =
+                    Some("select a Source Control file row to stage that path".to_owned());
+            }
+            CommandAction::UnstageSourceControlItem => {
+                self.message =
+                    Some("select a Source Control file row to unstage that path".to_owned());
+            }
+            CommandAction::StageAllChanges => self.stage_all_source_control_changes()?,
+            CommandAction::UnstageAllChanges => self.unstage_all_source_control_changes()?,
             CommandAction::RunTask => self.open_quick_panel(QuickPanelKind::Tasks)?,
             CommandAction::NewUntitledFile => self.new_untitled_file(),
             CommandAction::SaveFile => self.save_active_tab(),
@@ -9775,8 +9918,18 @@ fn is_simple_file_name(input: &str) -> bool {
 }
 
 fn load_git_status(root: &Path) -> (HashMap<PathBuf, GitStatusKind>, HashSet<PathBuf>) {
+    let entries = load_git_status_entries(root);
+    let statuses = entries
+        .into_iter()
+        .map(|entry| (entry.path, entry.kind))
+        .collect::<HashMap<_, _>>();
+    let dirty_dirs = git_dirty_directories(&statuses, root);
+    (statuses, dirty_dirs)
+}
+
+fn load_git_status_entries(root: &Path) -> Vec<GitStatusEntry> {
     let Some(top_level) = git_top_level(root) else {
-        return (HashMap::new(), HashSet::new());
+        return Vec::new();
     };
 
     let Ok(output) = Command::new("git")
@@ -9785,15 +9938,13 @@ fn load_git_status(root: &Path) -> (HashMap<PathBuf, GitStatusKind>, HashSet<Pat
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
         .output()
     else {
-        return (HashMap::new(), HashSet::new());
+        return Vec::new();
     };
     if !output.status.success() {
-        return (HashMap::new(), HashSet::new());
+        return Vec::new();
     }
 
-    let statuses = parse_git_status_z(&output.stdout, &top_level);
-    let dirty_dirs = git_dirty_directories(&statuses, root);
-    (statuses, dirty_dirs)
+    parse_git_status_entries_z(&output.stdout, &top_level)
 }
 
 fn git_top_level(root: &Path) -> Option<PathBuf> {
@@ -9815,8 +9966,16 @@ fn git_top_level(root: &Path) -> Option<PathBuf> {
     Some(path.canonicalize().unwrap_or(path))
 }
 
+#[cfg(test)]
 fn parse_git_status_z(output: &[u8], top_level: &Path) -> HashMap<PathBuf, GitStatusKind> {
-    let mut statuses = HashMap::new();
+    parse_git_status_entries_z(output, top_level)
+        .into_iter()
+        .map(|entry| (entry.path, entry.kind))
+        .collect()
+}
+
+fn parse_git_status_entries_z(output: &[u8], top_level: &Path) -> Vec<GitStatusEntry> {
+    let mut entries = Vec::new();
     let mut records = output.split(|byte| *byte == 0);
 
     while let Some(record) = records.next() {
@@ -9829,14 +9988,19 @@ fn parse_git_status_z(output: &[u8], top_level: &Path) -> HashMap<PathBuf, GitSt
             continue;
         };
         let path = top_level.join(String::from_utf8_lossy(&record[3..]).as_ref());
-        statuses.insert(path, status);
+        entries.push(GitStatusEntry {
+            path,
+            kind: status,
+            index: x,
+            worktree: y,
+        });
 
         if matches!(x, b'R' | b'C') || matches!(y, b'R' | b'C') {
             let _ = records.next();
         }
     }
 
-    statuses
+    entries
 }
 
 fn git_dirty_directories(
@@ -9857,6 +10021,101 @@ fn git_dirty_directories(
         }
     }
     dirs
+}
+
+fn stage_git_path(top_level: &Path, path: &Path) -> Result<()> {
+    run_git_command_with_path(top_level, &["add"], path)
+}
+
+fn stage_all_git_changes(top_level: &Path) -> Result<()> {
+    run_git_command(top_level, &["add", "-A", "--", "."])
+}
+
+fn unstage_git_path(top_level: &Path, path: &Path) -> Result<()> {
+    if run_git_command_with_path(top_level, &["restore", "--staged"], path).is_ok() {
+        return Ok(());
+    }
+    if run_git_command_with_path(top_level, &["reset", "-q"], path).is_ok() {
+        return Ok(());
+    }
+    run_git_command_with_path(top_level, &["rm", "--cached", "--ignore-unmatch"], path)
+}
+
+fn unstage_all_git_changes(top_level: &Path) -> Result<()> {
+    if run_git_command(top_level, &["restore", "--staged", "--", "."]).is_ok() {
+        return Ok(());
+    }
+    if run_git_command(top_level, &["reset", "-q", "--", "."]).is_ok() {
+        return Ok(());
+    }
+    run_git_command(
+        top_level,
+        &["rm", "-r", "--cached", "--ignore-unmatch", "--", "."],
+    )
+}
+
+fn run_git_command(top_level: &Path, args: &[&str]) -> Result<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(top_level)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "git {} failed: {}",
+            args.join(" "),
+            git_output_message(&output)
+        ))
+    }
+}
+
+fn run_git_command_with_path(top_level: &Path, args: &[&str], path: &Path) -> Result<()> {
+    let path_arg = git_relative_os_arg(top_level, path);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(top_level)
+        .args(args)
+        .arg("--")
+        .arg(&path_arg)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run git {} for {}",
+                args.join(" "),
+                path.display()
+            )
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "git {} failed for {}: {}",
+            args.join(" "),
+            path.display(),
+            git_output_message(&output)
+        ))
+    }
+}
+
+fn git_relative_os_arg(top_level: &Path, path: &Path) -> PathBuf {
+    path.strip_prefix(top_level)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn git_output_message(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+    output.status.to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12264,6 +12523,69 @@ mod tests {
         std::env::temp_dir().join(format!("tscode-test-{}-{name}", std::process::id()))
     }
 
+    fn git_available() -> bool {
+        Command::new("git").arg("--version").output().is_ok()
+    }
+
+    fn assert_git(root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo(root: &Path) {
+        assert_git(root, &["init", "-q"]);
+        assert_git(root, &["config", "user.email", "tscode@example.invalid"]);
+        assert_git(root, &["config", "user.name", "tscode test"]);
+    }
+
+    fn cached_git_names(root: &Path) -> Vec<String> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["diff", "--cached", "--name-only"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git diff --cached failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut names = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    fn select_quick_item(app: &mut App, label: &str) {
+        let panel = app.quick_panel.as_mut().unwrap();
+        panel.selected = panel
+            .items
+            .iter()
+            .position(|item| item.label == label)
+            .unwrap_or_else(|| {
+                panic!(
+                    "quick item '{label}' not found in {:?}",
+                    panel
+                        .items
+                        .iter()
+                        .map(|item| item.label.as_str())
+                        .collect::<Vec<_>>()
+                )
+            });
+    }
+
     #[test]
     fn app_new_with_file_path_uses_parent_workspace_and_opens_file() {
         let root =
@@ -13993,6 +14315,18 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ShowSourceControl))
         );
+        let commands = app.command_palette_items("stage all");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::StageAllChanges))
+        );
+        let commands = app.command_palette_items("unstage all");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::UnstageAllChanges))
+        );
         let commands = app.command_palette_items("sort explorer size");
         assert!(
             commands
@@ -14880,8 +15214,12 @@ mod tests {
     fn git_status_parser_marks_files_and_dirty_parent_dirs() {
         let root = std::env::temp_dir().join(format!("tscode-test-git-{}", std::process::id()));
         let src = root.join("src");
+        let entries = parse_git_status_entries_z(
+            b" M src/main.rs\0?? src/new.rs\0R  src/lib.rs\0src/old.rs\0UU src/conflict.rs\0M  src/staged.rs\0MM src/both.rs\0",
+            &root,
+        );
         let statuses = parse_git_status_z(
-            b" M src/main.rs\0?? src/new.rs\0R  src/lib.rs\0src/old.rs\0UU src/conflict.rs\0",
+            b" M src/main.rs\0?? src/new.rs\0R  src/lib.rs\0src/old.rs\0UU src/conflict.rs\0M  src/staged.rs\0MM src/both.rs\0",
             &root,
         );
 
@@ -14901,6 +15239,30 @@ mod tests {
             statuses.get(&src.join("conflict.rs")),
             Some(&GitStatusKind::Conflicted)
         );
+        let main_entry = entries
+            .iter()
+            .find(|entry| entry.path == src.join("main.rs"))
+            .unwrap();
+        assert!(main_entry.can_stage());
+        assert!(!main_entry.can_unstage());
+        let new_entry = entries
+            .iter()
+            .find(|entry| entry.path == src.join("new.rs"))
+            .unwrap();
+        assert!(new_entry.can_stage());
+        assert!(!new_entry.can_unstage());
+        let staged_entry = entries
+            .iter()
+            .find(|entry| entry.path == src.join("staged.rs"))
+            .unwrap();
+        assert!(!staged_entry.can_stage());
+        assert!(staged_entry.can_unstage());
+        let both_entry = entries
+            .iter()
+            .find(|entry| entry.path == src.join("both.rs"))
+            .unwrap();
+        assert!(both_entry.can_stage());
+        assert!(both_entry.can_unstage());
 
         let dirty_dirs = git_dirty_directories(&statuses, &root);
         assert!(dirty_dirs.contains(&root));
@@ -14942,7 +15304,7 @@ index 1111111..2222222 100644
     #[test]
     #[cfg(not(windows))]
     fn source_control_panel_lists_git_changes_and_diff_hunks() {
-        if Command::new("git").arg("--version").output().is_err() {
+        if !git_available() {
             return;
         }
 
@@ -15016,8 +15378,29 @@ index 1111111..2222222 100644
 
         let panel = app.quick_panel.as_ref().unwrap();
         assert_eq!(panel.kind, QuickPanelKind::SourceControl);
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "+ Stage All Changes"
+                    && item.command == Some(CommandAction::StageAllChanges))
+        );
         assert!(panel.items.iter().any(|item| item.label == "M src/lib.rs"));
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "+ Stage src/lib.rs"
+                    && item.command == Some(CommandAction::StageSourceControlItem))
+        );
         assert!(panel.items.iter().any(|item| item.label == "? new.txt"));
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "+ Stage new.txt"
+                    && item.command == Some(CommandAction::StageSourceControlItem))
+        );
         let hunk_index = panel
             .items
             .iter()
@@ -15030,6 +15413,75 @@ index 1111111..2222222 100644
         assert_eq!(app.focus, FocusPanel::Editor);
         assert_eq!(app.active_tab().unwrap().path, lib);
         assert_eq!(app.active_tab().unwrap().cursor_position(), (1, 0));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn source_control_panel_stages_and_unstages_changes() {
+        if !git_available() {
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-source-control-stage-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    1\n}\n").unwrap();
+
+        init_git_repo(&root);
+        assert_git(&root, &["add", "src/lib.rs"]);
+        assert_git(
+            &root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+            ],
+        );
+
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    2\n}\n").unwrap();
+        fs::write(root.join("new.txt"), "new file\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.run_command(CommandAction::ShowSourceControl).unwrap();
+
+        select_quick_item(&mut app, "+ Stage src/lib.rs");
+        app.activate_selected_quick_item();
+        assert_eq!(cached_git_names(&canonical_root), vec!["src/lib.rs"]);
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.kind, QuickPanelKind::SourceControl);
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "- Unstage src/lib.rs"
+                    && item.command == Some(CommandAction::UnstageSourceControlItem))
+        );
+
+        select_quick_item(&mut app, "- Unstage src/lib.rs");
+        app.activate_selected_quick_item();
+        assert!(cached_git_names(&canonical_root).is_empty());
+
+        select_quick_item(&mut app, "+ Stage All Changes");
+        app.activate_selected_quick_item();
+        assert_eq!(
+            cached_git_names(&canonical_root),
+            vec!["new.txt", "src/lib.rs"]
+        );
+
+        select_quick_item(&mut app, "- Unstage All Changes");
+        app.activate_selected_quick_item();
+        assert!(cached_git_names(&canonical_root).is_empty());
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

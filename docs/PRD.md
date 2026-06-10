@@ -62,7 +62,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can sort the explorer by name, type, modified time, or size without losing my current selection.
 - As a developer, explorer filtering finds nested files inside collapsed folders and expands the matching path enough for me to click it.
 - As a developer, I can see Git working tree status badges in the explorer when the workspace is inside a Git repository.
-- As a developer, I can open a Source Control panel, inspect changed Git files and diff hunks, filter that list, and jump directly from a hunk to the changed source line.
+- As a developer, I can open a Source Control panel, inspect changed Git files and diff hunks, stage or unstage selected paths or all changes, filter that list, and jump directly from a hunk to the changed source line.
 - As a developer, I can undo and redo edits, paste text, repeat search matches, close clean tabs immediately, and choose whether to save, discard, or cancel when closing a dirty tab.
 - As a developer, I can save the active editor buffer as a new relative or absolute path, have missing parent folders created, and keep editing the newly saved file.
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
@@ -171,7 +171,7 @@ Keyboard fallback:
 - Mouse hover over an editor identifier shows lightweight symbol definition/reference information
 - Editor gutter fold markers, `Alt-[`, `Alt-]`, the command palette, and the editor context menu provide code fold/unfold actions
 - The command palette provides Run Workspace Check, Run LSP Diagnostics, and Show Problems actions for project diagnostics
-- The command palette provides a Source Control action for Git changed files and diff hunks
+- The command palette provides Source Control actions for Git changed files, diff hunks, stage all, and unstage all
 - `Ctrl-Shift-B` or the command palette opens Run Task for detected workspace tasks
 - `F2` or the command palette asks the installed language server for semantic rename first and falls back to renaming the identifier across visible workspace text files
 - `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
