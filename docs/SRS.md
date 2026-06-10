@@ -30,7 +30,9 @@ The explorer shall read actual filesystem entries from the workspace root.
 
 ### R-102 Sorting
 
-The explorer shall show directories before files and sort each group case-insensitively.
+The explorer shall show directories before files. By default, each group shall be sorted case-insensitively by name.
+
+The explorer shall allow the user to change sorting to name, type, modified time, or size through the keyboard, command palette, and explorer context menu. Type sorting shall group files by extension and then name. Modified-time sorting shall put newer entries before older entries within the directory/file group. Size sorting shall put larger files before smaller files within the directory/file group. Changing sort mode shall preserve the currently selected path when that path remains visible.
 
 ### R-103 Expand and Collapse
 
@@ -84,7 +86,7 @@ The explorer shall detect externally-created, externally-deleted, renamed, and m
 
 ### R-115 Explorer Context Menu
 
-Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, rename, delete, New Terminal Here, refresh, collapse folders, toggle hidden files, and toggle generated folders. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
+Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, rename, delete, New Terminal Here, refresh, collapse folders, sort mode selection, toggle hidden files, and toggle generated folders. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
 
 ### R-116 Ignore-Aware Workspace Visibility
 

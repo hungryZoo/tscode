@@ -16,7 +16,7 @@ use ratatui::layout::Rect;
 use serde_json::Value;
 
 use crate::{
-    fs_tree::{FsTree, VisibleNode},
+    fs_tree::{ExplorerSortMode, FsTree, VisibleNode},
     shell::{ShellPanel, TerminalSearchMatch},
     syntax::SyntaxHighlighter,
 };
@@ -1703,6 +1703,11 @@ pub enum CommandAction {
     DuplicateSelectedExplorerItem,
     RefreshExplorer,
     CollapseExplorer,
+    CycleExplorerSort,
+    SortExplorerByName,
+    SortExplorerByType,
+    SortExplorerByModified,
+    SortExplorerBySize,
     RevealActiveFile,
     CopyActiveFilePath,
     CopyActiveFileRelativePath,
@@ -2356,6 +2361,7 @@ impl App {
             KeyCode::Enter | KeyCode::Right => self.open_or_toggle_selected()?,
             KeyCode::Left => self.collapse_selected(),
             KeyCode::Char('r') => self.refresh_explorer()?,
+            KeyCode::Char('s') => self.cycle_explorer_sort_mode(),
             KeyCode::Char('/') => self.start_explorer_filter_prompt(),
             KeyCode::Char('.') => self.toggle_hidden_files(),
             KeyCode::Char('i') => self.toggle_ignored_files(),
@@ -3519,6 +3525,36 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::CollapseExplorer,
         },
         CommandSpec {
+            label: "Cycle Explorer Sort",
+            detail: "Cycle the explorer through name, type, modified time, and size sorting",
+            shortcut: "s",
+            action: CommandAction::CycleExplorerSort,
+        },
+        CommandSpec {
+            label: "Sort Explorer by Name",
+            detail: "Show folders first, then sort entries case-insensitively by name",
+            shortcut: "",
+            action: CommandAction::SortExplorerByName,
+        },
+        CommandSpec {
+            label: "Sort Explorer by Type",
+            detail: "Show folders first, then sort files by extension and name",
+            shortcut: "",
+            action: CommandAction::SortExplorerByType,
+        },
+        CommandSpec {
+            label: "Sort Explorer by Modified Time",
+            detail: "Show folders first, then sort newest entries before older entries",
+            shortcut: "",
+            action: CommandAction::SortExplorerByModified,
+        },
+        CommandSpec {
+            label: "Sort Explorer by Size",
+            detail: "Show folders first, then sort larger files before smaller files",
+            shortcut: "",
+            action: CommandAction::SortExplorerBySize,
+        },
+        CommandSpec {
             label: "Reveal Active File in Explorer",
             detail: "Select the active editor file in the explorer tree",
             shortcut: "o",
@@ -4039,6 +4075,7 @@ impl App {
                 )
             })
             .unwrap_or_else(|| "Paste the explorer clipboard into the selected folder".to_owned());
+        let current_sort = self.explorer.sort_mode().label();
 
         let mut specs = vec![
             ContextMenuAction {
@@ -4100,6 +4137,36 @@ impl App {
                 detail: "Collapse all expanded explorer folders".to_owned(),
                 shortcut: "",
                 action: CommandAction::CollapseExplorer,
+            },
+            ContextMenuAction {
+                label: "Cycle Explorer Sort",
+                detail: format!("Current sort: {current_sort}"),
+                shortcut: "s",
+                action: CommandAction::CycleExplorerSort,
+            },
+            ContextMenuAction {
+                label: "Sort by Name",
+                detail: "Folders first, then entries by case-insensitive name".to_owned(),
+                shortcut: "",
+                action: CommandAction::SortExplorerByName,
+            },
+            ContextMenuAction {
+                label: "Sort by Type",
+                detail: "Folders first, then files by extension and name".to_owned(),
+                shortcut: "",
+                action: CommandAction::SortExplorerByType,
+            },
+            ContextMenuAction {
+                label: "Sort by Modified Time",
+                detail: "Folders first, then newest entries before older entries".to_owned(),
+                shortcut: "",
+                action: CommandAction::SortExplorerByModified,
+            },
+            ContextMenuAction {
+                label: "Sort by Size",
+                detail: "Folders first, then larger files before smaller files".to_owned(),
+                shortcut: "",
+                action: CommandAction::SortExplorerBySize,
             },
             ContextMenuAction {
                 label: "Toggle Hidden Files",
@@ -5213,6 +5280,20 @@ impl App {
                 "hiding"
             }
         ));
+    }
+
+    fn cycle_explorer_sort_mode(&mut self) {
+        self.set_explorer_sort_mode(self.explorer.sort_mode().next());
+    }
+
+    fn set_explorer_sort_mode(&mut self, sort_mode: ExplorerSortMode) {
+        let selected_path = self
+            .visible_nodes()
+            .get(self.explorer.selected)
+            .map(|node| node.path.clone());
+        self.explorer.set_sort_mode(sort_mode);
+        self.restore_explorer_selection(selected_path);
+        self.message = Some(format!("explorer sorted by {}", sort_mode.label()));
     }
 
     fn expand_active_explorer_filter_matches(&mut self) {
@@ -6749,6 +6830,19 @@ impl App {
             CommandAction::DuplicateSelectedExplorerItem => self.duplicate_selected()?,
             CommandAction::RefreshExplorer => self.refresh_explorer()?,
             CommandAction::CollapseExplorer => self.collapse_explorer(),
+            CommandAction::CycleExplorerSort => self.cycle_explorer_sort_mode(),
+            CommandAction::SortExplorerByName => {
+                self.set_explorer_sort_mode(ExplorerSortMode::Name)
+            }
+            CommandAction::SortExplorerByType => {
+                self.set_explorer_sort_mode(ExplorerSortMode::Type)
+            }
+            CommandAction::SortExplorerByModified => {
+                self.set_explorer_sort_mode(ExplorerSortMode::Modified)
+            }
+            CommandAction::SortExplorerBySize => {
+                self.set_explorer_sort_mode(ExplorerSortMode::Size)
+            }
             CommandAction::RevealActiveFile => self.reveal_active_file()?,
             CommandAction::CopyActiveFilePath => self.copy_active_file_path_to_clipboard(false),
             CommandAction::CopyActiveFileRelativePath => {
@@ -9958,6 +10052,8 @@ mod tests {
             panel.items.iter().any(|item| item.label == "Rename"
                 && item.command == Some(CommandAction::RenameSelected))
         );
+        assert!(panel.items.iter().any(|item| item.label == "Sort by Size"
+            && item.command == Some(CommandAction::SortExplorerBySize)));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
@@ -9999,6 +10095,74 @@ mod tests {
         app.run_command(CommandAction::DuplicateSelectedExplorerItem)
             .unwrap();
         assert!(canonical_root.join("main copy.rs").is_file());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_sort_modes_reorder_real_entries_and_preserve_selection() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-explorer-sort-{}", std::process::id()));
+        let dir = root.join("src");
+        let alpha = root.join("alpha.rs");
+        let beta = root.join("beta.txt");
+        let zeta = root.join("zeta.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&alpha, "a").unwrap();
+        fs::write(&beta, "0123456789").unwrap();
+        fs::write(&zeta, "zzz").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        let canonical_zeta = zeta.canonicalize().unwrap();
+        let direct_child_names = |app: &App| {
+            app.visible_nodes()
+                .into_iter()
+                .filter(|node| node.depth == 1)
+                .map(|node| node.name)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            direct_child_names(&app),
+            vec!["src", "alpha.rs", "beta.txt", "zeta.md"]
+        );
+
+        app.explorer.reveal(&canonical_zeta).unwrap();
+        app.run_command(CommandAction::SortExplorerBySize).unwrap();
+        assert_eq!(app.explorer.sort_mode(), ExplorerSortMode::Size);
+        assert_eq!(
+            direct_child_names(&app),
+            vec!["src", "beta.txt", "zeta.md", "alpha.rs"]
+        );
+        assert!(
+            app.visible_nodes()
+                .get(app.explorer.selected)
+                .is_some_and(|node| node.path == canonical_zeta)
+        );
+
+        app.run_command(CommandAction::SortExplorerByType).unwrap();
+        assert_eq!(app.explorer.sort_mode(), ExplorerSortMode::Type);
+        assert_eq!(
+            direct_child_names(&app),
+            vec!["src", "zeta.md", "alpha.rs", "beta.txt"]
+        );
+        assert!(
+            app.visible_nodes()
+                .get(app.explorer.selected)
+                .is_some_and(|node| node.path == canonical_zeta)
+        );
+
+        app.run_command(CommandAction::CycleExplorerSort).unwrap();
+        assert_eq!(app.explorer.sort_mode(), ExplorerSortMode::Modified);
+
+        app.run_command(CommandAction::SortExplorerByName).unwrap();
+        assert_eq!(app.explorer.sort_mode(), ExplorerSortMode::Name);
+        assert_eq!(
+            direct_child_names(&app),
+            vec!["src", "alpha.rs", "beta.txt", "zeta.md"]
+        );
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
@@ -11307,6 +11471,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ShowSourceControl))
+        );
+        let commands = app.command_palette_items("sort explorer size");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::SortExplorerBySize))
         );
         let commands = app.command_palette_items("run task");
         assert!(

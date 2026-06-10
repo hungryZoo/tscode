@@ -2,6 +2,7 @@ use std::{
     cmp::Ordering,
     fs,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use anyhow::Result;
@@ -24,13 +25,43 @@ struct FsNode {
     is_dir: bool,
     expanded: bool,
     size: Option<u64>,
+    modified: Option<SystemTime>,
     readonly: bool,
     children: Option<Vec<FsNode>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExplorerSortMode {
+    Name,
+    Type,
+    Modified,
+    Size,
+}
+
+impl ExplorerSortMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Type => "type",
+            Self::Modified => "modified",
+            Self::Size => "size",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Type,
+            Self::Type => Self::Modified,
+            Self::Modified => Self::Size,
+            Self::Size => Self::Name,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct FsTree {
     root: FsNode,
+    sort_mode: ExplorerSortMode,
     pub selected: usize,
     pub scroll: usize,
 }
@@ -50,15 +81,20 @@ impl FsTree {
             is_dir: true,
             expanded: true,
             size: None,
+            modified: metadata
+                .as_ref()
+                .and_then(|metadata| metadata.modified().ok()),
             readonly: metadata
                 .as_ref()
                 .is_some_and(|metadata| metadata.permissions().readonly()),
             children: None,
         };
-        load_children(&mut root)?;
+        let sort_mode = ExplorerSortMode::Name;
+        load_children(&mut root, sort_mode)?;
 
         Ok(Self {
             root,
+            sort_mode,
             selected: 0,
             scroll: 0,
         })
@@ -70,10 +106,20 @@ impl FsTree {
         visible
     }
 
+    pub fn sort_mode(&self) -> ExplorerSortMode {
+        self.sort_mode
+    }
+
+    pub fn set_sort_mode(&mut self, sort_mode: ExplorerSortMode) {
+        self.sort_mode = sort_mode;
+        sort_loaded_children(&mut self.root, sort_mode);
+        self.clamp_selection();
+    }
+
     pub fn refresh(&mut self) -> Result<()> {
         let mut expanded = Vec::new();
         collect_expanded(&self.root, &mut expanded);
-        reload_with_expanded(&mut self.root, &expanded)?;
+        reload_with_expanded(&mut self.root, &expanded, self.sort_mode)?;
         self.clamp_selection();
         Ok(())
     }
@@ -83,7 +129,7 @@ impl FsTree {
             && node.is_dir
         {
             if node.children.is_none() {
-                load_children(node)?;
+                load_children(node, self.sort_mode)?;
             }
             node.expanded = !node.expanded;
         }
@@ -109,7 +155,7 @@ impl FsTree {
     }
 
     pub fn reveal(&mut self, path: &Path) -> Result<()> {
-        expand_to_path(&mut self.root, path)?;
+        expand_to_path(&mut self.root, path, self.sort_mode)?;
         self.clamp_selection();
         if let Some(index) = self
             .visible_nodes()
@@ -174,7 +220,7 @@ fn collapse_descendants(node: &mut FsNode) {
     }
 }
 
-fn expand_to_path(node: &mut FsNode, path: &Path) -> Result<bool> {
+fn expand_to_path(node: &mut FsNode, path: &Path, sort_mode: ExplorerSortMode) -> Result<bool> {
     if node.path == path {
         return Ok(true);
     }
@@ -183,13 +229,13 @@ fn expand_to_path(node: &mut FsNode, path: &Path) -> Result<bool> {
     }
 
     if node.children.is_none() {
-        load_children(node)?;
+        load_children(node, sort_mode)?;
     }
     node.expanded = true;
 
     if let Some(children) = &mut node.children {
         for child in children {
-            if expand_to_path(child, path)? {
+            if expand_to_path(child, path, sort_mode)? {
                 return Ok(true);
             }
         }
@@ -198,7 +244,7 @@ fn expand_to_path(node: &mut FsNode, path: &Path) -> Result<bool> {
     Ok(false)
 }
 
-fn load_children(node: &mut FsNode) -> Result<()> {
+fn load_children(node: &mut FsNode, sort_mode: ExplorerSortMode) -> Result<()> {
     let mut children = Vec::new();
     for entry in fs::read_dir(&node.path)? {
         let entry = entry?;
@@ -213,6 +259,9 @@ fn load_children(node: &mut FsNode) -> Result<()> {
             is_dir,
             expanded: false,
             size: (!is_dir).then(|| metadata.as_ref().map_or(0, fs::Metadata::len)),
+            modified: metadata
+                .as_ref()
+                .and_then(|metadata| metadata.modified().ok()),
             readonly: metadata
                 .as_ref()
                 .is_some_and(|metadata| metadata.permissions().readonly()),
@@ -220,9 +269,18 @@ fn load_children(node: &mut FsNode) -> Result<()> {
         });
     }
 
-    children.sort_by(compare_nodes);
+    children.sort_by(|a, b| compare_nodes(a, b, sort_mode));
     node.children = Some(children);
     Ok(())
+}
+
+fn sort_loaded_children(node: &mut FsNode, sort_mode: ExplorerSortMode) {
+    if let Some(children) = &mut node.children {
+        children.sort_by(|a, b| compare_nodes(a, b, sort_mode));
+        for child in children {
+            sort_loaded_children(child, sort_mode);
+        }
+    }
 }
 
 fn collect_expanded(node: &FsNode, expanded: &mut Vec<PathBuf>) {
@@ -236,12 +294,16 @@ fn collect_expanded(node: &FsNode, expanded: &mut Vec<PathBuf>) {
     }
 }
 
-fn reload_with_expanded(node: &mut FsNode, expanded: &[PathBuf]) -> Result<()> {
+fn reload_with_expanded(
+    node: &mut FsNode,
+    expanded: &[PathBuf],
+    sort_mode: ExplorerSortMode,
+) -> Result<()> {
     if !node.is_dir {
         return Ok(());
     }
 
-    load_children(node)?;
+    load_children(node, sort_mode)?;
     node.expanded = expanded.iter().any(|path| path == &node.path);
 
     if node.expanded
@@ -249,7 +311,7 @@ fn reload_with_expanded(node: &mut FsNode, expanded: &[PathBuf]) -> Result<()> {
     {
         for child in children {
             if child.is_dir && expanded.iter().any(|path| path == &child.path) {
-                reload_with_expanded(child, expanded)?;
+                reload_with_expanded(child, expanded, sort_mode)?;
             }
         }
     }
@@ -257,10 +319,50 @@ fn reload_with_expanded(node: &mut FsNode, expanded: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-fn compare_nodes(a: &FsNode, b: &FsNode) -> Ordering {
+fn compare_nodes(a: &FsNode, b: &FsNode, sort_mode: ExplorerSortMode) -> Ordering {
     match (a.is_dir, b.is_dir) {
         (true, false) => Ordering::Less,
         (false, true) => Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        _ => match sort_mode {
+            ExplorerSortMode::Name => compare_names(a, b),
+            ExplorerSortMode::Type => compare_types(a, b),
+            ExplorerSortMode::Modified => compare_modified(a, b),
+            ExplorerSortMode::Size => compare_sizes(a, b),
+        },
     }
+}
+
+fn compare_names(a: &FsNode, b: &FsNode) -> Ordering {
+    a.name
+        .to_lowercase()
+        .cmp(&b.name.to_lowercase())
+        .then_with(|| a.name.cmp(&b.name))
+}
+
+fn compare_types(a: &FsNode, b: &FsNode) -> Ordering {
+    node_extension(a)
+        .cmp(&node_extension(b))
+        .then_with(|| compare_names(a, b))
+}
+
+fn compare_modified(a: &FsNode, b: &FsNode) -> Ordering {
+    b.modified
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .cmp(&a.modified.unwrap_or(SystemTime::UNIX_EPOCH))
+        .then_with(|| compare_names(a, b))
+}
+
+fn compare_sizes(a: &FsNode, b: &FsNode) -> Ordering {
+    b.size
+        .unwrap_or(0)
+        .cmp(&a.size.unwrap_or(0))
+        .then_with(|| compare_names(a, b))
+}
+
+fn node_extension(node: &FsNode) -> String {
+    node.path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_lowercase()
 }

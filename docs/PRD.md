@@ -57,6 +57,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can right-click explorer rows and run common file actions from a mouse-selectable context menu instead of memorizing every shortcut.
 - As a developer, I can reveal the active editor file in the explorer.
 - As a developer, I can filter the explorer tree, hide or show dot-prefixed entries, hide or show generated folders, and see basic file metadata while browsing.
+- As a developer, I can sort the explorer by name, type, modified time, or size without losing my current selection.
 - As a developer, explorer filtering finds nested files inside collapsed folders and expands the matching path enough for me to click it.
 - As a developer, I can see Git working tree status badges in the explorer when the workspace is inside a Git repository.
 - As a developer, I can open a Source Control panel, inspect changed Git files and diff hunks, filter that list, and jump directly from a hunk to the changed source line.
@@ -136,6 +137,7 @@ Keyboard fallback:
 - Terminal right-click opens a context menu for copy, paste, search, clear, restart, terminal session switching/creation/closing, maximize, resize, and focus actions when the child app is not using terminal mouse reporting
 - Explorer `c`, `x`, `p`, `y`, and `o` perform copy, cut, paste, duplicate, and reveal-active-file actions
 - Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
+- Explorer `s`, the context menu, and the command palette change sorting between name, type, modified time, and size while preserving folders-first grouping
 - Explorer `t` opens a new integrated terminal in the selected folder or selected file's parent folder
 - Command palette path-copy commands copy active-file or selected-explorer absolute/relative paths through the terminal clipboard
 - Explorer `/`, `.`, and `i` perform visible-tree filtering, dotfile visibility toggling, and ignored/generated-entry visibility toggling backed by `.gitignore`, `.ignore`, global Git ignore rules, and built-in generated-folder names

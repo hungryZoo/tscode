@@ -220,10 +220,11 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         "generated:off"
     };
+    let sort = app.explorer.sort_mode().label();
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(
-            " Explorer  / filter  . hidden  i generated  n/N new  e rename  D delete  c copy  x cut  p paste  y dup  o reveal  r refresh  {hidden} {ignored}{filter} "
+            " Explorer  / filter  s sort:{sort}  . hidden  i generated  n/N new  e rename  D delete  c copy  x cut  p paste  y dup  o reveal  r refresh  {hidden} {ignored}{filter} "
         ))
         .border_style(border_style(focused));
     let inner = block.inner(area);
