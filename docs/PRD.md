@@ -152,7 +152,7 @@ Keyboard fallback:
 - `Ctrl-P` opens the quick file picker
 - `Ctrl-Shift-F` and `Ctrl-G` open workspace text search, including dirty open buffers from memory, while respecting the explorer's hidden/ignored/generated visibility policy
 - `Ctrl-Shift-H` opens replace-in-files; the command palette provides the same action as an SSH-friendly fallback
-- `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, and `Ctrl-R` provide document symbols, workspace symbols, LSP-first go-to-definition, and LSP-first find-references code navigation
+- `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, `Ctrl-R`, and `F2` provide document symbols, workspace symbols, LSP-first go-to-definition, LSP-first find-references, and LSP-first semantic rename code navigation
 - `Ctrl-Space` or the command palette opens code suggestions for the identifier at the editor cursor, including installed language-server candidates when available
 - The command palette and editor context menu provide Show Hover for installed language-server hover documentation
 - Mouse hover over an editor identifier shows lightweight symbol definition/reference information
@@ -160,7 +160,7 @@ Keyboard fallback:
 - The command palette provides Run Workspace Check and Show Problems actions for project diagnostics
 - The command palette provides a Source Control action for Git changed files and diff hunks
 - `Ctrl-Shift-B` or the command palette opens Run Task for detected workspace tasks
-- `F2` or the command palette renames the identifier under the editor cursor across visible workspace text files
+- `F2` or the command palette asks the installed language server for semantic rename first and falls back to renaming the identifier across visible workspace text files
 - `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
 - `Ctrl-N` or the command palette creates an editable Untitled tab without touching disk until Save As
 - The command palette provides Save As for writing the active editor buffer to a new path and retargeting the tab

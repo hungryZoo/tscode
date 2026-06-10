@@ -28,6 +28,21 @@ const MAX_OSC52_CLIPBOARD_BYTES: usize = 512 * 1024;
 const MAX_NAVIGATION_HISTORY: usize = 200;
 const WORKSPACE_TREE_CHECK_INTERVAL: Duration = Duration::from_millis(750);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LspRenameSummary {
+    server: String,
+    edit_count: usize,
+    open_count: usize,
+    file_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextReplacement {
+    start: usize,
+    end: usize,
+    new_text: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPanel {
     Explorer,
@@ -6432,7 +6447,99 @@ impl App {
             self.message = Some("rename symbol requires a valid identifier".to_owned());
             return Ok(());
         }
+        if let Some(summary) = self.try_lsp_rename_symbol(&new_name)? {
+            self.search_needle = Some(new_name.clone());
+            self.message = Some(format!(
+                "LSP rename via {}: {} edit(s), {} open buffer(s), {} saved file(s)",
+                summary.server, summary.edit_count, summary.open_count, summary.file_count
+            ));
+            return Ok(());
+        }
         self.rename_symbol_occurrences(old, new_name)
+    }
+
+    fn try_lsp_rename_symbol(&mut self, new_name: &str) -> Result<Option<LspRenameSummary>> {
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            return Ok(None);
+        };
+        let Some(workspace_edit) = lsp::rename(&position, new_name)? else {
+            return Ok(None);
+        };
+        self.apply_lsp_workspace_edit(workspace_edit)
+    }
+
+    fn apply_lsp_workspace_edit(
+        &mut self,
+        workspace_edit: lsp::LspWorkspaceEdit,
+    ) -> Result<Option<LspRenameSummary>> {
+        let mut edits_by_path: HashMap<PathBuf, Vec<lsp::LspTextEdit>> = HashMap::new();
+        for edit in workspace_edit.edits {
+            let key = canonical_existing_path(&edit.path);
+            edits_by_path.entry(key).or_default().push(edit);
+        }
+
+        let mut edit_count = 0usize;
+        let mut open_count = 0usize;
+        let mut file_count = 0usize;
+
+        for (path, edits) in edits_by_path {
+            if let Some(tab_index) = self
+                .tabs
+                .iter()
+                .position(|tab| canonical_existing_path(&tab.path) == path)
+            {
+                let original = self.tabs[tab_index].text();
+                let Some((updated, count)) = apply_lsp_text_edits_to_text(&original, &edits) else {
+                    continue;
+                };
+                if count == 0 {
+                    continue;
+                }
+                if self.tabs[tab_index].replace_entire_text_as_edit(&updated) {
+                    edit_count += count;
+                    open_count += 1;
+                }
+                continue;
+            }
+
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
+            };
+            if !metadata.is_file() || metadata.len() > MAX_FILE_SCAN_BYTES {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            if bytes.contains(&0) {
+                continue;
+            }
+            let Ok(original) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let Some((updated, count)) = apply_lsp_text_edits_to_text(&original, &edits) else {
+                continue;
+            };
+            if count == 0 || updated == original {
+                continue;
+            }
+            fs::write(&path, updated.as_bytes())?;
+            edit_count += count;
+            file_count += 1;
+        }
+
+        if edit_count == 0 {
+            return Ok(None);
+        }
+        if file_count > 0 {
+            self.refresh_git_status();
+        }
+        Ok(Some(LspRenameSummary {
+            server: workspace_edit.server,
+            edit_count,
+            open_count,
+            file_count,
+        }))
     }
 
     fn rename_symbol_occurrences(&mut self, old: String, new_name: String) -> Result<()> {
@@ -8443,6 +8550,72 @@ fn file_stamp(path: &Path) -> Option<FileStamp> {
 fn read_text_lossy(path: &Path) -> Result<String> {
     let bytes = fs::read(path)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn canonical_existing_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn apply_lsp_text_edits_to_text(text: &str, edits: &[lsp::LspTextEdit]) -> Option<(String, usize)> {
+    let mut replacements = Vec::with_capacity(edits.len());
+    for edit in edits {
+        let start = byte_offset_for_lsp_position(text, edit.start_line, edit.start_utf16_col)?;
+        let end = byte_offset_for_lsp_position(text, edit.end_line, edit.end_utf16_col)?;
+        if start > end {
+            return None;
+        }
+        replacements.push(TextReplacement {
+            start,
+            end,
+            new_text: edit.new_text.clone(),
+        });
+    }
+    replacements.sort_by_key(|replacement| replacement.start);
+    let mut previous_end = 0usize;
+    for replacement in &replacements {
+        if replacement.start < previous_end {
+            return None;
+        }
+        previous_end = replacement.end;
+    }
+
+    let mut updated = text.to_owned();
+    for replacement in replacements.iter().rev() {
+        updated.replace_range(replacement.start..replacement.end, &replacement.new_text);
+    }
+    let count = replacements.len();
+    Some((updated, count))
+}
+
+fn byte_offset_for_lsp_position(text: &str, line: usize, utf16_col: usize) -> Option<usize> {
+    let line_start = line_start_offsets(text).get(line).copied()?;
+    let line_end = text[line_start..]
+        .find('\n')
+        .map(|offset| line_start + offset)
+        .unwrap_or(text.len());
+    let line_text = &text[line_start..line_end];
+    let mut utf16_seen = 0usize;
+    for (byte_index, ch) in line_text.char_indices() {
+        if utf16_seen == utf16_col {
+            return Some(line_start + byte_index);
+        }
+        let next = utf16_seen + ch.len_utf16();
+        if next > utf16_col {
+            return Some(line_start + byte_index);
+        }
+        utf16_seen = next;
+    }
+    (utf16_seen == utf16_col).then_some(line_end)
+}
+
+fn line_start_offsets(text: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (index, ch) in text.char_indices() {
+        if ch == '\n' {
+            starts.push(index + 1);
+        }
+    }
+    starts
 }
 
 fn terminal_submission_text(text: &str) -> String {
@@ -13162,6 +13335,99 @@ mod tests {
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lsp_workspace_edit_updates_open_buffers_and_closed_files() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-lsp-workspace-edit-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("main.rs"), "fn main() {\n    old_name();\n}\n").unwrap();
+        fs::write(root.join("lib.rs"), "pub fn old_name() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let main = canonical_root.join("main.rs");
+        let lib = canonical_root.join("lib.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&main);
+
+        let edit = lsp::LspWorkspaceEdit {
+            server: "mock-rename-lsp".to_owned(),
+            edits: vec![
+                lsp::LspTextEdit {
+                    path: main.clone(),
+                    start_line: 1,
+                    start_utf16_col: "    ".chars().count(),
+                    end_line: 1,
+                    end_utf16_col: "    old_name".chars().count(),
+                    new_text: "new_name".to_owned(),
+                },
+                lsp::LspTextEdit {
+                    path: lib.clone(),
+                    start_line: 0,
+                    start_utf16_col: "pub fn ".chars().count(),
+                    end_line: 0,
+                    end_utf16_col: "pub fn old_name".chars().count(),
+                    new_text: "new_name".to_owned(),
+                },
+            ],
+        };
+
+        let summary = app
+            .apply_lsp_workspace_edit(edit)
+            .unwrap()
+            .expect("applied LSP edit");
+        assert_eq!(
+            summary,
+            LspRenameSummary {
+                server: "mock-rename-lsp".to_owned(),
+                edit_count: 2,
+                open_count: 1,
+                file_count: 1,
+            }
+        );
+
+        let main_tab = app.tabs.iter().find(|tab| tab.path == main).unwrap();
+        assert!(main_tab.dirty);
+        assert_eq!(main_tab.text(), "fn main() {\n    new_name();\n}\n");
+        assert_eq!(
+            fs::read_to_string(&main).unwrap(),
+            "fn main() {\n    old_name();\n}\n"
+        );
+        assert_eq!(fs::read_to_string(&lib).unwrap(), "pub fn new_name() {}\n");
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(canonical_root);
+    }
+
+    #[test]
+    fn lsp_text_edit_application_respects_utf16_columns() {
+        let text = "let crab = \"🦀\";\ncrab();\n";
+        let edits = vec![
+            lsp::LspTextEdit {
+                path: PathBuf::from("main.rs"),
+                start_line: 0,
+                start_utf16_col: "let crab = \"🦀\";".encode_utf16().count(),
+                end_line: 0,
+                end_utf16_col: "let crab = \"🦀\";".encode_utf16().count(),
+                new_text: " // ok".to_owned(),
+            },
+            lsp::LspTextEdit {
+                path: PathBuf::from("main.rs"),
+                start_line: 1,
+                start_utf16_col: 0,
+                end_line: 1,
+                end_utf16_col: "crab".encode_utf16().count(),
+                new_text: "ferris".to_owned(),
+            },
+        ];
+
+        let (updated, count) = apply_lsp_text_edits_to_text(text, &edits).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(updated, "let crab = \"🦀\"; // ok\nferris();\n");
     }
 
     #[test]

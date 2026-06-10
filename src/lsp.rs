@@ -55,6 +55,22 @@ pub struct LspCompletion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspWorkspaceEdit {
+    pub edits: Vec<LspTextEdit>,
+    pub server: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspTextEdit {
+    pub path: PathBuf,
+    pub start_line: usize,
+    pub start_utf16_col: usize,
+    pub end_line: usize,
+    pub end_utf16_col: usize,
+    pub new_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LanguageServerConfig {
     name: String,
     command: String,
@@ -92,6 +108,13 @@ pub fn completions(position: &DocumentPosition) -> Result<Vec<LspCompletion>> {
         return Ok(Vec::new());
     };
     request_completions_with_config(position, &config)
+}
+
+pub fn rename(position: &DocumentPosition, new_name: &str) -> Result<Option<LspWorkspaceEdit>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(None);
+    };
+    request_rename_with_config(position, new_name, &config)
 }
 
 fn request_hover_with_config(
@@ -169,6 +192,21 @@ fn request_completions_with_config(
         return Ok(Vec::new());
     };
     Ok(parse_completions(response.result.as_ref(), &config.name))
+}
+
+fn request_rename_with_config(
+    position: &DocumentPosition,
+    new_name: &str,
+    config: &LanguageServerConfig,
+) -> Result<Option<LspWorkspaceEdit>> {
+    let mut params = text_document_position_params(position);
+    if let Some(object) = params.as_object_mut() {
+        object.insert("newName".to_owned(), Value::String(new_name.to_owned()));
+    }
+    let Some(response) = run_lsp_request(position, config, "textDocument/rename", params)? else {
+        return Ok(None);
+    };
+    Ok(parse_workspace_edit(response.result.as_ref(), &config.name))
 }
 
 #[derive(Debug, Clone)]
@@ -626,6 +664,83 @@ fn parse_completions(result: Option<&Value>, server: &str) -> Vec<LspCompletion>
         .collect()
 }
 
+fn parse_workspace_edit(result: Option<&Value>, server: &str) -> Option<LspWorkspaceEdit> {
+    let result = result?;
+    if result.is_null() {
+        return None;
+    }
+
+    let mut edits = Vec::new();
+    if let Some(changes) = result.get("changes").and_then(Value::as_object) {
+        for (uri, raw_edits) in changes {
+            parse_text_edits_for_uri(uri, raw_edits, &mut edits);
+        }
+    }
+
+    if let Some(document_changes) = result.get("documentChanges").and_then(Value::as_array) {
+        for change in document_changes {
+            let Some(uri) = change
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("uri"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            if let Some(raw_edits) = change.get("edits") {
+                parse_text_edits_for_uri(uri, raw_edits, &mut edits);
+            }
+        }
+    }
+
+    (!edits.is_empty()).then(|| LspWorkspaceEdit {
+        edits,
+        server: server.to_owned(),
+    })
+}
+
+fn parse_text_edits_for_uri(uri: &str, raw_edits: &Value, output: &mut Vec<LspTextEdit>) {
+    let Some(path) = file_uri_to_path(uri) else {
+        return;
+    };
+    let Some(edits) = raw_edits.as_array() else {
+        return;
+    };
+    for edit in edits {
+        let Some(range) = edit.get("range") else {
+            continue;
+        };
+        let Some(start) = range.get("start") else {
+            continue;
+        };
+        let Some(end) = range.get("end") else {
+            continue;
+        };
+        let Some(new_text) = edit.get("newText").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(start_line) = start.get("line").and_then(Value::as_u64) else {
+            continue;
+        };
+        let Some(start_utf16_col) = start.get("character").and_then(Value::as_u64) else {
+            continue;
+        };
+        let Some(end_line) = end.get("line").and_then(Value::as_u64) else {
+            continue;
+        };
+        let Some(end_utf16_col) = end.get("character").and_then(Value::as_u64) else {
+            continue;
+        };
+        output.push(LspTextEdit {
+            path: path.clone(),
+            start_line: start_line as usize,
+            start_utf16_col: start_utf16_col as usize,
+            end_line: end_line as usize,
+            end_utf16_col: end_utf16_col as usize,
+            new_text: new_text.to_owned(),
+        });
+    }
+}
+
 fn line_text_for_path(path: &Path, line: usize, position: &DocumentPosition) -> Option<String> {
     if same_path(path, &position.path) {
         return position.text.lines().nth(line).map(str::to_owned);
@@ -747,6 +862,151 @@ mod tests {
             hover_contents(Some(&value)).unwrap(),
             "plain\n\nfn main()\n\n**docs**"
         );
+    }
+
+    #[test]
+    fn parses_workspace_edit_changes_and_document_changes() {
+        let root = env::temp_dir().join(format!("tscode-lsp-edit-{}", std::process::id()));
+        let file_a = root.join("main.rs");
+        let file_b = root.join("lib.rs");
+        let edit = json!({
+            "changes": {
+                path_to_file_uri(&file_a): [
+                    {
+                        "range": {
+                            "start": { "line": 0, "character": 4 },
+                            "end": { "line": 0, "character": 9 }
+                        },
+                        "newText": "renamed"
+                    }
+                ]
+            },
+            "documentChanges": [
+                {
+                    "textDocument": { "uri": path_to_file_uri(&file_b), "version": null },
+                    "edits": [
+                        {
+                            "range": {
+                                "start": { "line": 2, "character": 1 },
+                                "end": { "line": 2, "character": 6 }
+                            },
+                            "newText": "renamed"
+                        }
+                    ]
+                },
+                {
+                    "kind": "rename",
+                    "oldUri": path_to_file_uri(&file_a),
+                    "newUri": path_to_file_uri(&file_b)
+                }
+            ]
+        });
+
+        let parsed = parse_workspace_edit(Some(&edit), "mock-rename").expect("workspace edit");
+        assert_eq!(parsed.server, "mock-rename");
+        assert_eq!(parsed.edits.len(), 2);
+        assert_eq!(parsed.edits[0].path, file_a);
+        assert_eq!(parsed.edits[0].start_line, 0);
+        assert_eq!(parsed.edits[0].start_utf16_col, 4);
+        assert_eq!(parsed.edits[1].path, file_b);
+        assert_eq!(parsed.edits[1].end_line, 2);
+        assert_eq!(parsed.edits[1].new_text, "renamed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_rename_workspace_edit_from_mock_stdio_language_server() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!("tscode-lsp-rename-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "fn old_name() {}\n").unwrap();
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "changes": {
+                    path_to_file_uri(&file): [
+                        {
+                            "range": {
+                                "start": { "line": 0, "character": 3 },
+                                "end": { "line": 0, "character": 11 }
+                            },
+                            "newText": "new_name"
+                        }
+                    ]
+                }
+            }
+        })
+        .to_string();
+        let server = root.join("mock-rename-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"renameProvider":true}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+body=$(read_msg)
+case "$body" in
+  *textDocument/rename*) send_msg '{}' ;;
+  *) send_msg '{{"jsonrpc":"2.0","id":2,"result":null}}' ;;
+esac
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":3,"result":null}}'
+read_msg >/dev/null
+"#,
+                response
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-rename-lsp".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: file.clone(),
+            text: fs::read_to_string(&file).unwrap(),
+            line: 0,
+            col: 4,
+        };
+
+        let edit = request_rename_with_config(&position, "new_name", &config)
+            .unwrap()
+            .expect("rename edit");
+        assert_eq!(edit.server, "mock-rename-lsp");
+        assert_eq!(edit.edits.len(), 1);
+        assert_eq!(edit.edits[0].path, file.canonicalize().unwrap());
+        assert_eq!(edit.edits[0].start_utf16_col, 3);
+        assert_eq!(edit.edits[0].new_text, "new_name");
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
