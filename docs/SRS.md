@@ -50,17 +50,21 @@ Mouse wheel and keyboard navigation shall scroll the explorer when content excee
 
 The explorer shall visually highlight the row under the mouse cursor.
 
+### R-106A Multi-Selection
+
+The explorer shall support a visible multi-selection model. Pressing `Space` on the focused explorer row shall toggle that row in the selection set. `Ctrl`, `Command`, or `Meta` left-clicking an explorer row shall toggle that row without opening it. `Shift` left-clicking an explorer row shall select the visible row range between the selection anchor and the clicked row. Multi-selected rows shall be visually distinct from ordinary hovered rows and from the active cursor row. Pressing `Esc` outside terminal focus shall clear the explorer multi-selection before invoking app quit behavior.
+
 ### R-107 Open Tab Synchronization
 
-Renaming a file or folder shall update matching open tab paths. Deleting a file or folder shall close matching clean open tabs. If the delete target contains a dirty open file-backed tab, the application shall refuse the filesystem delete, keep all matching tabs open, keep the dirty buffer contents intact, and tell the user to save, close, or discard the unsaved tab first.
+Renaming a file or folder shall update matching open tab paths. Deleting one or more files or folders shall close matching clean open tabs. If any delete target contains a dirty open file-backed tab, the application shall refuse the filesystem delete, keep all matching tabs open, keep the dirty buffer contents intact, and tell the user to save, close, or discard the unsaved tab first.
 
 ### R-108 Explorer Clipboard
 
-The explorer shall support copying and cutting a selected file or folder, pasting it into the selected directory or selected file's parent directory, and recursively copying folder contents.
+The explorer shall support copying and cutting the selected file, folder, or active multi-selection set, pasting it into the selected directory or selected file's parent directory, and recursively copying folder contents. When a folder and its descendant are both selected, batch file operations shall process the top-level selected folder once rather than duplicating descendant work.
 
 ### R-109 Duplicate
 
-The explorer shall duplicate the selected file or folder beside the original using a non-conflicting copy name.
+The explorer shall duplicate the selected file, folder, or active multi-selection set beside each original using non-conflicting copy names.
 
 ### R-110 Reveal Active File
 
@@ -86,7 +90,7 @@ The explorer shall detect externally-created, externally-deleted, renamed, and m
 
 ### R-115 Explorer Context Menu
 
-Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, rename, delete, New Terminal Here, refresh, collapse folders, sort mode selection, toggle hidden files, and toggle generated folders. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
+Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, rename, delete, New Terminal Here, refresh, collapse folders, sort mode selection, toggle hidden files, and toggle generated folders. When a multi-selection is active, applicable copy, cut, duplicate, delete, and path-copy actions shall apply to the whole selected set, while rename shall remain a single-item action. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
 
 ### R-116 Ignore-Aware Workspace Visibility
 

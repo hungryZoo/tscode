@@ -54,6 +54,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can search the integrated terminal's visible output and scrollback, see matches highlighted, and jump between matches without losing the PTY session.
 - As a developer, I can edit text, save files, create files/folders, rename, delete, and refresh the explorer.
 - As a developer, I can copy, cut, paste, and duplicate files or folders from the explorer.
+- As a developer, I can select multiple explorer rows with the mouse or keyboard and run copy, cut, paste, duplicate, delete, and path-copy actions on the whole selected set.
 - As a developer, I can right-click explorer rows and run common file actions from a mouse-selectable context menu instead of memorizing every shortcut.
 - As a developer, I can reveal the active editor file in the explorer.
 - As a developer, I can filter the explorer tree, hide or show dot-prefixed entries, hide or show generated folders, and see basic file metadata while browsing.
@@ -140,6 +141,7 @@ Keyboard fallback:
 - Terminal `Ctrl-F` searches terminal scrollback; terminal `F3` and `Shift-F3` move to next and previous terminal search matches
 - Terminal right-click opens a context menu for copy, paste, search, clear, restart, terminal session switching/creation/splitting/closing, maximize, resize, and focus actions when the child app is not using terminal mouse reporting
 - Terminal top-border hover is visually highlighted and dragging it changes the normal terminal panel height without restarting the PTY session
+- Explorer `Space`, `Shift`+click, and `Ctrl`/`Command`/`Meta`+click provide visible multi-select and range-select for file rows
 - Explorer `c`, `x`, `p`, `y`, and `o` perform copy, cut, paste, duplicate, and reveal-active-file actions
 - Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
 - Explorer `s`, the context menu, and the command palette change sorting between name, type, modified time, and size while preserving folders-first grouping

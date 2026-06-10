@@ -1588,7 +1588,7 @@ pub enum PromptKind {
     NewFile,
     NewDir,
     Rename(PathBuf),
-    Delete(PathBuf),
+    DeletePaths(Vec<PathBuf>),
     ExplorerFilter,
     Search,
     ReplaceFind { all: bool },
@@ -1834,7 +1834,7 @@ pub enum ClipboardAction {
 #[derive(Debug, Clone)]
 pub struct ExplorerClipboard {
     pub action: ClipboardAction,
-    pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1976,6 +1976,8 @@ pub struct App {
     pub completion_state: Option<CompletionState>,
     pub editor_hover: Option<EditorHoverInfo>,
     pub quick_panel_height: usize,
+    pub explorer_multi_selection: BTreeSet<PathBuf>,
+    pub explorer_selection_anchor: Option<PathBuf>,
     pub explorer_clipboard: Option<ExplorerClipboard>,
     pub editor_clipboard: Option<String>,
     pub git_statuses: HashMap<PathBuf, GitStatusKind>,
@@ -2047,6 +2049,8 @@ impl App {
             completion_state: None,
             editor_hover: None,
             quick_panel_height: 0,
+            explorer_multi_selection: BTreeSet::new(),
+            explorer_selection_anchor: None,
             explorer_clipboard: None,
             editor_clipboard: None,
             git_statuses,
@@ -2225,6 +2229,9 @@ impl App {
             KeyCode::Esc if !matches!(self.focus, FocusPanel::Terminal) => {
                 if self.explorer_filter.is_some() {
                     self.clear_explorer_filter();
+                } else if !self.explorer_multi_selection.is_empty() {
+                    self.clear_explorer_multi_selection();
+                    self.message = Some("explorer selection cleared".to_owned());
                 } else {
                     self.request_quit();
                 }
@@ -2318,6 +2325,25 @@ impl App {
                 self.editor_selection_dragging = false;
                 self.toggle_editor_cursor_from_mouse();
             }
+            MouseEventKind::Down(MouseButton::Left)
+                if matches!(target, HoverTarget::ExplorerRow(_))
+                    && mouse.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                if let HoverTarget::ExplorerRow(index) = target {
+                    self.focus = FocusPanel::Explorer;
+                    self.extend_explorer_multi_selection_to(index);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left)
+                if matches!(target, HoverTarget::ExplorerRow(_))
+                    && explorer_multi_select_modifier(mouse.modifiers) =>
+            {
+                if let HoverTarget::ExplorerRow(index) = target {
+                    self.focus = FocusPanel::Explorer;
+                    self.explorer.selected = index;
+                    self.toggle_explorer_multi_selection();
+                }
+            }
             MouseEventKind::Down(MouseButton::Left) if target == HoverTarget::Editor => {
                 self.start_editor_selection_from_mouse();
             }
@@ -2356,6 +2382,13 @@ impl App {
             HoverTarget::ExplorerRow(index) => {
                 self.focus = FocusPanel::Explorer;
                 self.explorer.selected = index;
+                if let Some(path) = self.current_explorer_path()
+                    && !self.explorer_multi_selection.is_empty()
+                    && !self.explorer_multi_selection.contains(&path)
+                {
+                    self.clear_explorer_multi_selection();
+                    self.explorer_selection_anchor = Some(path);
+                }
                 self.open_quick_panel(QuickPanelKind::ExplorerContextMenu)?;
             }
             HoverTarget::Explorer => {
@@ -2414,6 +2447,8 @@ impl App {
         match target {
             HoverTarget::ExplorerRow(index) => {
                 self.explorer.selected = index;
+                self.clear_explorer_multi_selection();
+                self.set_explorer_anchor_to_current();
                 self.open_or_toggle_selected()?;
             }
             HoverTarget::Tab(index) if index < self.tabs.len() => {
@@ -2461,6 +2496,7 @@ impl App {
             KeyCode::Char('N') => self.start_prompt(PromptKind::NewDir, ""),
             KeyCode::Char('e') => self.prompt_rename(),
             KeyCode::Char('D') => self.prompt_delete(),
+            KeyCode::Char(' ') => self.toggle_explorer_multi_selection(),
             KeyCode::Char('c') => self.copy_selected_path(),
             KeyCode::Char('x') => self.cut_selected_path(),
             KeyCode::Char('p') => self.paste_into_selected()?,
@@ -2757,6 +2793,120 @@ impl App {
         self.ensure_explorer_selection_visible();
     }
 
+    fn current_explorer_path(&self) -> Option<PathBuf> {
+        self.visible_nodes()
+            .get(self.explorer.selected)
+            .map(|node| node.path.clone())
+    }
+
+    pub fn selected_explorer_paths(&self) -> Vec<PathBuf> {
+        let nodes = self.visible_nodes();
+        if self.explorer_multi_selection.is_empty() {
+            return nodes
+                .get(self.explorer.selected)
+                .map(|node| vec![node.path.clone()])
+                .unwrap_or_default();
+        }
+
+        let paths = nodes
+            .iter()
+            .filter(|node| self.explorer_multi_selection.contains(&node.path))
+            .map(|node| node.path.clone())
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            nodes
+                .get(self.explorer.selected)
+                .map(|node| vec![node.path.clone()])
+                .unwrap_or_default()
+        } else {
+            paths
+        }
+    }
+
+    fn selected_explorer_label(&self, paths: &[PathBuf]) -> String {
+        if paths.len() == 1 {
+            paths
+                .first()
+                .map(|path| relative_path(&self.root, path))
+                .unwrap_or_else(|| "selection".to_owned())
+        } else {
+            format!("{} selected items", paths.len())
+        }
+    }
+
+    fn set_explorer_anchor_to_current(&mut self) {
+        self.explorer_selection_anchor = self.current_explorer_path();
+    }
+
+    fn clear_explorer_multi_selection(&mut self) {
+        self.explorer_multi_selection.clear();
+        self.explorer_selection_anchor = None;
+    }
+
+    fn toggle_explorer_multi_selection(&mut self) {
+        let Some(path) = self.current_explorer_path() else {
+            return;
+        };
+        if !self.explorer_multi_selection.remove(&path) {
+            self.explorer_multi_selection.insert(path.clone());
+        }
+        self.explorer_selection_anchor = Some(path);
+        let count = self.explorer_multi_selection.len();
+        self.message = if count == 0 {
+            Some("explorer selection cleared".to_owned())
+        } else {
+            Some(format!("selected {count} explorer item(s)"))
+        };
+    }
+
+    fn extend_explorer_multi_selection_to(&mut self, index: usize) {
+        let nodes = self.visible_nodes();
+        if nodes.is_empty() {
+            return;
+        }
+        let index = index.min(nodes.len().saturating_sub(1));
+        let anchor_index = self
+            .explorer_selection_anchor
+            .as_ref()
+            .and_then(|anchor| nodes.iter().position(|node| &node.path == anchor))
+            .unwrap_or(self.explorer.selected.min(nodes.len().saturating_sub(1)));
+        let (start, end) = if anchor_index <= index {
+            (anchor_index, index)
+        } else {
+            (index, anchor_index)
+        };
+        self.explorer_multi_selection = nodes[start..=end]
+            .iter()
+            .map(|node| node.path.clone())
+            .collect();
+        self.explorer.selected = index;
+        self.ensure_explorer_selection_visible();
+        self.message = Some(format!(
+            "selected {} explorer item(s)",
+            self.explorer_multi_selection.len()
+        ));
+    }
+
+    fn prune_explorer_multi_selection(&mut self) {
+        if self.explorer_multi_selection.is_empty() && self.explorer_selection_anchor.is_none() {
+            return;
+        }
+        let visible_paths = self
+            .visible_nodes()
+            .into_iter()
+            .map(|node| node.path)
+            .collect::<HashSet<_>>();
+        self.explorer_multi_selection
+            .retain(|path| visible_paths.contains(path) && path.exists());
+        if self
+            .explorer_selection_anchor
+            .as_ref()
+            .is_some_and(|path| !visible_paths.contains(path))
+        {
+            self.explorer_selection_anchor = self.current_explorer_path();
+        }
+    }
+
     fn ensure_explorer_selection_visible(&mut self) {
         let height = self.explorer_height.max(1);
         if self.explorer.selected < self.explorer.scroll {
@@ -2786,6 +2936,7 @@ impl App {
     fn collapse_selected(&mut self) {
         if let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() {
             self.explorer.collapse(&node.path);
+            self.prune_explorer_multi_selection();
         }
     }
 
@@ -3292,6 +3443,32 @@ fn add_signed(value: usize, amount: isize) -> usize {
     } else {
         value.saturating_add(amount as usize)
     }
+}
+
+fn explorer_multi_select_modifier(modifiers: KeyModifiers) -> bool {
+    modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER | KeyModifiers::META)
+}
+
+fn normalize_file_op_paths(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    paths.sort();
+    paths.dedup();
+    paths.sort_by(|a, b| {
+        a.components()
+            .count()
+            .cmp(&b.components().count())
+            .then_with(|| a.cmp(b))
+    });
+
+    let mut normalized: Vec<PathBuf> = Vec::new();
+    'path: for path in paths {
+        for kept in &normalized {
+            if path != *kept && path.starts_with(kept) {
+                continue 'path;
+            }
+        }
+        normalized.push(path);
+    }
+    normalized
 }
 
 fn normalize_editor_selections(mut ranges: Vec<EditorSelection>) -> Vec<EditorSelection> {
@@ -4235,10 +4412,11 @@ impl App {
         let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
             return Vec::new();
         };
-        let relative = relative_path(&self.root, &node.path);
+        let selected_paths = self.selected_explorer_paths();
+        let relative = self.selected_explorer_label(&selected_paths);
         let target_kind = if node.is_dir { "folder" } else { "file" };
         let base = if node.is_dir {
-            relative.clone()
+            relative_path(&self.root, &node.path)
         } else {
             node.path
                 .parent()
@@ -4262,10 +4440,12 @@ impl App {
                     ClipboardAction::Copy => "Copy",
                     ClipboardAction::Cut => "Move",
                 };
-                format!(
-                    "{action} {} into {base}",
-                    relative_path(&self.root, &clipboard.path)
-                )
+                let source = if clipboard.paths.len() == 1 {
+                    relative_path(&self.root, &clipboard.paths[0])
+                } else {
+                    format!("{} items", clipboard.paths.len())
+                };
+                format!("{action} {source} into {base}")
             })
             .unwrap_or_else(|| "Paste the explorer clipboard into the selected folder".to_owned());
         let current_sort = self.explorer.sort_mode().label();
@@ -4376,36 +4556,36 @@ impl App {
             },
         ];
 
-        if node.path != self.root {
-            specs.splice(
-                8..8,
-                [
-                    ContextMenuAction {
-                        label: "Cut",
-                        detail: format!("Move {relative} through the explorer clipboard"),
-                        shortcut: "x",
-                        action: CommandAction::CutSelectedExplorerItem,
-                    },
-                    ContextMenuAction {
-                        label: "Duplicate",
-                        detail: format!("Create a copy next to {relative}"),
-                        shortcut: "y",
-                        action: CommandAction::DuplicateSelectedExplorerItem,
-                    },
-                    ContextMenuAction {
-                        label: "Rename",
-                        detail: format!("Rename {relative}"),
-                        shortcut: "e",
-                        action: CommandAction::RenameSelected,
-                    },
-                    ContextMenuAction {
-                        label: "Delete",
-                        detail: format!("Delete {relative} after confirmation"),
-                        shortcut: "D",
-                        action: CommandAction::DeleteSelected,
-                    },
-                ],
-            );
+        if !selected_paths.iter().any(|path| path == &self.root) {
+            let mut selection_actions = vec![
+                ContextMenuAction {
+                    label: "Cut",
+                    detail: format!("Move {relative} through the explorer clipboard"),
+                    shortcut: "x",
+                    action: CommandAction::CutSelectedExplorerItem,
+                },
+                ContextMenuAction {
+                    label: "Duplicate",
+                    detail: format!("Create a copy next to {relative}"),
+                    shortcut: "y",
+                    action: CommandAction::DuplicateSelectedExplorerItem,
+                },
+            ];
+            if selected_paths.len() == 1 {
+                selection_actions.push(ContextMenuAction {
+                    label: "Rename",
+                    detail: format!("Rename {relative}"),
+                    shortcut: "e",
+                    action: CommandAction::RenameSelected,
+                });
+            }
+            selection_actions.push(ContextMenuAction {
+                label: "Delete",
+                detail: format!("Delete {relative} after confirmation"),
+                shortcut: "D",
+                action: CommandAction::DeleteSelected,
+            });
+            specs.splice(8..8, selection_actions);
         }
 
         context_menu_items(node.path, specs, query)
@@ -5190,43 +5370,60 @@ impl App {
     }
 
     fn prompt_rename(&mut self) {
-        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+        let paths = self.selected_explorer_paths();
+        if paths.len() > 1 {
+            self.message = Some("rename works on one explorer item at a time".to_owned());
             return;
         };
-        self.start_prompt(PromptKind::Rename(node.path), &node.name);
+        let Some(path) = paths.first().cloned() else {
+            return;
+        };
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+            .to_owned();
+        self.start_prompt(PromptKind::Rename(path), &name);
     }
 
     fn prompt_delete(&mut self) {
-        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+        let paths = normalize_file_op_paths(self.selected_explorer_paths());
+        if paths.is_empty() {
             return;
         };
-        self.start_prompt(PromptKind::Delete(node.path), "");
+        let label = self.selected_explorer_label(&paths);
+        self.start_prompt(PromptKind::DeletePaths(paths), "");
+        self.message = Some(format!("type yes to delete {label}"));
     }
 
     fn copy_selected_path(&mut self) {
-        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+        let paths = normalize_file_op_paths(self.selected_explorer_paths());
+        if paths.is_empty() {
             return;
         };
+        let label = self.selected_explorer_label(&paths);
         self.explorer_clipboard = Some(ExplorerClipboard {
             action: ClipboardAction::Copy,
-            path: node.path.clone(),
+            paths,
         });
-        self.message = Some(format!("copied {}", node.path.display()));
+        self.message = Some(format!("copied {label}"));
     }
 
     fn cut_selected_path(&mut self) {
-        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+        let paths = normalize_file_op_paths(self.selected_explorer_paths());
+        if paths.is_empty() {
             return;
         };
-        if node.path == self.root {
+        if paths.iter().any(|path| path == &self.root) {
             self.message = Some("refusing to cut workspace root".to_owned());
             return;
         }
+        let label = self.selected_explorer_label(&paths);
         self.explorer_clipboard = Some(ExplorerClipboard {
             action: ClipboardAction::Cut,
-            path: node.path.clone(),
+            paths,
         });
-        self.message = Some(format!("cut {}", node.path.display()));
+        self.message = Some(format!("cut {label}"));
     }
 
     fn paste_into_selected(&mut self) -> Result<()> {
@@ -5234,71 +5431,118 @@ impl App {
             self.message = Some("clipboard empty".to_owned());
             return Ok(());
         };
-        let source = clipboard.path;
-        if !source.exists() {
-            self.message = Some("clipboard source no longer exists".to_owned());
+        let sources = normalize_file_op_paths(clipboard.paths);
+        if sources.is_empty() {
+            self.message = Some("clipboard empty".to_owned());
+            self.explorer_clipboard = None;
+            return Ok(());
+        }
+        if sources.iter().any(|source| !source.exists()) {
+            self.message = Some("one or more clipboard sources no longer exist".to_owned());
             self.explorer_clipboard = None;
             return Ok(());
         }
 
         let target_dir = self.selected_base_dir();
-        let Some(name) = source.file_name() else {
-            return Ok(());
-        };
-        let destination = unique_copy_path(&target_dir.join(name));
-        if source.is_dir() && target_dir.starts_with(&source) {
+        if sources
+            .iter()
+            .any(|source| source.is_dir() && target_dir.starts_with(source))
+        {
             self.message = Some("cannot paste a folder into itself".to_owned());
             return Ok(());
         }
+        if clipboard.action == ClipboardAction::Cut && sources.iter().any(|path| path == &self.root)
+        {
+            self.message = Some("refusing to move workspace root".to_owned());
+            self.explorer_clipboard = None;
+            return Ok(());
+        }
 
-        let success_message;
-        match clipboard.action {
-            ClipboardAction::Copy => {
-                copy_path_recursive(&source, &destination)?;
-                success_message = format!("copied to {}", destination.display());
-            }
-            ClipboardAction::Cut => {
-                fs::rename(&source, &destination)?;
-                let destination = destination
-                    .canonicalize()
-                    .unwrap_or_else(|_| destination.clone());
-                self.update_open_tabs_for_move(&source, &destination);
-                self.update_navigation_for_move(&source, &destination);
-                self.explorer_clipboard = None;
-                success_message = format!("moved to {}", destination.display());
+        let mut destinations = Vec::new();
+        for source in &sources {
+            let Some(name) = source.file_name() else {
+                continue;
+            };
+            let destination = unique_copy_path(&target_dir.join(name));
+            match clipboard.action {
+                ClipboardAction::Copy => {
+                    copy_path_recursive(source, &destination)?;
+                    destinations.push(destination);
+                }
+                ClipboardAction::Cut => {
+                    fs::rename(source, &destination)?;
+                    let destination = destination
+                        .canonicalize()
+                        .unwrap_or_else(|_| destination.clone());
+                    self.update_open_tabs_for_move(source, &destination);
+                    self.update_navigation_for_move(source, &destination);
+                    destinations.push(destination);
+                }
             }
         }
 
+        if clipboard.action == ClipboardAction::Cut {
+            self.explorer_clipboard = None;
+            self.clear_explorer_multi_selection();
+        }
         self.refresh_explorer()?;
-        self.reveal_path(&destination)?;
-        self.message = Some(success_message);
+        if let Some(destination) = destinations.last() {
+            self.reveal_path(destination)?;
+        }
+        let action = match clipboard.action {
+            ClipboardAction::Copy => "copied",
+            ClipboardAction::Cut => "moved",
+        };
+        self.message = if destinations.len() == 1 {
+            destinations
+                .first()
+                .map(|destination| format!("{action} to {}", destination.display()))
+        } else {
+            Some(format!(
+                "{action} {} item(s) into {}",
+                destinations.len(),
+                target_dir.display()
+            ))
+        };
         Ok(())
     }
 
     fn duplicate_selected(&mut self) -> Result<()> {
-        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+        let paths = normalize_file_op_paths(self.selected_explorer_paths());
+        if paths.is_empty() {
             return Ok(());
         };
-        if node.path == self.root {
+        if paths.iter().any(|path| path == &self.root) {
             self.message = Some("refusing to duplicate workspace root".to_owned());
             return Ok(());
         }
-        let Some(parent) = node.path.parent() else {
-            return Ok(());
-        };
-        let destination = unique_copy_path(
-            &parent.join(
-                node.path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(copy_name)
-                    .unwrap_or_else(|| "copy".to_owned()),
-            ),
-        );
-        copy_path_recursive(&node.path, &destination)?;
+        let mut destinations = Vec::new();
+        for path in &paths {
+            let Some(parent) = path.parent() else {
+                continue;
+            };
+            let destination = unique_copy_path(
+                &parent.join(
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .map(copy_name)
+                        .unwrap_or_else(|| "copy".to_owned()),
+                ),
+            );
+            copy_path_recursive(path, &destination)?;
+            destinations.push(destination);
+        }
         self.refresh_explorer()?;
-        self.reveal_path(&destination)?;
-        self.message = Some(format!("duplicated to {}", destination.display()));
+        if let Some(destination) = destinations.last() {
+            self.reveal_path(destination)?;
+        }
+        self.message = if destinations.len() == 1 {
+            destinations
+                .first()
+                .map(|destination| format!("duplicated to {}", destination.display()))
+        } else {
+            Some(format!("duplicated {} item(s)", destinations.len()))
+        };
         Ok(())
     }
 
@@ -5331,11 +5575,39 @@ impl App {
     }
 
     fn copy_selected_explorer_path_to_clipboard(&mut self, relative: bool) {
-        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+        let paths = self.selected_explorer_paths();
+        if paths.is_empty() {
             self.message = Some("no explorer path to copy".to_owned());
             return;
-        };
-        self.copy_path_to_clipboard(&node.path, relative, "explorer item");
+        }
+        if paths.len() == 1 {
+            self.copy_path_to_clipboard(&paths[0], relative, "explorer item");
+            return;
+        }
+
+        let text = paths
+            .iter()
+            .map(|path| {
+                if relative {
+                    relative_path(&self.root, path)
+                } else {
+                    path.to_string_lossy().into_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let display_kind = if relative { "relative paths" } else { "paths" };
+        if self.queue_clipboard_export(&text) {
+            self.message = Some(format!(
+                "copied {} explorer item {display_kind}",
+                paths.len()
+            ));
+        } else {
+            self.message = Some(format!(
+                "{} explorer item {display_kind} too large for terminal clipboard",
+                paths.len()
+            ));
+        }
     }
 
     fn copy_path_to_clipboard(&mut self, path: &Path, relative: bool, label: &str) {
@@ -5362,9 +5634,9 @@ impl App {
             PromptKind::NewFile => self.create_file_from_prompt(prompt.input)?,
             PromptKind::NewDir => self.create_dir_from_prompt(prompt.input)?,
             PromptKind::Rename(path) => self.rename_from_prompt(path, prompt.input)?,
-            PromptKind::Delete(path) => {
+            PromptKind::DeletePaths(paths) => {
                 if prompt.input == "yes" {
-                    self.delete_path(path)?;
+                    self.delete_paths(paths)?;
                 } else {
                     self.message = Some("delete cancelled".to_owned());
                 }
@@ -5436,6 +5708,7 @@ impl App {
         self.explorer_filter = (!filter.is_empty()).then_some(filter.clone());
         self.expand_active_explorer_filter_matches();
         self.restore_explorer_selection(selected_path);
+        self.prune_explorer_multi_selection();
         self.message = match &self.explorer_filter {
             Some(filter) => Some(format!("explorer filter: {filter}")),
             None => Some("explorer filter cleared".to_owned()),
@@ -5445,6 +5718,7 @@ impl App {
     fn clear_explorer_filter(&mut self) {
         self.explorer_filter = None;
         self.restore_explorer_selection(None);
+        self.prune_explorer_multi_selection();
         self.message = Some("explorer filter cleared".to_owned());
     }
 
@@ -5457,6 +5731,7 @@ impl App {
         self.refresh_workspace_visibility_cache();
         self.expand_active_explorer_filter_matches();
         self.restore_explorer_selection(selected_path);
+        self.prune_explorer_multi_selection();
         self.update_workspace_snapshot();
         self.message = Some(format!(
             "{} hidden files",
@@ -5477,6 +5752,7 @@ impl App {
         self.refresh_workspace_visibility_cache();
         self.expand_active_explorer_filter_matches();
         self.restore_explorer_selection(selected_path);
+        self.prune_explorer_multi_selection();
         self.update_workspace_snapshot();
         self.message = Some(format!(
             "{} generated/ignored folders",
@@ -5499,6 +5775,7 @@ impl App {
             .map(|node| node.path.clone());
         self.explorer.set_sort_mode(sort_mode);
         self.restore_explorer_selection(selected_path);
+        self.prune_explorer_multi_selection();
         self.message = Some(format!("explorer sorted by {}", sort_mode.label()));
     }
 
@@ -5599,8 +5876,13 @@ impl App {
         Ok(())
     }
 
-    fn delete_path(&mut self, path: PathBuf) -> Result<()> {
-        if path == self.root {
+    fn delete_paths(&mut self, paths: Vec<PathBuf>) -> Result<()> {
+        let paths = normalize_file_op_paths(paths);
+        if paths.is_empty() {
+            self.message = Some("nothing to delete".to_owned());
+            return Ok(());
+        }
+        if paths.iter().any(|path| path == &self.root) {
             self.message = Some("refusing to delete workspace root".to_owned());
             return Ok(());
         }
@@ -5608,7 +5890,9 @@ impl App {
         let dirty_open_tabs = self
             .tabs
             .iter()
-            .filter(|tab| !tab.untitled && tab.dirty && tab.path.starts_with(&path))
+            .filter(|tab| {
+                !tab.untitled && tab.dirty && paths.iter().any(|path| tab.path.starts_with(path))
+            })
             .map(|tab| relative_path(&self.root, &tab.path))
             .collect::<Vec<_>>();
         if !dirty_open_tabs.is_empty() {
@@ -5631,21 +5915,28 @@ impl App {
             .map(|tab| tab.path.clone());
         let active_index = self.active_tab;
 
-        if path.is_dir() {
-            fs::remove_dir_all(&path)?;
-        } else {
-            fs::remove_file(&path)?;
+        for path in &paths {
+            if path.is_dir() {
+                fs::remove_dir_all(path)?;
+            } else {
+                fs::remove_file(path)?;
+            }
         }
         self.tabs
-            .retain(|tab| tab.untitled || !tab.path.starts_with(&path));
-        self.prune_navigation_for_deleted_path(&path);
-        if self
-            .explorer_clipboard
-            .as_ref()
-            .is_some_and(|clipboard| clipboard.path.starts_with(&path))
-        {
+            .retain(|tab| tab.untitled || !paths.iter().any(|path| tab.path.starts_with(path)));
+        for path in &paths {
+            self.prune_navigation_for_deleted_path(path);
+        }
+        if self.explorer_clipboard.as_ref().is_some_and(|clipboard| {
+            clipboard
+                .paths
+                .iter()
+                .any(|clipboard_path| paths.iter().any(|path| clipboard_path.starts_with(path)))
+        }) {
             self.explorer_clipboard = None;
         }
+        self.explorer_multi_selection
+            .retain(|selected| !paths.iter().any(|path| selected.starts_with(path)));
         self.active_tab = if self.tabs.is_empty() {
             None
         } else if let Some(active_path) = active_path {
@@ -5659,7 +5950,13 @@ impl App {
             Some(0)
         };
         self.refresh_explorer()?;
-        self.message = Some(format!("deleted {}", path.display()));
+        self.message = if paths.len() == 1 {
+            paths
+                .first()
+                .map(|path| format!("deleted {}", path.display()))
+        } else {
+            Some(format!("deleted {} item(s)", paths.len()))
+        };
         Ok(())
     }
 
@@ -5728,6 +6025,7 @@ impl App {
             self.explorer.selected = index;
         }
         self.ensure_explorer_selection_visible();
+        self.prune_explorer_multi_selection();
         if show_message {
             self.message = Some("explorer refreshed".to_owned());
         }
@@ -5760,6 +6058,7 @@ impl App {
         self.explorer.collapse_all();
         self.explorer.selected = 0;
         self.explorer.scroll = 0;
+        self.prune_explorer_multi_selection();
         self.message = Some("explorer collapsed".to_owned());
     }
 
@@ -13970,7 +14269,7 @@ src/lib.rs:3:1: note: trailing note
         app.open_file(&file);
         app.active_tab_mut().unwrap().insert_text("// unsaved\n");
 
-        app.delete_path(canonical_src.clone()).unwrap();
+        app.delete_paths(vec![canonical_src.clone()]).unwrap();
 
         assert!(canonical_src.exists());
         assert!(file.exists());
@@ -14008,7 +14307,7 @@ src/lib.rs:3:1: note: trailing note
         app.open_file(&kept_file);
         assert_eq!(app.active_tab().unwrap().path, kept_file);
 
-        app.delete_path(canonical_src.clone()).unwrap();
+        app.delete_paths(vec![canonical_src.clone()]).unwrap();
 
         assert!(!canonical_src.exists());
         assert_eq!(app.tabs.len(), 1);
@@ -14018,6 +14317,145 @@ src/lib.rs:3:1: note: trailing note
                 .iter()
                 .all(|tab| tab.untitled || !tab.path.starts_with(&canonical_src))
         );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_multi_select_batches_copy_paste_duplicate_and_delete() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-multi-file-ops-{}", std::process::id()));
+        let src = root.join("src");
+        let dst = root.join("dst");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(src.join("a.txt"), "alpha").unwrap();
+        fs::write(src.join("b.txt"), "beta").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let a = canonical_root.join("src/a.txt");
+        let b = canonical_root.join("src/b.txt");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.explorer.reveal(&a).unwrap();
+        app.toggle_explorer_multi_selection();
+        app.explorer.reveal(&b).unwrap();
+        app.toggle_explorer_multi_selection();
+
+        assert_eq!(app.selected_explorer_paths(), vec![a.clone(), b.clone()]);
+
+        app.copy_selected_path();
+        assert_eq!(
+            app.explorer_clipboard
+                .as_ref()
+                .map(|clipboard| clipboard.paths.clone()),
+            Some(vec![a.clone(), b.clone()])
+        );
+
+        app.explorer.reveal(&canonical_root.join("dst")).unwrap();
+        app.paste_into_selected().unwrap();
+        assert_eq!(
+            fs::read_to_string(canonical_root.join("dst/a.txt")).unwrap(),
+            "alpha"
+        );
+        assert_eq!(
+            fs::read_to_string(canonical_root.join("dst/b.txt")).unwrap(),
+            "beta"
+        );
+
+        app.duplicate_selected().unwrap();
+        assert_eq!(
+            fs::read_to_string(canonical_root.join("src/a copy.txt")).unwrap(),
+            "alpha"
+        );
+        assert_eq!(
+            fs::read_to_string(canonical_root.join("src/b copy.txt")).unwrap(),
+            "beta"
+        );
+
+        app.prompt_delete();
+        assert!(matches!(
+            app.prompt.as_ref().map(|prompt| &prompt.kind),
+            Some(PromptKind::DeletePaths(paths)) if paths == &vec![a.clone(), b.clone()]
+        ));
+        app.prompt.as_mut().unwrap().input = "yes".to_owned();
+        app.finish_prompt().unwrap();
+
+        assert!(!a.exists());
+        assert!(!b.exists());
+        assert!(canonical_root.join("src/a copy.txt").is_file());
+        assert!(canonical_root.join("dst/a.txt").is_file());
+        assert!(app.explorer_multi_selection.is_empty());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_mouse_shift_and_control_click_build_multi_selection() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-multi-click-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), "alpha").unwrap();
+        fs::write(root.join("b.txt"), "beta").unwrap();
+        fs::write(root.join("c.txt"), "gamma").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let a = canonical_root.join("a.txt");
+        let b = canonical_root.join("b.txt");
+        let c = canonical_root.join("c.txt");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        let visible = app.visible_nodes();
+        app.hit_regions.explorer_rows = visible
+            .iter()
+            .enumerate()
+            .map(|(row, _)| (Rect::new(0, row as u16, 40, 1), row))
+            .collect();
+        let a_index = visible.iter().position(|node| node.path == a).unwrap();
+        let c_index = visible.iter().position(|node| node.path == c).unwrap();
+
+        app.explorer.selected = a_index;
+        app.set_explorer_anchor_to_current();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: c_index as u16,
+            modifiers: KeyModifiers::SHIFT,
+        })
+        .unwrap();
+
+        assert_eq!(
+            app.selected_explorer_paths(),
+            vec![a.clone(), b.clone(), c.clone()]
+        );
+
+        let b_index = visible.iter().position(|node| node.path == b).unwrap();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: b_index as u16,
+            modifiers: KeyModifiers::CONTROL,
+        })
+        .unwrap();
+
+        assert_eq!(app.selected_explorer_paths(), vec![a.clone(), c.clone()]);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 1,
+            row: b_index as u16,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        assert!(app.explorer_multi_selection.is_empty());
+        assert_eq!(app.selected_explorer_paths(), vec![b.clone()]);
+        assert!(matches!(
+            app.quick_panel.as_ref().map(|panel| &panel.kind),
+            Some(QuickPanelKind::ExplorerContextMenu)
+        ));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
@@ -14040,7 +14478,7 @@ src/lib.rs:3:1: note: trailing note
         app.open_file(&source);
         app.explorer_clipboard = Some(ExplorerClipboard {
             action: ClipboardAction::Cut,
-            path: source.clone(),
+            paths: vec![source.clone()],
         });
         app.explorer.reveal(&canonical_root.join("dst")).unwrap();
         app.paste_into_selected().unwrap();

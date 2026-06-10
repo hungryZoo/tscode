@@ -167,7 +167,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 ClipboardAction::Copy => "copy",
                 ClipboardAction::Cut => "cut",
             };
-            format!("  clipboard:{action} {}", display_name(&clipboard.path))
+            let target = if clipboard.paths.len() == 1 {
+                display_name(&clipboard.paths[0])
+            } else {
+                format!("{} items", clipboard.paths.len())
+            };
+            format!("  clipboard:{action} {target}")
         })
         .unwrap_or_default();
     let editor_clipboard = app
@@ -221,10 +226,18 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
         "generated:off"
     };
     let sort = app.explorer.sort_mode().label();
+    let selection = if app.explorer_multi_selection.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " sel:{}  Space toggle  Shift/Ctrl-click",
+            app.explorer_multi_selection.len()
+        )
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(
-            " Explorer  / filter  s sort:{sort}  . hidden  i generated  n/N new  e rename  D delete  c copy  x cut  p paste  y dup  o reveal  r refresh  {hidden} {ignored}{filter} "
+            " Explorer  / filter  s sort:{sort}  . hidden  i generated  n/N new  e rename  D delete  c copy  x cut  p paste  y dup  o reveal  r refresh  {hidden} {ignored}{filter}{selection} "
         ))
         .border_style(border_style(focused));
     let inner = block.inner(area);
@@ -246,15 +259,17 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
         app.hit_regions.explorer_rows.push((row_area, row));
 
         let selected = focused && app.explorer.selected == row;
+        let multi_selected = app.explorer_multi_selection.contains(&node.path);
         let hovered = app.hover == HoverTarget::ExplorerRow(row);
-        let style = row_style(selected, hovered);
+        let style = explorer_row_style(selected, hovered, multi_selected);
         let marker = if node.is_dir {
             if node.expanded { "-" } else { "+" }
         } else {
             " "
         };
         let indent = "  ".repeat(node.depth);
-        let prefix = format!("{indent}{marker} {}", node.name);
+        let selection_marker = if multi_selected { "*" } else { " " };
+        let prefix = format!("{selection_marker}{indent}{marker} {}", node.name);
         let suffix = explorer_node_suffix(node, app.git_status_marker(&node.path, node.is_dir));
         let text = fit_with_suffix(&prefix, &suffix, row_area.width as usize);
         frame.render_widget(Paragraph::new(text).style(style), row_area);
@@ -1021,6 +1036,20 @@ fn row_style(selected: bool, hovered: bool) -> Style {
     }
 }
 
+fn explorer_row_style(selected: bool, hovered: bool, multi_selected: bool) -> Style {
+    if selected {
+        Style::default().fg(Color::White).bg(ACTIVE_BG)
+    } else if hovered && multi_selected {
+        Style::default().fg(Color::White).bg(Color::Rgb(42, 64, 92))
+    } else if multi_selected {
+        Style::default().fg(Color::White).bg(Color::Rgb(25, 44, 66))
+    } else if hovered {
+        Style::default().fg(Color::White).bg(HOVER_BG)
+    } else {
+        Style::default().fg(TEXT).bg(PANEL_BG)
+    }
+}
+
 fn problem_marker(severity: ProblemSeverity) -> &'static str {
     match severity {
         ProblemSeverity::Error => "E",
@@ -1220,7 +1249,7 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::NewFile => "new file",
         crate::app::PromptKind::NewDir => "new folder",
         crate::app::PromptKind::Rename(_) => "rename",
-        crate::app::PromptKind::Delete(_) => "delete: type yes",
+        crate::app::PromptKind::DeletePaths(_) => "delete: type yes",
         crate::app::PromptKind::ExplorerFilter => "explorer filter",
         crate::app::PromptKind::Search => "find",
         crate::app::PromptKind::ReplaceFind { all } => {
