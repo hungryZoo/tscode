@@ -11060,7 +11060,26 @@ struct FileReference {
     col: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TerminalReferenceCandidate {
+    start: usize,
+    end: usize,
+    reference: FileReference,
+}
+
 fn terminal_file_reference_at(line: &str, char_col: usize, root: &Path) -> Option<FileReference> {
+    if let Some(reference) = terminal_token_reference_at(line, char_col, root) {
+        return Some(reference);
+    }
+
+    terminal_reference_candidates(line, root)
+        .into_iter()
+        .filter(|candidate| char_col >= candidate.start && char_col < candidate.end)
+        .min_by_key(|candidate| candidate.end.saturating_sub(candidate.start))
+        .map(|candidate| candidate.reference)
+}
+
+fn terminal_token_reference_at(line: &str, char_col: usize, root: &Path) -> Option<FileReference> {
     let chars = line.chars().collect::<Vec<_>>();
     if chars.is_empty() {
         return None;
@@ -11081,6 +11100,195 @@ fn terminal_file_reference_at(line: &str, char_col: usize, root: &Path) -> Optio
 
     let token = chars[start..end].iter().collect::<String>();
     parse_terminal_reference_token(&token, root)
+}
+
+fn terminal_reference_candidates(line: &str, root: &Path) -> Vec<TerminalReferenceCandidate> {
+    let mut candidates = Vec::new();
+    collect_python_file_references(line, root, &mut candidates);
+    collect_quoted_trailing_references(line, root, &mut candidates);
+    collect_parenthesized_line_references(line, root, &mut candidates);
+    candidates
+}
+
+fn collect_python_file_references(
+    line: &str,
+    root: &Path,
+    candidates: &mut Vec<TerminalReferenceCandidate>,
+) {
+    for quote in ['"', '\''] {
+        let needle = format!("File {quote}");
+        for (prefix_start, _) in line.match_indices(&needle) {
+            let path_start = prefix_start + needle.len();
+            let Some(path_end_offset) = line[path_start..].find(quote) else {
+                continue;
+            };
+            let path_end = path_start + path_end_offset;
+            let path_part = &line[path_start..path_end];
+            let after_path_start = path_end + quote.len_utf8();
+            let after_path = &line[after_path_start..];
+            let Some(line_label_offset) = after_path.find("line ") else {
+                continue;
+            };
+            let line_digits_start = after_path_start + line_label_offset + "line ".len();
+            let line_digits = leading_ascii_digits(&line[line_digits_start..]);
+            if line_digits.is_empty() {
+                continue;
+            }
+            let Ok(line_number) = line_digits.parse::<usize>() else {
+                continue;
+            };
+            let line_index = line_number.saturating_sub(1);
+            let line_digits_end = line_digits_start + line_digits.len();
+            let after_line = &line[line_digits_end..];
+            let (col, end_byte) = parse_python_column_suffix(after_line)
+                .map(|(col, consumed)| (Some(col), line_digits_end + consumed))
+                .unwrap_or((None, line_digits_end));
+
+            if let Some(reference) =
+                file_reference_from_parts(path_part, Some(line_index), col, root)
+            {
+                candidates.push(TerminalReferenceCandidate {
+                    start: byte_to_char_index(line, path_start),
+                    end: byte_to_char_index(line, end_byte),
+                    reference,
+                });
+            }
+        }
+    }
+}
+
+fn parse_python_column_suffix(input: &str) -> Option<(usize, usize)> {
+    let trimmed = input.strip_prefix(", column ")?;
+    let digits = leading_ascii_digits(trimmed);
+    if digits.is_empty() {
+        return None;
+    }
+    let col = digits.parse::<usize>().ok()?.saturating_sub(1);
+    Some((col, ", column ".len() + digits.len()))
+}
+
+fn collect_quoted_trailing_references(
+    line: &str,
+    root: &Path,
+    candidates: &mut Vec<TerminalReferenceCandidate>,
+) {
+    let mut index = 0;
+    while index < line.len() {
+        let Some((quote_offset, quote)) = line[index..]
+            .char_indices()
+            .find(|(_, c)| matches!(c, '"' | '\'' | '`'))
+        else {
+            break;
+        };
+        let quote_start = index + quote_offset;
+        let path_start = quote_start + quote.len_utf8();
+        let Some(path_end_offset) = line[path_start..].find(quote) else {
+            break;
+        };
+        let path_end = path_start + path_end_offset;
+        let path_part = &line[path_start..path_end];
+        let after_quote_start = path_end + quote.len_utf8();
+        if let Some((line_index, col, consumed)) =
+            parse_colon_line_suffix(&line[after_quote_start..])
+            && let Some(reference) =
+                file_reference_from_parts(path_part, Some(line_index), col, root)
+        {
+            candidates.push(TerminalReferenceCandidate {
+                start: byte_to_char_index(line, path_start),
+                end: byte_to_char_index(line, after_quote_start + consumed),
+                reference,
+            });
+        }
+        index = after_quote_start;
+    }
+}
+
+fn collect_parenthesized_line_references(
+    line: &str,
+    root: &Path,
+    candidates: &mut Vec<TerminalReferenceCandidate>,
+) {
+    for (paren_start, _) in line.match_indices('(') {
+        let Some(paren_end_offset) = line[paren_start + 1..].find(')') else {
+            continue;
+        };
+        let paren_end = paren_start + 1 + paren_end_offset;
+        let inside = &line[paren_start + 1..paren_end];
+        let Some((line_index, col)) = parse_parenthesized_line_column(inside) else {
+            continue;
+        };
+
+        let before = &line[..paren_start];
+        for path_start in terminal_reference_path_starts(before).into_iter().rev() {
+            let path_part = before[path_start..].trim();
+            if let Some(reference) =
+                file_reference_from_parts(path_part, Some(line_index), col, root)
+            {
+                candidates.push(TerminalReferenceCandidate {
+                    start: byte_to_char_index(line, path_start),
+                    end: byte_to_char_index(line, paren_end + 1),
+                    reference,
+                });
+                break;
+            }
+        }
+    }
+}
+
+fn terminal_reference_path_starts(input: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (index, c) in input.char_indices() {
+        if is_terminal_reference_delimiter(c) {
+            let next = index + c.len_utf8();
+            if next < input.len() {
+                starts.push(next);
+            }
+        }
+    }
+    starts
+}
+
+fn parse_colon_line_suffix(input: &str) -> Option<(usize, Option<usize>, usize)> {
+    let after_colon = input.strip_prefix(':')?;
+    let line_digits = leading_ascii_digits(after_colon);
+    if line_digits.is_empty() {
+        return None;
+    }
+    let line = line_digits.parse::<usize>().ok()?.saturating_sub(1);
+    let mut consumed = 1 + line_digits.len();
+    let mut col = None;
+    if let Some(after_colon) = after_colon[line_digits.len()..].strip_prefix(':') {
+        let col_digits = leading_ascii_digits(after_colon);
+        if !col_digits.is_empty() {
+            col = Some(col_digits.parse::<usize>().ok()?.saturating_sub(1));
+            consumed += 1 + col_digits.len();
+        }
+    }
+    Some((line, col, consumed))
+}
+
+fn parse_parenthesized_line_column(input: &str) -> Option<(usize, Option<usize>)> {
+    let trimmed = input.trim();
+    let separator = trimmed.find(',').or_else(|| trimmed.find(':'));
+    let (line_part, col_part) = if let Some(separator) = separator {
+        (&trimmed[..separator], Some(&trimmed[separator + 1..]))
+    } else {
+        (trimmed, None)
+    };
+    if line_part.is_empty() || !line_part.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let line = line_part.parse::<usize>().ok()?.saturating_sub(1);
+    let col = col_part
+        .map(str::trim)
+        .filter(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        .and_then(|part| part.parse::<usize>().ok())
+        .map(|col| col.saturating_sub(1));
+    Some((line, col))
+}
+
+fn byte_to_char_index(text: &str, byte_index: usize) -> usize {
+    text[..byte_index.min(text.len())].chars().count()
 }
 
 fn parse_terminal_reference_token(token: &str, root: &Path) -> Option<FileReference> {
@@ -14277,6 +14485,51 @@ src/lib.rs:3:1: note: trailing note
         assert_eq!(simple_ref.line, None);
 
         assert!(terminal_file_reference_at("missing.rs:1:1", 2, &root).is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_file_reference_handles_tracebacks_quotes_and_parentheses() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-rich-termref-{}", std::process::id()));
+        let src = root.join("space dir");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("main.py"), "print('hi')\n").unwrap();
+        fs::write(src.join("app.ts"), "console.log('hi')\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let python = root.join("space dir/main.py");
+        let ts = root.join("space dir/app.ts");
+
+        let traceback = format!("  File \"{}\", line 3, in <module>", python.display());
+        let from_path =
+            terminal_file_reference_at(&traceback, traceback.find("main.py").unwrap(), &root)
+                .unwrap();
+        assert_eq!(from_path.path, python);
+        assert_eq!(from_path.line, Some(2));
+        assert_eq!(from_path.col, None);
+        let from_line = terminal_file_reference_at(
+            &traceback,
+            traceback.find("line 3").unwrap() + "line ".len(),
+            &root,
+        )
+        .unwrap();
+        assert_eq!(from_line.line, Some(2));
+
+        let quoted = "\"space dir/main.py\":4:2: error from quoted relative path";
+        let quoted_ref =
+            terminal_file_reference_at(quoted, quoted.find("dir").unwrap(), &root).unwrap();
+        assert_eq!(quoted_ref.path, root.join("space dir/main.py"));
+        assert_eq!(quoted_ref.line, Some(3));
+        assert_eq!(quoted_ref.col, Some(1));
+
+        let ts_line = "TypeError at space dir/app.ts(9,13): failed";
+        let ts_ref =
+            terminal_file_reference_at(ts_line, ts_line.find("9,13").unwrap(), &root).unwrap();
+        assert_eq!(ts_ref.path, ts);
+        assert_eq!(ts_ref.line, Some(8));
+        assert_eq!(ts_ref.col, Some(12));
+
         let _ = fs::remove_dir_all(root);
     }
 

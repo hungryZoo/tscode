@@ -49,7 +49,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can type into a real shell session, use `Ctrl-c`, and keep session state between commands.
 - As a developer, I can use full-screen terminal applications such as pagers and editors without tscode stealing their normal terminal keys.
 - As a developer, I can see ANSI-colored command output such as compiler errors, `git status`, and `ls --color` without losing terminal styling.
-- As a developer, I can click a `path:line:column` reference printed by the shell and jump to that source location in the editor.
+- As a developer, I can click common compiler, test, traceback, and stack-frame file references printed by the shell and jump to that source location in the editor.
 - As a developer, I can drag across visible terminal output, see the selected cells highlighted, copy that text, and paste it back into the active shell with terminal-safe shortcuts.
 - As a developer, I can search the integrated terminal's visible output and scrollback, see matches highlighted, and jump between matches without losing the PTY session.
 - As a developer, I can edit text, save files, create files/folders, rename, delete, and refresh the explorer.
