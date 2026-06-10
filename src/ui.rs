@@ -98,6 +98,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 ExternalFileState::Clean => String::new(),
                 state => format!("  Disk {}", state.label()),
             };
+            let path_label = if tab.untitled {
+                tab.title.clone()
+            } else {
+                tab.path.display().to_string()
+            };
             let selection = if let Some(text) = tab.selected_text() {
                 let count = tab.selection_count();
                 if count > 1 {
@@ -132,7 +137,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 .unwrap_or_default();
             format!(
                 "{}{}  Ln {}, Col {}{}{}{}{}{}",
-                tab.path.display(),
+                path_label,
                 dirty,
                 tab.cursor_line + 1,
                 tab.cursor_col + 1,

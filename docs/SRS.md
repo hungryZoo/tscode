@@ -122,13 +122,17 @@ Tabs shall visually highlight on mouse hover.
 
 ### R-208 Save
 
-`Ctrl-s` in editor focus shall write the active buffer to its file path and clear dirty state.
+`Ctrl-s` in editor focus shall write a file-backed active buffer to its file path and clear dirty state. If the active buffer is Untitled, `Ctrl-s` shall open the Save As prompt instead of writing a placeholder file.
 
 ### R-208A Save As
 
 The command palette shall include a Save As action for the active editor tab. The action shall accept a relative path resolved under the workspace root or an absolute path, create missing parent directories, write the current in-memory editor buffer to the target path, retarget the active tab's path and title to the saved file, clear dirty state, refresh explorer and Git status markers, and reveal the saved path when it is inside the workspace. The action shall refuse to overwrite a target that is already open in another dirty editor tab.
 
-### R-208B Editor Context Menu
+### R-208B Untitled Editor Buffers
+
+`Ctrl-n` or the command palette shall create a new editable Untitled editor tab without creating a filesystem placeholder. Untitled tabs shall participate in normal editing, selection, undo/redo, search, document symbols, and tab close dirty-buffer protection. Save File on an Untitled tab shall prompt for Save As. Save All shall skip dirty Untitled tabs and report that Save As is required. After Save As succeeds, the tab shall become a normal file-backed tab with the saved path, title, dirty state, explorer reveal, and Git status refresh.
+
+### R-208C Editor Context Menu
 
 Right-clicking the editor body or an editor tab shall focus the editor and open a mouse-selectable context menu. Right-clicking the editor body shall update the editor cursor to the clicked buffer location before opening the menu. The menu shall expose actions for save, copy, cut, paste, select all, find, replace, go to line, go to definition, find references, rename symbol, trigger suggest, format document, fold/unfold, toggle line comment, run selection/current line in terminal, copy absolute file path, copy relative file path, revert file, and close active tab. Activating a menu item shall call the same editor, workspace, terminal, or clipboard command used by keyboard shortcuts and the command palette.
 
@@ -466,6 +470,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Open a file, reveal it in the explorer, and confirm its row is selected.
 - Edit text, use `Ctrl-z`/`Ctrl-y`, save with `Ctrl-s`, and confirm file contents on disk.
 - Use Save As from the command palette to write the active buffer to a nested new path, confirm parent folders are created, confirm the active tab retargets to the new file, confirm the original source file is unchanged, and confirm a dirty open target is refused.
+- Create an Untitled tab with `Ctrl-n`, type text, confirm no `Untitled-*` placeholder exists on disk, confirm Save File opens Save As, confirm Save As writes the real target and retargets the tab, and confirm Save All skips any remaining dirty Untitled tab.
 - Use `Ctrl-f` and `F3` to move through search matches.
 - Use `Ctrl-f` and confirm visible search highlights and match count.
 - Use `Ctrl-h` to replace one match, save, and confirm file contents on disk.

@@ -35,6 +35,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Collected workspace diagnostics now appear in the editor with severity gutter badges, subtle line backgrounds, active-file problem counts, and active-line status messages.
 - Run Selection in Terminal with `Ctrl-Enter` or the command palette sends selected editor text, or the current editor line when there is no selection, to the active PTY shell and focuses the integrated terminal.
 - Editable tabbed code buffers with line numbers, syntax highlighting, dirty markers, cursor movement, paste, save, repeated search, undo, and redo.
+- New Untitled File with `Ctrl-N` or the command palette creates a real editable scratch tab without touching disk; Save File opens Save As, Save All reports dirty Untitled tabs, and Save As retargets the tab to the new file.
 - Save As from the command palette writes the active editor buffer to a new relative or absolute path, creates parent folders, retargets the tab, refreshes explorer and Git status, and refuses dirty open target tabs.
 - Open editor tabs now detect external disk changes while the app is running: clean tabs reload automatically after terminal/Git/tool writes, dirty tabs keep unsaved edits with `!`/status-bar conflict markers, deleted files show deleted-on-disk state, and Save File/Save All refuse accidental overwrites until Reload/Revert or Save As is chosen.
 - Long editor lines now support horizontal scrolling with cursor tracking, mouse-click coordinate mapping, and horizontal wheel panning.

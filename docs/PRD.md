@@ -151,8 +151,9 @@ Keyboard fallback:
 - `Ctrl-Shift-B` or the command palette opens Run Task for detected workspace tasks
 - `F2` or the command palette renames the identifier under the editor cursor across visible workspace text files
 - `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
+- `Ctrl-N` or the command palette creates an editable Untitled tab without touching disk until Save As
 - The command palette provides Save As for writing the active editor buffer to a new path and retargeting the tab
-- `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions
+- `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions; `Ctrl-S` on an Untitled tab opens Save As
 - Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, definition/references/rename/suggest, format, fold/unfold, comments, send-to-terminal, path-copy, revert, and close-tab actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor
 - `Shift` with arrow keys and mouse drag select editor text

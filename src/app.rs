@@ -229,6 +229,7 @@ pub struct EditorTab {
     pub folded_lines: BTreeSet<usize>,
     pub dirty: bool,
     pub external_state: ExternalFileState,
+    pub untitled: bool,
     disk_stamp: Option<FileStamp>,
     trailing_newline: bool,
     undo_stack: Vec<EditorSnapshot>,
@@ -262,11 +263,35 @@ impl EditorTab {
             folded_lines: BTreeSet::new(),
             dirty: false,
             external_state: ExternalFileState::Clean,
+            untitled: false,
             disk_stamp,
             trailing_newline,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         })
+    }
+
+    fn untitled(id: usize, root: &Path) -> Self {
+        Self {
+            path: root.join(format!("Untitled-{id}")),
+            title: format!("Untitled-{id}"),
+            lines: vec![String::new()],
+            scroll: 0,
+            horizontal_scroll: 0,
+            cursor_line: 0,
+            cursor_col: 0,
+            selection_anchor: None,
+            extra_selections: Vec::new(),
+            extra_cursors: Vec::new(),
+            folded_lines: BTreeSet::new(),
+            dirty: false,
+            external_state: ExternalFileState::Clean,
+            untitled: true,
+            disk_stamp: None,
+            trailing_newline: false,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        }
     }
 
     fn text(&self) -> String {
@@ -297,11 +322,15 @@ impl EditorTab {
     }
 
     fn refresh_disk_stamp(&mut self) {
+        self.untitled = false;
         self.external_state = ExternalFileState::Clean;
         self.disk_stamp = file_stamp(&self.path);
     }
 
     fn current_disk_state(&self) -> ExternalFileState {
+        if self.untitled {
+            return ExternalFileState::Clean;
+        }
         match file_stamp(&self.path) {
             None => ExternalFileState::Deleted,
             Some(stamp) if Some(stamp) != self.disk_stamp => ExternalFileState::Modified,
@@ -1650,6 +1679,7 @@ pub enum CommandAction {
     ShowProblems,
     ShowSourceControl,
     RunTask,
+    NewUntitledFile,
     SaveFile,
     SaveAs,
     SaveAll,
@@ -1879,6 +1909,7 @@ pub struct App {
     pub terminals: Vec<TerminalSession>,
     pub active_terminal: usize,
     next_terminal_id: usize,
+    next_untitled_id: usize,
     pub syntax: SyntaxHighlighter,
     pub should_quit: bool,
     pub explorer_height: usize,
@@ -1946,6 +1977,7 @@ impl App {
             terminals: vec![terminal],
             active_terminal: 0,
             next_terminal_id: 2,
+            next_untitled_id: 1,
             syntax: SyntaxHighlighter::new(),
             should_quit: false,
             explorer_height: 0,
@@ -2108,6 +2140,10 @@ impl App {
                 }
                 KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.open_quick_panel(QuickPanelKind::Tasks)?;
+                    return Ok(());
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.new_untitled_file();
                     return Ok(());
                 }
                 _ => {}
@@ -2668,6 +2704,16 @@ impl App {
         }
     }
 
+    fn new_untitled_file(&mut self) {
+        let id = self.next_untitled_id;
+        self.next_untitled_id += 1;
+        let title = format!("Untitled-{id}");
+        self.tabs.push(EditorTab::untitled(id, &self.root));
+        self.active_tab = Some(self.tabs.len() - 1);
+        self.focus = FocusPanel::Editor;
+        self.message = Some(format!("{title} ready; use Save As to write it to disk"));
+    }
+
     fn current_editor_location(&self) -> Option<EditorLocation> {
         let tab = self.active_tab()?;
         Some(EditorLocation {
@@ -2830,6 +2876,9 @@ impl App {
         let mut read_errors = Vec::new();
 
         for index in 0..self.tabs.len() {
+            if self.tabs[index].untitled {
+                continue;
+            }
             let state = self.tabs[index].current_disk_state();
 
             if state == ExternalFileState::Clean {
@@ -3373,6 +3422,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Detect workspace tasks and run one in a real integrated PTY terminal",
             shortcut: "Ctrl-Shift-B",
             action: CommandAction::RunTask,
+        },
+        CommandSpec {
+            label: "New Untitled File",
+            detail: "Create a scratch editor tab that can be saved with Save As",
+            shortcut: "Ctrl-N",
+            action: CommandAction::NewUntitledFile,
         },
         CommandSpec {
             label: "Save File",
@@ -4036,7 +4091,11 @@ impl App {
         let Some(tab) = self.active_tab() else {
             return Vec::new();
         };
-        let relative = relative_path(&self.root, &tab.path);
+        let relative = if tab.untitled {
+            tab.title.clone()
+        } else {
+            relative_path(&self.root, &tab.path)
+        };
         let selection_detail = tab
             .selected_text()
             .map(|text| format!("{} selected char(s)", text.chars().count()))
@@ -4422,7 +4481,11 @@ impl App {
         let Some(tab) = self.active_tab() else {
             return Vec::new();
         };
-        let relative = relative_path(&self.root, &tab.path);
+        let relative = if tab.untitled {
+            tab.title.clone()
+        } else {
+            relative_path(&self.root, &tab.path)
+        };
         let items = symbols_to_quick_items(&tab.path, &tab.text(), &relative, query, false);
         items.into_iter().take(MAX_QUICK_ITEMS).collect()
     }
@@ -4904,10 +4967,15 @@ impl App {
     }
 
     fn reveal_active_file(&mut self) -> Result<()> {
-        let Some(path) = self.active_tab().map(|tab| tab.path.clone()) else {
+        let Some(tab) = self.active_tab() else {
             self.message = Some("no active file to reveal".to_owned());
             return Ok(());
         };
+        if tab.untitled {
+            self.message = Some(format!("{} has not been saved to disk", tab.title));
+            return Ok(());
+        }
+        let path = tab.path.clone();
         self.reveal_path(&path)?;
         self.focus = FocusPanel::Explorer;
         self.message = Some(format!("revealed {}", path.display()));
@@ -4915,11 +4983,15 @@ impl App {
     }
 
     fn copy_active_file_path_to_clipboard(&mut self, relative: bool) {
-        let Some(path) = self.active_tab().map(|tab| tab.path.clone()) else {
+        let Some(tab) = self.active_tab() else {
             self.message = Some("no active file path to copy".to_owned());
             return;
         };
-        self.copy_path_to_clipboard(&path, relative, "active file");
+        if tab.untitled {
+            self.message = Some(format!("{} has no file path yet", tab.title));
+            return;
+        }
+        self.copy_path_to_clipboard(&tab.path.clone(), relative, "active file");
     }
 
     fn copy_selected_explorer_path_to_clipboard(&mut self, relative: bool) {
@@ -5181,7 +5253,8 @@ impl App {
         } else {
             fs::remove_file(&path)?;
         }
-        self.tabs.retain(|tab| !tab.path.starts_with(&path));
+        self.tabs
+            .retain(|tab| tab.untitled || !tab.path.starts_with(&path));
         self.prune_navigation_for_deleted_path(&path);
         if self
             .explorer_clipboard
@@ -5202,6 +5275,9 @@ impl App {
 
     fn update_open_tabs_for_move(&mut self, old_path: &Path, new_path: &Path) {
         for tab in &mut self.tabs {
+            if tab.untitled {
+                continue;
+            }
             if let Ok(relative) = tab.path.strip_prefix(old_path) {
                 tab.path = new_path.join(relative);
                 tab.title = tab
@@ -5301,6 +5377,11 @@ impl App {
         let Some(index) = self.active_tab else {
             return;
         };
+        if self.tabs[index].untitled {
+            self.start_save_as_prompt();
+            self.message = Some(format!("{} needs Save As", self.tabs[index].title));
+            return;
+        }
         self.check_external_file_changes();
         let Some(tab) = self.tabs.get(index) else {
             return;
@@ -5411,6 +5492,15 @@ impl App {
             return Ok(());
         };
 
+        if self.tabs[index].untitled {
+            let title = self.tabs[index].title.clone();
+            self.tabs[index].set_clean_text("");
+            self.tabs[index].untitled = true;
+            self.ensure_editor_cursor_visible();
+            self.message = Some(format!("cleared {title}"));
+            return Ok(());
+        }
+
         let path = self.tabs[index].path.clone();
         let title = self.tabs[index].title.clone();
         let previous_text = self.tabs[index].text();
@@ -5432,8 +5522,13 @@ impl App {
         self.check_external_file_changes();
         let mut saved = 0usize;
         let mut skipped = 0usize;
+        let mut untitled = 0usize;
         for tab in &mut self.tabs {
             if !tab.dirty {
+                continue;
+            }
+            if tab.untitled {
+                untitled += 1;
                 continue;
             }
             if !tab.external_state.is_clean() {
@@ -5451,10 +5546,15 @@ impl App {
         if saved > 0 {
             self.refresh_git_status();
         }
-        self.message = if skipped > 0 {
-            Some(format!(
-                "saved {saved} dirty tab(s); skipped {skipped} tab(s) with disk changes"
-            ))
+        self.message = if skipped > 0 || untitled > 0 {
+            let mut parts = vec![format!("saved {saved} dirty tab(s)")];
+            if skipped > 0 {
+                parts.push(format!("skipped {skipped} tab(s) with disk changes"));
+            }
+            if untitled > 0 {
+                parts.push(format!("skipped {untitled} untitled tab(s); use Save As"));
+            }
+            Some(parts.join("; "))
         } else {
             Some(format!("saved {saved} dirty tab(s)"))
         };
@@ -6545,6 +6645,7 @@ impl App {
                 self.open_quick_panel(QuickPanelKind::SourceControl)?;
             }
             CommandAction::RunTask => self.open_quick_panel(QuickPanelKind::Tasks)?,
+            CommandAction::NewUntitledFile => self.new_untitled_file(),
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAs => self.start_save_as_prompt(),
             CommandAction::SaveAll => self.save_all_tabs(),
@@ -10578,6 +10679,67 @@ mod tests {
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn untitled_editor_tab_saves_as_real_file_without_placeholder() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-untitled-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL))
+            .unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let placeholder = canonical_root.join("Untitled-1");
+        let tab = app.active_tab().unwrap();
+        assert!(tab.untitled);
+        assert_eq!(tab.title, "Untitled-1");
+        assert_eq!(tab.path, placeholder);
+        assert!(!placeholder.exists());
+        assert_eq!(app.focus, FocusPanel::Editor);
+
+        app.active_tab_mut().unwrap().insert_text("fn main() {}\n");
+        app.run_command(CommandAction::SaveFile).unwrap();
+        assert!(matches!(
+            app.prompt.as_ref().map(|prompt| &prompt.kind),
+            Some(PromptKind::SaveAs)
+        ));
+        assert_eq!(app.message.as_deref(), Some("Untitled-1 needs Save As"));
+        assert!(!placeholder.exists());
+        app.prompt = None;
+
+        app.save_as_from_prompt("src/new.rs".to_owned()).unwrap();
+        let target = canonical_root.join("src/new.rs").canonicalize().unwrap();
+        let tab = app.active_tab().unwrap();
+        assert!(!tab.untitled);
+        assert_eq!(tab.path, target);
+        assert_eq!(tab.title, "new.rs");
+        assert!(!tab.dirty);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "fn main() {}\n");
+        assert!(!placeholder.exists());
+
+        app.run_command(CommandAction::NewUntitledFile).unwrap();
+        app.active_tab_mut().unwrap().insert_text("scratch");
+        app.run_command(CommandAction::SaveAll).unwrap();
+        assert!(app.active_tab().unwrap().untitled);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("skipped 1 untitled tab"))
+        );
+
+        let commands = app.command_palette_items("new untitled");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::NewUntitledFile))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(canonical_root);
     }
 
     #[test]
