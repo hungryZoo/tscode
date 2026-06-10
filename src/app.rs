@@ -1992,6 +1992,8 @@ pub enum CommandAction {
     DiscardSourceControlItem,
     DiscardAllChanges,
     RunTask,
+    RunActiveFileInTerminal,
+    RunSelectedExplorerFileInTerminal,
     NewUntitledFile,
     SaveFile,
     SaveAs,
@@ -3113,6 +3115,7 @@ impl App {
             KeyCode::Char('v') => self.compare_selected_files()?,
             KeyCode::Char('o') => self.reveal_active_file()?,
             KeyCode::Char('t') => self.new_terminal_here()?,
+            KeyCode::F(5) => self.run_selected_explorer_file_in_terminal()?,
             _ => {}
         }
 
@@ -3217,6 +3220,7 @@ impl App {
             KeyCode::End => self.set_editor_cursor_end(selecting),
             KeyCode::F(2) => self.start_rename_symbol_prompt(),
             KeyCode::F(3) => self.find_next(true),
+            KeyCode::F(5) => self.run_active_file_in_terminal()?,
             KeyCode::Tab => self.indent_active_line(),
             KeyCode::BackTab => self.outdent_active_line(),
             KeyCode::Enter => self.edit_newline(),
@@ -4975,6 +4979,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::RunTask,
         },
         CommandSpec {
+            label: "Run Active File in Terminal",
+            detail: "Start a new PTY terminal and run the saved active editor file",
+            shortcut: "F5",
+            action: CommandAction::RunActiveFileInTerminal,
+        },
+        CommandSpec {
             label: "New Untitled File",
             detail: "Create a scratch editor tab that can be saved with Save As",
             shortcut: "Ctrl-N",
@@ -5831,6 +5841,18 @@ impl App {
             },
         ];
 
+        if !node.is_dir {
+            specs.insert(
+                5,
+                ContextMenuAction {
+                    label: "Run File in Terminal",
+                    detail: format!("Start a PTY terminal and run {relative}"),
+                    shortcut: "F5",
+                    action: CommandAction::RunSelectedExplorerFileInTerminal,
+                },
+            );
+        }
+
         if !selected_paths.iter().any(|path| path == &self.root) {
             let mut selection_actions = vec![
                 ContextMenuAction {
@@ -5868,7 +5890,11 @@ impl App {
                 shortcut: "D",
                 action: CommandAction::DeleteSelected,
             });
-            specs.splice(8..8, selection_actions);
+            let paste_index = specs
+                .iter()
+                .position(|spec| spec.label == "Paste")
+                .unwrap_or(specs.len());
+            specs.splice(paste_index..paste_index, selection_actions);
         }
 
         context_menu_items(node.path, specs, query)
@@ -6082,6 +6108,12 @@ impl App {
                 detail: "Send the selection or current line to the active PTY shell".to_owned(),
                 shortcut: "Ctrl-Enter",
                 action: CommandAction::RunSelectionInTerminal,
+            },
+            ContextMenuAction {
+                label: "Run File in Terminal",
+                detail: format!("Start a PTY terminal and run {relative}"),
+                shortcut: "F5",
+                action: CommandAction::RunActiveFileInTerminal,
             },
             ContextMenuAction {
                 label: "Copy File Path",
@@ -9013,6 +9045,76 @@ impl App {
         Ok(())
     }
 
+    fn run_active_file_in_terminal(&mut self) -> Result<()> {
+        let Some(tab) = self.active_tab() else {
+            self.message = Some("open a file before running it".to_owned());
+            return Ok(());
+        };
+        if tab.untitled {
+            self.message = Some("save the Untitled file before running it".to_owned());
+            return Ok(());
+        }
+        if tab.dirty {
+            self.message = Some(format!("save {} before running it", tab.title));
+            return Ok(());
+        }
+        if !tab.external_state.is_clean() {
+            self.message = Some(format!(
+                "reload or save {} before running it ({})",
+                tab.title,
+                tab.external_state.label()
+            ));
+            return Ok(());
+        }
+
+        self.run_file_path_in_terminal(tab.path.clone())
+    }
+
+    fn run_selected_explorer_file_in_terminal(&mut self) -> Result<()> {
+        let paths = normalize_file_op_paths(self.selected_explorer_paths());
+        if paths.len() != 1 {
+            self.message = Some("select one explorer file to run".to_owned());
+            return Ok(());
+        }
+        let path = paths[0].clone();
+        if !path.is_file() {
+            self.message = Some(format!(
+                "select a file to run, not {}",
+                relative_path(&self.root, &path)
+            ));
+            return Ok(());
+        }
+
+        self.run_file_path_in_terminal(path)
+    }
+
+    fn run_file_path_in_terminal(&mut self, path: PathBuf) -> Result<()> {
+        let path = path.canonicalize().unwrap_or(path);
+        let Some(run) = run_command_for_file(&self.root, &path) else {
+            self.message = Some(format!(
+                "no run command for {}",
+                relative_path(&self.root, &path)
+            ));
+            return Ok(());
+        };
+
+        let title = format!(
+            "run: {}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("file")
+        );
+        let title = truncate_chars(&title, 32);
+        let command = run.command;
+        self.start_terminal_command(title, run.cwd, &command)?;
+        self.message = Some(format!(
+            "running {}: {}",
+            relative_path(&self.root, &path),
+            command
+        ));
+        Ok(())
+    }
+
     fn run_task_item(&mut self, item: QuickItem) -> Result<()> {
         let command = item.detail.trim().to_owned();
         if command.is_empty() {
@@ -9025,18 +9127,23 @@ impl App {
         } else {
             self.root.clone()
         };
+        let title = format!("task: {}", truncate_chars(&item.label, 28));
+        self.start_terminal_command(title.clone(), cwd, &command)?;
+        self.message = Some(format!("started {title}: {command}"));
+        Ok(())
+    }
+
+    fn start_terminal_command(&mut self, title: String, cwd: PathBuf, command: &str) -> Result<()> {
         let id = self.next_terminal_id;
         self.next_terminal_id += 1;
-        let title = format!("task: {}", truncate_chars(&item.label, 28));
-        let terminal = TerminalSession::with_locked_title(id, title.clone(), cwd)?;
+        let terminal = TerminalSession::with_locked_title(id, title, cwd)?;
         self.terminals.push(terminal);
         self.set_active_terminal(self.terminals.len() - 1);
         self.focus = FocusPanel::Terminal;
         self.terminal_selection = None;
 
-        let submitted = terminal_submission_text(&command);
+        let submitted = terminal_submission_text(command);
         self.active_terminal_mut().shell.send_text(&submitted)?;
-        self.message = Some(format!("started {title}: {command}"));
         Ok(())
     }
 
@@ -10382,6 +10489,10 @@ impl App {
             }
             CommandAction::DiscardAllChanges => self.prompt_discard_all_source_control_changes()?,
             CommandAction::RunTask => self.open_quick_panel(QuickPanelKind::Tasks)?,
+            CommandAction::RunActiveFileInTerminal => self.run_active_file_in_terminal()?,
+            CommandAction::RunSelectedExplorerFileInTerminal => {
+                self.run_selected_explorer_file_in_terminal()?
+            }
             CommandAction::NewUntitledFile => self.new_untitled_file(),
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAs => self.start_save_as_prompt(),
@@ -11438,6 +11549,81 @@ fn terminal_submission_text(text: &str) -> String {
         normalized.push('\n');
     }
     normalized.replace('\n', "\r")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileRunCommand {
+    command: String,
+    cwd: PathBuf,
+}
+
+fn run_command_for_file(root: &Path, path: &Path) -> Option<FileRunCommand> {
+    if !path.is_file() {
+        return None;
+    }
+
+    let parent = path.parent().unwrap_or(root).to_path_buf();
+    let file_name = path.file_name()?.to_string_lossy().to_string();
+    let file_arg = shell_escape_task_arg(&file_name);
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    let command = match extension.as_str() {
+        "sh" => format!("sh {file_arg}"),
+        "bash" => format!("bash {file_arg}"),
+        "zsh" => format!("zsh {file_arg}"),
+        "fish" => format!("fish {file_arg}"),
+        "py" => {
+            let runner = if root.join("uv.lock").is_file() {
+                "uv run python"
+            } else {
+                "python3"
+            };
+            format!("{runner} {file_arg}")
+        }
+        "js" | "mjs" | "cjs" => format!("node {file_arg}"),
+        "ts" | "tsx" => format!("npx tsx {file_arg}"),
+        "rb" => format!("ruby {file_arg}"),
+        "php" => format!("php {file_arg}"),
+        "pl" | "pm" => format!("perl {file_arg}"),
+        "lua" => format!("lua {file_arg}"),
+        "go" => format!("go run {file_arg}"),
+        "java" => format!("java {file_arg}"),
+        "swift" => format!("swift {file_arg}"),
+        "ps1" => format!("pwsh -File {file_arg}"),
+        "bat" | "cmd" => file_arg,
+        _ if is_executable_file(path) => format!("./{file_arg}"),
+        _ => return None,
+    };
+
+    Some(FileRunCommand {
+        command,
+        cwd: parent,
+    })
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "exe" | "com" | "bat" | "cmd"
+            )
+        })
 }
 
 fn take_chars_owned(s: &str, count: usize) -> String {
@@ -15425,6 +15611,10 @@ mod tests {
         let canonical_root = app.root.clone();
         let canonical_file = file.canonicalize().unwrap();
         app.explorer.reveal(&canonical_file).unwrap();
+        assert!(app.explorer_context_menu_items("").iter().any(|item| {
+            item.label == "Run File in Terminal"
+                && item.command == Some(CommandAction::RunSelectedExplorerFileInTerminal)
+        }));
         app.run_command(CommandAction::CopySelectedExplorerItem)
             .unwrap();
         assert!(app.explorer_clipboard.is_some());
@@ -15612,6 +15802,12 @@ mod tests {
                 .items
                 .iter()
                 .any(|item| item.command == Some(CommandAction::RunLspDiagnostics))
+        );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RunActiveFileInTerminal))
         );
         assert!(
             panel
@@ -17507,6 +17703,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::RunSelectionInTerminal))
         );
+        let commands = app.command_palette_items("run active file terminal");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RunActiveFileInTerminal))
+        );
         let commands = app.command_palette_items("copy terminal selection");
         assert!(
             commands
@@ -17588,6 +17790,31 @@ mod tests {
             terminal_submission_text("echo one\r\necho two"),
             "echo one\recho two\r"
         );
+    }
+
+    #[test]
+    fn run_command_for_file_detects_supported_source_files() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-run-command-for-file-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("script.sh");
+        let readme = root.join("README.md");
+        fs::write(&script, "printf ok\n").unwrap();
+        fs::write(&readme, "# docs\n").unwrap();
+
+        assert_eq!(
+            run_command_for_file(&root, &script),
+            Some(FileRunCommand {
+                command: "sh script.sh".to_owned(),
+                cwd: root.clone(),
+            })
+        );
+        assert_eq!(run_command_for_file(&root, &readme), None);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -17724,6 +17951,99 @@ mod tests {
         }
 
         assert_eq!(fs::read_to_string(&out).unwrap(), "run-ok");
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn run_file_actions_execute_saved_files_in_new_real_pty_terminals() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-run-file-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("nested")).unwrap();
+        let editor_script = root.join("editor.sh");
+        let explorer_script = root.join("nested").join("explorer.sh");
+        let editor_out = root.join("editor.out");
+        let explorer_out = root.join("nested").join("explorer.out");
+        fs::write(&editor_script, "printf editor-run > editor.out\n").unwrap();
+        fs::write(&explorer_script, "printf explorer-run > explorer.out\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let editor_script = editor_script.canonicalize().unwrap();
+        let explorer_script = explorer_script.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        let initial_terminals = app.terminals.len();
+
+        app.open_file(&editor_script);
+        app.run_active_file_in_terminal().unwrap();
+        assert_eq!(app.focus, FocusPanel::Terminal);
+        assert_eq!(app.terminals.len(), initial_terminals + 1);
+        assert!(app.active_terminal().title.starts_with("run: editor.sh"));
+        assert_eq!(app.active_terminal().cwd, canonical_root);
+
+        for _ in 0..50 {
+            app.drain_terminal();
+            if editor_out.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(fs::read_to_string(&editor_out).unwrap(), "editor-run");
+
+        app.reveal_path(&explorer_script).unwrap();
+        app.run_selected_explorer_file_in_terminal().unwrap();
+        assert_eq!(app.terminals.len(), initial_terminals + 2);
+        assert!(app.active_terminal().title.starts_with("run: explorer.sh"));
+        assert_eq!(
+            app.active_terminal().cwd,
+            canonical_root.join("nested").canonicalize().unwrap()
+        );
+
+        for _ in 0..50 {
+            app.drain_terminal();
+            if explorer_out.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(fs::read_to_string(&explorer_out).unwrap(), "explorer-run");
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_active_file_blocks_unsaved_or_untitled_buffers() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-run-file-dirty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("script.sh");
+        fs::write(&script, "printf disk\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let script = script.canonicalize().unwrap();
+        let mut app = App::new(canonical_root).unwrap();
+        let initial_terminals = app.terminals.len();
+        app.open_file(&script);
+        app.active_tab_mut().unwrap().insert_text("printf dirty\n");
+        app.run_active_file_in_terminal().unwrap();
+        assert_eq!(app.terminals.len(), initial_terminals);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("save script.sh before running it"))
+        );
+
+        app.run_command(CommandAction::NewUntitledFile).unwrap();
+        app.run_active_file_in_terminal().unwrap();
+        assert_eq!(app.terminals.len(), initial_terminals);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("save the Untitled file before running it")
+        );
+
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }

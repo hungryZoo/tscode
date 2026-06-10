@@ -156,7 +156,7 @@ The command palette shall include a Save As action for the active editor tab. Th
 
 ### R-208C Editor Context Menu
 
-Right-clicking the editor body or an editor tab shall focus the editor and open a mouse-selectable context menu. Right-clicking the editor body shall update the editor cursor to the clicked buffer location before opening the menu. The menu shall expose actions for save, copy, cut, paste, select all, find, replace, go to line, language-server hover, signature help, symbol highlights, go to definition, call hierarchy, find references, code action, rename symbol, trigger suggest, format document, fold/unfold, toggle line comment, run selection/current line in terminal, copy absolute file path, copy relative file path, revert file, and close active tab. Activating a menu item shall call the same editor, workspace, terminal, or clipboard command used by keyboard shortcuts and the command palette.
+Right-clicking the editor body or an editor tab shall focus the editor and open a mouse-selectable context menu. Right-clicking the editor body shall update the editor cursor to the clicked buffer location before opening the menu. The menu shall expose actions for save, copy, cut, paste, select all, find, replace, go to line, language-server hover, signature help, symbol highlights, go to definition, call hierarchy, find references, code action, rename symbol, trigger suggest, format document, fold/unfold, toggle line comment, run selection/current line in terminal, run saved active file in terminal, copy absolute file path, copy relative file path, revert file, and close active tab. Activating a menu item shall call the same editor, workspace, terminal, or clipboard command used by keyboard shortcuts and the command palette.
 
 ### R-208D Dirty Tab Close Confirmation
 
@@ -269,6 +269,10 @@ The command palette shall expose commands to copy the active editor file path an
 ### R-230 Run Selection in Terminal
 
 `Ctrl-enter` or the command palette shall send the active editor selection, or the current non-blank line when no selection exists, to the active PTY shell as submitted command text and then focus the integrated terminal. Blank editor selections and blank current lines shall not send PTY input.
+
+### R-230A Run Saved File in Terminal
+
+`F5`, the command palette, the editor context menu, and the explorer context menu shall run one supported saved source file by creating a new integrated PTY terminal rooted at that file's parent folder and submitting the derived run command. The command resolver shall support common interpreted or tool-run file types including shell scripts, Python, JavaScript, TypeScript, Ruby, PHP, Perl, Lua, Go, Java, Swift, PowerShell, batch files, and executable files. Dirty file-backed editor buffers, Untitled buffers, unsupported file types, directories, and multi-file explorer selections shall not submit PTY input and shall report a clear status message instead.
 
 ### R-231 Trim Trailing Whitespace
 
