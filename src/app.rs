@@ -3577,6 +3577,7 @@ impl App {
                 KeyCode::Up => self.move_active_line_up(),
                 KeyCode::Down => self.move_active_line_down(),
                 KeyCode::Char('[') => self.toggle_active_fold(),
+                KeyCode::Char('0') => self.fold_all_active_tab(),
                 KeyCode::Char(']') => self.unfold_all_active_tab(),
                 KeyCode::Char('b') | KeyCode::Char('B') => self.toggle_bookmark_at_cursor(),
                 KeyCode::Char('n') | KeyCode::Char('N') => self.jump_to_relative_bookmark(true),
@@ -6034,7 +6035,7 @@ fn command_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             label: "Fold All",
             detail: "Fold every detected block in the active editor tab",
-            shortcut: "",
+            shortcut: "Alt-0",
             action: CommandAction::FoldAll,
         },
         CommandSpec {
@@ -6929,7 +6930,7 @@ impl App {
             ContextMenuAction {
                 label: "Fold All",
                 detail: "Fold every detected block in this file".to_owned(),
-                shortcut: "",
+                shortcut: "Alt-0",
                 action: CommandAction::FoldAll,
             },
             ContextMenuAction {
@@ -18412,6 +18413,22 @@ mod tests {
 
         app.run_command(CommandAction::UnfoldAll).unwrap();
         assert!(!app.active_tab().unwrap().is_line_folded(0));
+        assert_eq!(
+            app.active_tab().unwrap().visible_line_indices(),
+            vec![0, 1, 2, 3, 4]
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::ALT))
+            .unwrap();
+        assert_eq!(app.message.as_deref(), Some("folded 1 block(s)"));
+        assert!(app.active_tab().unwrap().is_line_folded(0));
+        assert_eq!(app.active_tab().unwrap().visible_line_indices(), vec![0, 4]);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::ALT))
+            .unwrap();
+        assert_eq!(app.message.as_deref(), Some("unfolded 1 block(s)"));
+        assert!(!app.active_tab().unwrap().is_line_folded(0));
+
         app.hit_regions.editor_area = Some(Rect::new(0, 0, 40, 5));
         app.hit_regions.editor_body = Some(Rect::new(0, 0, 40, 5));
         app.handle_mouse(MouseEvent {

@@ -196,7 +196,7 @@ Keyboard fallback:
 - The command palette and editor context menu provide Code Action for installed language-server quick fixes/refactors; returned workspace edits and edit-producing LSP commands update open buffers as undoable edits and closed files on disk after validation
 - The command palette and editor context menu provide Run LSP Diagnostics for active-buffer language-server diagnostics
 - Mouse hover over an editor identifier shows lightweight symbol definition/reference information
-- Editor gutter fold markers, `Alt-[`, `Alt-]`, the command palette, and the editor context menu provide code fold/unfold actions
+- Editor gutter fold markers, `Alt-[`, `Alt-0`, `Alt-]`, the command palette, and the editor context menu provide code fold, fold-all, and unfold-all actions
 - The editor gutter's leftmost marker cell, `Alt-B`, the command palette, and the editor context menu toggle line bookmarks; `Alt-N`/`Alt-P`, Show Bookmarks, Next Bookmark, Previous Bookmark, and Clear Bookmarks navigate or manage open-tab bookmarks
 - `Ctrl-Shift-\`, the command palette, and the editor context menu provide matching-bracket navigation for `()`, `[]`, and `{}` pairs
 - The command palette provides Run Workspace Check, Run LSP Diagnostics, and Show Problems actions for project diagnostics

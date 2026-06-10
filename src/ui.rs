@@ -435,7 +435,7 @@ fn draw_editor_pane(
             pane + 1
         )
     } else {
-        " Editor  Ctrl-S save  Ctrl-F find  Ctrl-H replace  Alt-[ fold  Alt-] unfold ".to_owned()
+        " Editor  Ctrl-S save  Ctrl-F find  Ctrl-H replace  Alt-[ fold  Alt-0 fold all  Alt-] unfold ".to_owned()
     };
     let block = Block::default()
         .borders(Borders::ALL)
