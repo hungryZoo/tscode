@@ -1831,6 +1831,8 @@ pub enum PromptKind {
     RenameSymbol { old: String },
     SaveAs,
     SaveAsClose { index: usize },
+    DiscardSourceControlPath(PathBuf),
+    DiscardAllSourceControlChanges(Vec<PathBuf>),
     TerminalSearch,
     RenameTerminal,
     GotoLine,
@@ -1978,6 +1980,8 @@ pub enum CommandAction {
     UnstageSourceControlItem,
     StageAllChanges,
     UnstageAllChanges,
+    DiscardSourceControlItem,
+    DiscardAllChanges,
     RunTask,
     NewUntitledFile,
     SaveFile,
@@ -4923,6 +4927,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::UnstageAllChanges,
         },
         CommandSpec {
+            label: "Discard All Changes",
+            detail: "Prompt, then discard every Git working tree change and untracked file",
+            shortcut: "",
+            action: CommandAction::DiscardAllChanges,
+        },
+        CommandSpec {
             label: "Run Task",
             detail: "Detect workspace tasks and run one in a real integrated PTY terminal",
             shortcut: "Ctrl-Shift-B",
@@ -6677,6 +6687,17 @@ impl App {
                 command: Some(CommandAction::UnstageAllChanges),
             });
         }
+        if !entries.is_empty() {
+            items.push(QuickItem {
+                label: "! Discard All Changes".to_owned(),
+                detail: "type discard to run git restore/clean for every change".to_owned(),
+                path: top_level.clone(),
+                line: None,
+                col: None,
+                preview: None,
+                command: Some(CommandAction::DiscardAllChanges),
+            });
+        }
 
         for entry in entries {
             let path = entry.path.clone();
@@ -6707,13 +6728,23 @@ impl App {
                 items.push(QuickItem {
                     label: format!("- Unstage {relative}"),
                     detail: "git restore --staged".to_owned(),
-                    path,
+                    path: path.clone(),
                     line: None,
                     col: None,
                     preview: None,
                     command: Some(CommandAction::UnstageSourceControlItem),
                 });
             }
+            items.push(QuickItem {
+                label: format!("! Discard {relative}"),
+                detail: "type discard to restore this path from HEAD or remove it if untracked"
+                    .to_owned(),
+                path,
+                line: None,
+                col: None,
+                preview: None,
+                command: Some(CommandAction::DiscardSourceControlItem),
+            });
         }
 
         for hunk in load_git_diff_hunks(&self.root, &top_level) {
@@ -7219,6 +7250,20 @@ impl App {
             PromptKind::SaveAsClose { index } => {
                 if let Some(saved_index) = self.save_tab_as_from_prompt(index, prompt.input)? {
                     self.close_tab_without_prompt(saved_index, "saved and closed");
+                }
+            }
+            PromptKind::DiscardSourceControlPath(path) => {
+                if prompt.input == "discard" {
+                    self.discard_source_control_path_confirmed(path)?;
+                } else {
+                    self.message = Some("discard cancelled".to_owned());
+                }
+            }
+            PromptKind::DiscardAllSourceControlChanges(paths) => {
+                if prompt.input == "discard" {
+                    self.discard_all_source_control_changes_confirmed(paths)?;
+                } else {
+                    self.message = Some("discard cancelled".to_owned());
                 }
             }
             PromptKind::TerminalSearch => self.terminal_search_from_prompt(prompt.input),
@@ -9617,6 +9662,13 @@ impl App {
                     }
                     return;
                 }
+                Some(CommandAction::DiscardSourceControlItem) => {
+                    self.quick_panel = None;
+                    if let Err(error) = self.prompt_discard_source_control_path(&item.path) {
+                        self.last_error = Some(error.to_string());
+                    }
+                    return;
+                }
                 _ => {}
             }
         }
@@ -9697,6 +9749,151 @@ impl App {
         let top_level = git_top_level(&self.root).context("not a git repository")?;
         unstage_all_git_changes(&top_level)?;
         self.reopen_source_control_with_message("unstaged all changes".to_owned())
+    }
+
+    fn prompt_discard_source_control_path(&mut self, path: &Path) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let relative = relative_path(&top_level, &path);
+        if self
+            .dirty_tabs_under_paths(std::slice::from_ref(&path))
+            .is_some()
+        {
+            self.message = Some(format!(
+                "discard blocked by unsaved editor tab under {relative}; save or close it first"
+            ));
+            return Ok(());
+        }
+        self.start_prompt(PromptKind::DiscardSourceControlPath(path), "");
+        self.message = Some(format!("type discard to discard Git changes in {relative}"));
+        Ok(())
+    }
+
+    fn prompt_discard_all_source_control_changes(&mut self) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        let paths = source_control_changed_paths(&self.root, &top_level);
+        if paths.is_empty() {
+            self.message = Some("no Source Control changes to discard".to_owned());
+            return Ok(());
+        }
+        if let Some(label) = self.dirty_tabs_under_paths(&paths) {
+            self.message = Some(format!(
+                "discard all blocked by unsaved editor tab: {label}; save or close it first"
+            ));
+            return Ok(());
+        }
+        self.start_prompt(
+            PromptKind::DiscardAllSourceControlChanges(paths.clone()),
+            "",
+        );
+        self.message = Some(format!(
+            "type discard to discard {} Git change(s)",
+            paths.len()
+        ));
+        Ok(())
+    }
+
+    fn discard_source_control_path_confirmed(&mut self, path: PathBuf) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        if self
+            .dirty_tabs_under_paths(std::slice::from_ref(&path))
+            .is_some()
+        {
+            let relative = relative_path(&top_level, &path);
+            self.message = Some(format!(
+                "discard blocked by unsaved editor tab under {relative}; save or close it first"
+            ));
+            return Ok(());
+        }
+
+        let entries = load_git_status_entries(&self.root);
+        let Some(entry) = entries.into_iter().find(|entry| entry.path == path) else {
+            let relative = relative_path(&top_level, &path);
+            self.reopen_source_control_with_message(format!("no Git changes for {relative}"))?;
+            return Ok(());
+        };
+        let deleted_by_discard = entry_removes_worktree_path(&entry);
+        let relative = relative_path(&top_level, &path);
+        discard_git_entry(&top_level, &entry)?;
+        if deleted_by_discard {
+            self.close_clean_tabs_for_removed_paths(std::slice::from_ref(&path));
+        }
+        self.refresh_explorer_preserving_selection(false)?;
+        self.check_external_file_changes();
+        self.reopen_source_control_with_message(format!("discarded {relative}"))
+    }
+
+    fn discard_all_source_control_changes_confirmed(&mut self, paths: Vec<PathBuf>) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        let entries = load_git_status_entries(&self.root);
+        let paths = if paths.is_empty() {
+            source_control_changed_paths(&self.root, &top_level)
+        } else {
+            paths
+        };
+        if let Some(label) = self.dirty_tabs_under_paths(&paths) {
+            self.message = Some(format!(
+                "discard all blocked by unsaved editor tab: {label}; save or close it first"
+            ));
+            return Ok(());
+        }
+
+        let removed_paths = entries
+            .iter()
+            .filter(|entry| entry_removes_worktree_path(entry))
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        let mut discarded = 0usize;
+        for entry in entries {
+            discard_git_entry(&top_level, &entry)?;
+            discarded += 1;
+        }
+        self.close_clean_tabs_for_removed_paths(&removed_paths);
+        self.refresh_explorer_preserving_selection(false)?;
+        self.check_external_file_changes();
+        self.reopen_source_control_with_message(format!("discarded {discarded} Git change(s)"))
+    }
+
+    fn dirty_tabs_under_paths(&self, paths: &[PathBuf]) -> Option<String> {
+        self.tabs
+            .iter()
+            .filter(|tab| !tab.untitled && tab.dirty)
+            .find(|tab| paths.iter().any(|path| tab.path.starts_with(path)))
+            .map(|tab| relative_path(&self.root, &tab.path))
+    }
+
+    fn close_clean_tabs_for_removed_paths(&mut self, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        let active_path = self
+            .active_tab
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| tab.path.clone());
+        let split_path = self
+            .editor_split
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| tab.path.clone());
+        self.tabs.retain(|tab| {
+            tab.untitled
+                || tab.dirty
+                || !paths
+                    .iter()
+                    .any(|removed_path| tab.path.starts_with(removed_path))
+        });
+        self.active_tab = if self.tabs.is_empty() {
+            None
+        } else if let Some(active_path) = active_path {
+            self.tabs
+                .iter()
+                .position(|tab| tab.path == active_path)
+                .or(Some(0))
+        } else {
+            Some(0)
+        };
+        self.editor_split =
+            split_path.and_then(|path| self.tabs.iter().position(|tab| tab.path == path));
+        self.normalize_editor_split();
     }
 
     fn reopen_source_control_with_message(&mut self, message: String) -> Result<()> {
@@ -9863,6 +10060,11 @@ impl App {
             }
             CommandAction::StageAllChanges => self.stage_all_source_control_changes()?,
             CommandAction::UnstageAllChanges => self.unstage_all_source_control_changes()?,
+            CommandAction::DiscardSourceControlItem => {
+                self.message =
+                    Some("select a Source Control file row to discard that path".to_owned());
+            }
+            CommandAction::DiscardAllChanges => self.prompt_discard_all_source_control_changes()?,
             CommandAction::RunTask => self.open_quick_panel(QuickPanelKind::Tasks)?,
             CommandAction::NewUntitledFile => self.new_untitled_file(),
             CommandAction::SaveFile => self.save_active_tab(),
@@ -11485,6 +11687,53 @@ fn unstage_all_git_changes(top_level: &Path) -> Result<()> {
         top_level,
         &["rm", "-r", "--cached", "--ignore-unmatch", "--", "."],
     )
+}
+
+fn source_control_changed_paths(root: &Path, top_level: &Path) -> Vec<PathBuf> {
+    load_git_status_entries(root)
+        .into_iter()
+        .map(|entry| entry.path)
+        .filter(|path| path.starts_with(top_level))
+        .collect()
+}
+
+fn entry_removes_worktree_path(entry: &GitStatusEntry) -> bool {
+    entry.kind == GitStatusKind::Untracked || entry.index == b'A'
+}
+
+fn discard_git_entry(top_level: &Path, entry: &GitStatusEntry) -> Result<()> {
+    if entry.kind == GitStatusKind::Untracked {
+        return clean_git_path(top_level, &entry.path);
+    }
+
+    if entry.index == b'A' {
+        let _ = unstage_git_path(top_level, &entry.path);
+        return clean_git_path(top_level, &entry.path);
+    }
+
+    if run_git_command_with_path(
+        top_level,
+        &["restore", "--source=HEAD", "--staged", "--worktree"],
+        &entry.path,
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
+
+    if run_git_command_with_path(top_level, &["checkout", "HEAD"], &entry.path).is_ok() {
+        let _ = unstage_git_path(top_level, &entry.path);
+        return Ok(());
+    }
+
+    run_git_command_with_path(top_level, &["restore", "--worktree"], &entry.path)
+}
+
+fn clean_git_path(top_level: &Path, path: &Path) -> Result<()> {
+    if run_git_command_with_path(top_level, &["clean", "-fd"], path).is_ok() {
+        return Ok(());
+    }
+    run_git_command_with_path(top_level, &["clean", "-f"], path)
 }
 
 fn run_git_command(top_level: &Path, args: &[&str]) -> Result<()> {
@@ -17987,6 +18236,176 @@ index 1111111..2222222 100644
         select_quick_item(&mut app, "- Unstage All Changes");
         app.activate_selected_quick_item();
         assert!(cached_git_names(&canonical_root).is_empty());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn source_control_panel_discards_changes_with_confirmation() {
+        if !git_available() {
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-source-control-discard-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    1\n}\n").unwrap();
+
+        init_git_repo(&root);
+        assert_git(&root, &["add", "src/lib.rs"]);
+        assert_git(
+            &root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+            ],
+        );
+
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    2\n}\n").unwrap();
+        fs::write(root.join("new.txt"), "new file\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let lib = canonical_root.join("src/lib.rs");
+        let new_file = canonical_root.join("new.txt");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&lib);
+        app.open_file(&new_file);
+        assert_eq!(app.tabs.len(), 2);
+
+        app.run_command(CommandAction::ShowSourceControl).unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "! Discard All Changes"
+                    && item.command == Some(CommandAction::DiscardAllChanges))
+        );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "! Discard src/lib.rs"
+                    && item.command == Some(CommandAction::DiscardSourceControlItem))
+        );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "! Discard new.txt"
+                    && item.command == Some(CommandAction::DiscardSourceControlItem))
+        );
+
+        select_quick_item(&mut app, "! Discard src/lib.rs");
+        app.activate_selected_quick_item();
+        assert_eq!(
+            app.prompt.as_ref().map(|prompt| &prompt.kind),
+            Some(&PromptKind::DiscardSourceControlPath(lib.clone()))
+        );
+        app.prompt.as_mut().unwrap().input = "no".to_owned();
+        app.finish_prompt().unwrap();
+        assert!(fs::read_to_string(&lib).unwrap().contains("2"));
+
+        app.run_command(CommandAction::ShowSourceControl).unwrap();
+        select_quick_item(&mut app, "! Discard src/lib.rs");
+        app.activate_selected_quick_item();
+        app.prompt.as_mut().unwrap().input = "discard".to_owned();
+        app.finish_prompt().unwrap();
+        assert!(fs::read_to_string(&lib).unwrap().contains("1"));
+        let lib_tab = app.tabs.iter().find(|tab| tab.path == lib).unwrap();
+        assert!(lib_tab.text().contains("1"));
+
+        select_quick_item(&mut app, "! Discard new.txt");
+        app.activate_selected_quick_item();
+        app.prompt.as_mut().unwrap().input = "discard".to_owned();
+        app.finish_prompt().unwrap();
+        assert!(!new_file.exists());
+        assert!(!app.tabs.iter().any(|tab| tab.path == new_file));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn source_control_discard_all_blocks_dirty_buffers_then_discards_clean_changes() {
+        if !git_available() {
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-source-control-discard-all-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    1\n}\n").unwrap();
+
+        init_git_repo(&root);
+        assert_git(&root, &["add", "src/lib.rs"]);
+        assert_git(
+            &root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+            ],
+        );
+
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    2\n}\n").unwrap();
+        fs::write(root.join("scratch.txt"), "scratch\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let lib = canonical_root.join("src/lib.rs");
+        let scratch = canonical_root.join("scratch.txt");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&lib);
+        app.active_tab_mut().unwrap().insert_text("// unsaved\n");
+
+        app.run_command(CommandAction::DiscardAllChanges).unwrap();
+        assert!(app.prompt.is_none());
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("blocked by unsaved editor tab"))
+        );
+        assert!(fs::read_to_string(&lib).unwrap().contains("2"));
+        assert!(scratch.exists());
+
+        app.revert_active_tab().unwrap();
+        app.run_command(CommandAction::DiscardAllChanges).unwrap();
+        let PromptKind::DiscardAllSourceControlChanges(paths) = &app.prompt.as_ref().unwrap().kind
+        else {
+            panic!("expected discard-all prompt");
+        };
+        let mut paths = paths.clone();
+        paths.sort();
+        let mut expected = vec![lib.clone(), scratch.clone()];
+        expected.sort();
+        assert_eq!(paths, expected);
+        app.prompt.as_mut().unwrap().input = "discard".to_owned();
+        app.finish_prompt().unwrap();
+
+        assert!(fs::read_to_string(&lib).unwrap().contains("1"));
+        assert!(!scratch.exists());
+        assert!(
+            load_git_status_entries(&canonical_root).is_empty(),
+            "discard all should leave a clean working tree"
+        );
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
