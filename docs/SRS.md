@@ -202,6 +202,10 @@ Clicking a tab close target, middle-clicking a tab, or pressing `Ctrl-w` shall c
 
 The command palette and editor context menu shall expose Close All Editors, Close Other Editors, and Close Editors to the Right. These actions shall close only clean target tabs, push each closed tab onto the closed-editor stack, preserve the active tab when it is not a target, keep dirty target tabs open without writing or discarding their buffers, clear stale split-pane references to removed tabs, and report how many clean tabs were closed and how many dirty tabs remained open.
 
+### R-212C Open Editors Panel
+
+The command palette shall include a Show Open Editors action. The action shall open a filterable quick panel backed by the current open editor tab list rather than a filesystem scan. Rows shall include file-backed, read-only, dirty, externally changed, and Untitled tabs, show active/dirty state, and select tabs by stable open-tab index so Untitled buffers and missing/deleted backing files can still be focused. Selecting a row shall focus the editor, make that tab active, preserve the tab buffer contents, and keep split-pane state valid.
+
 ### R-213 Paste
 
 Paste events shall insert pasted text into the active editor buffer or send pasted text to the PTY when terminal focus is active.

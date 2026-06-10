@@ -2040,6 +2040,7 @@ pub struct PromptState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuickPanelKind {
     OpenFile,
+    OpenEditors,
     Completions,
     CodeActions,
     DirtyClose { index: usize },
@@ -2201,6 +2202,8 @@ pub enum CommandAction {
     RunActiveFileInTerminal,
     RunSelectedExplorerFileInTerminal,
     NewUntitledFile,
+    ShowOpenEditors,
+    SelectEditorTab(usize),
     SaveFile,
     SaveAs,
     SaveAll,
@@ -5781,6 +5784,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::NewUntitledFile,
         },
         CommandSpec {
+            label: "Show Open Editors",
+            detail: "List open editor tabs, including dirty and Untitled buffers, and switch to one",
+            shortcut: "",
+            action: CommandAction::ShowOpenEditors,
+        },
+        CommandSpec {
             label: "Save File",
             detail: "Write the active editor tab to disk",
             shortcut: "Ctrl-S",
@@ -6393,6 +6402,7 @@ impl App {
         let existing_items = panel.items.clone();
         let items = match kind {
             QuickPanelKind::OpenFile => self.quick_open_items(&query)?,
+            QuickPanelKind::OpenEditors => self.open_editor_items(&query),
             QuickPanelKind::Completions => self.completion_items(&query)?,
             QuickPanelKind::CodeActions => self.code_action_items(&query),
             QuickPanelKind::DirtyClose { index } => self.dirty_close_items(index, &query),
@@ -6463,6 +6473,85 @@ impl App {
             .take(MAX_QUICK_ITEMS)
             .map(|(_, _, item)| item)
             .collect())
+    }
+
+    fn open_editor_items(&self, query: &str) -> Vec<QuickItem> {
+        if self.tabs.is_empty() {
+            return vec![QuickItem {
+                label: "No Open Editors".to_owned(),
+                detail: "Open a file or create an Untitled editor first".to_owned(),
+                path: self.root.clone(),
+                line: None,
+                col: None,
+                preview: None,
+                command: None,
+            }];
+        }
+
+        let query = query.trim();
+        let mut scored = Vec::new();
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let active = self.active_tab == Some(index);
+            let mut states = Vec::new();
+            if active {
+                states.push("active");
+            }
+            if tab.dirty {
+                states.push("dirty");
+            }
+            if tab.untitled {
+                states.push("untitled");
+            }
+            if tab.read_only {
+                states.push("read-only");
+            }
+            if !tab.external_state.is_clean() {
+                states.push(tab.external_state.label());
+            }
+
+            let location = if tab.untitled {
+                "Untitled editor".to_owned()
+            } else {
+                relative_path(&self.root, &tab.path)
+            };
+            let detail = if states.is_empty() {
+                location.clone()
+            } else {
+                format!("{} | {}", location, states.join(", "))
+            };
+            let mut prefix = String::new();
+            prefix.push(if active { '>' } else { ' ' });
+            prefix.push(if tab.dirty { '*' } else { ' ' });
+            let item = QuickItem {
+                label: format!("{prefix} {}", tab.title),
+                detail: detail.clone(),
+                path: tab.path.clone(),
+                line: Some(tab.cursor_line),
+                col: Some(tab.cursor_col),
+                preview: Some(format!(
+                    "line {}, col {}",
+                    tab.cursor_line + 1,
+                    tab.cursor_col + 1
+                )),
+                command: Some(CommandAction::SelectEditorTab(index)),
+            };
+
+            if query.is_empty() {
+                scored.push((0, index, item));
+            } else {
+                let haystack = format!("{} {} {}", tab.title, detail, index + 1);
+                if let Some(score) = fuzzy_score(&haystack, query) {
+                    scored.push((score, index, item));
+                }
+            }
+        }
+
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        scored
+            .into_iter()
+            .take(MAX_QUICK_ITEMS)
+            .map(|(_, _, item)| item)
+            .collect()
     }
 
     fn dirty_close_items(&self, index: usize, query: &str) -> Vec<QuickItem> {
@@ -11236,6 +11325,12 @@ impl App {
             return;
         }
 
+        if kind == QuickPanelKind::OpenEditors && item.command.is_none() {
+            self.quick_panel = None;
+            self.message = Some("no open editors".to_owned());
+            return;
+        }
+
         if kind == QuickPanelKind::SourceControl {
             match item.command {
                 Some(CommandAction::OpenSourceControlDiff) => {
@@ -11872,6 +11967,8 @@ impl App {
                 self.run_selected_explorer_file_in_terminal()?
             }
             CommandAction::NewUntitledFile => self.new_untitled_file(),
+            CommandAction::ShowOpenEditors => self.open_quick_panel(QuickPanelKind::OpenEditors)?,
+            CommandAction::SelectEditorTab(index) => self.select_editor_tab(index),
             CommandAction::SaveFile => self.save_active_tab(),
             CommandAction::SaveAs => self.start_save_as_prompt(),
             CommandAction::SaveAll => self.save_all_tabs(),
@@ -12489,6 +12586,19 @@ impl App {
             .map_or(0, |index| (index + self.tabs.len() - 1) % self.tabs.len());
         self.active_tab = Some(previous);
         self.focus = FocusPanel::Editor;
+    }
+
+    fn select_editor_tab(&mut self, index: usize) {
+        let Some(tab) = self.tabs.get(index) else {
+            self.message = Some("editor tab is no longer open".to_owned());
+            return;
+        };
+        let title = tab.title.clone();
+        self.active_tab = Some(index);
+        self.focus = FocusPanel::Editor;
+        self.normalize_editor_split();
+        self.ensure_editor_cursor_visible();
+        self.message = Some(format!("editor: {title}"));
     }
 
     fn push_closed_tab(&mut self, tab: EditorTab) {
@@ -19367,6 +19477,78 @@ mod tests {
     }
 
     #[test]
+    fn open_editors_panel_lists_dirty_untitled_and_switches_tabs() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-open-editors-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.rs");
+        let second = root.join("second.rs");
+        fs::write(&first, "fn first() {}\n").unwrap();
+        fs::write(&second, "fn second() {}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        let first = canonical_root.join("first.rs");
+        let second = canonical_root.join("second.rs");
+
+        app.open_file(&first);
+        app.open_file(&second);
+        app.active_tab_mut().unwrap().insert_text("// dirty\n");
+        app.run_command(CommandAction::NewUntitledFile).unwrap();
+        app.active_tab_mut().unwrap().insert_text("scratch");
+
+        app.run_command(CommandAction::ShowOpenEditors).unwrap();
+        let panel = app.quick_panel.as_ref().expect("open editors panel");
+        assert_eq!(panel.kind, QuickPanelKind::OpenEditors);
+        assert_eq!(panel.items.len(), 3);
+        assert!(panel.items.iter().any(|item| {
+            item.path == first
+                && item.command == Some(CommandAction::SelectEditorTab(0))
+                && item.detail.contains("first.rs")
+        }));
+        assert!(panel.items.iter().any(|item| {
+            item.path == second
+                && item.command == Some(CommandAction::SelectEditorTab(1))
+                && item.label.contains("* second.rs")
+                && item.detail.contains("dirty")
+        }));
+        assert!(panel.items.iter().any(|item| {
+            item.command == Some(CommandAction::SelectEditorTab(2))
+                && item.detail.contains("Untitled editor")
+                && item.detail.contains("dirty")
+        }));
+
+        app.quick_panel.as_mut().unwrap().query = "first".to_owned();
+        app.quick_panel.as_mut().unwrap().query_cursor = "first".len();
+        app.refresh_quick_panel().unwrap();
+        assert_eq!(
+            app.quick_panel.as_ref().unwrap().items[0].command,
+            Some(CommandAction::SelectEditorTab(0))
+        );
+        app.activate_selected_quick_item();
+        assert_eq!(app.active_tab().unwrap().path, first);
+        assert_eq!(app.focus, FocusPanel::Editor);
+        assert_eq!(app.message.as_deref(), Some("editor: first.rs"));
+
+        app.run_command(CommandAction::ShowOpenEditors).unwrap();
+        let untitled_index = app
+            .quick_panel
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| item.command == Some(CommandAction::SelectEditorTab(2)))
+            .expect("untitled item");
+        app.quick_panel.as_mut().unwrap().selected = untitled_index;
+        app.activate_selected_quick_item();
+        assert!(app.active_tab().unwrap().untitled);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(canonical_root);
+    }
+
+    #[test]
     fn dirty_untitled_close_can_save_as_then_close_without_placeholder() {
         let root =
             std::env::temp_dir().join(format!("tscode-test-untitled-close-{}", std::process::id()));
@@ -20012,6 +20194,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ReopenClosedEditor))
+        );
+        let commands = app.command_palette_items("open editors");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ShowOpenEditors))
         );
         let commands = app.command_palette_items("close other editors");
         assert!(

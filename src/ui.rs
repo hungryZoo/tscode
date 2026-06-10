@@ -1104,6 +1104,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let panel_area = Rect::new(x, y, width, height);
     let title = match panel.kind {
         crate::app::QuickPanelKind::OpenFile => " Quick Open  Ctrl-P ",
+        crate::app::QuickPanelKind::OpenEditors => " Open Editors ",
         crate::app::QuickPanelKind::Completions => " Suggestions  Ctrl-Space ",
         crate::app::QuickPanelKind::CodeActions => " Code Actions ",
         crate::app::QuickPanelKind::DirtyClose { .. } => " Unsaved Changes  Ctrl-W ",
@@ -1151,6 +1152,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     if panel.items.is_empty() {
         let empty = match panel.kind {
             crate::app::QuickPanelKind::OpenFile => "Type a file name or path fragment.",
+            crate::app::QuickPanelKind::OpenEditors => "No open editor tabs match the query.",
             crate::app::QuickPanelKind::Completions => {
                 "No suggestions found for the current editor cursor."
             }
