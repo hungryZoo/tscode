@@ -1640,6 +1640,8 @@ pub enum QuickPanelKind {
     WorkspaceSymbols,
     LspHover,
     Definitions,
+    TypeDefinitions,
+    Implementations,
     References,
     LspReferences,
     Problems,
@@ -1724,6 +1726,8 @@ pub enum CommandAction {
     WorkspaceSymbols,
     ShowHover,
     GoToDefinition,
+    GoToTypeDefinition,
+    GoToImplementation,
     FindReferences,
     CodeAction,
     GoBack,
@@ -3800,6 +3804,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::GoToDefinition,
         },
         CommandSpec {
+            label: "Go to Type Definition",
+            detail: "Jump to the language-server type definition for the symbol under the editor cursor",
+            shortcut: "",
+            action: CommandAction::GoToTypeDefinition,
+        },
+        CommandSpec {
+            label: "Go to Implementation",
+            detail: "Jump to language-server implementations for the symbol under the editor cursor",
+            shortcut: "",
+            action: CommandAction::GoToImplementation,
+        },
+        CommandSpec {
             label: "Find References",
             detail: "List whole-word workspace references for the symbol under the editor cursor",
             shortcut: "Ctrl-R",
@@ -4407,6 +4423,9 @@ impl App {
             QuickPanelKind::WorkspaceSymbols => self.workspace_symbol_items(&query)?,
             QuickPanelKind::LspHover => filter_existing_quick_items(existing_items, &query),
             QuickPanelKind::Definitions => self.definition_items(&query)?,
+            QuickPanelKind::TypeDefinitions | QuickPanelKind::Implementations => {
+                filter_existing_quick_items(existing_items, &query)
+            }
             QuickPanelKind::References => self.reference_items(&query)?,
             QuickPanelKind::LspReferences => filter_existing_quick_items(existing_items, &query),
             QuickPanelKind::Problems => self.problem_items(&query),
@@ -4775,6 +4794,18 @@ impl App {
                 detail: format!("Jump to LSP/workspace definition for {symbol}"),
                 shortcut: "Ctrl-]",
                 action: CommandAction::GoToDefinition,
+            },
+            ContextMenuAction {
+                label: "Go to Type Definition",
+                detail: format!("Jump to LSP type definition for {symbol}"),
+                shortcut: "",
+                action: CommandAction::GoToTypeDefinition,
+            },
+            ContextMenuAction {
+                label: "Go to Implementation",
+                detail: format!("Jump to LSP implementations for {symbol}"),
+                shortcut: "",
+                action: CommandAction::GoToImplementation,
             },
             ContextMenuAction {
                 label: "Find References",
@@ -7529,11 +7560,71 @@ impl App {
     }
 
     fn lsp_definition_items(&self) -> Result<Vec<QuickItem>> {
+        self.lsp_location_items(lsp::definitions)
+    }
+
+    fn go_to_type_definition_under_cursor(&mut self) -> Result<()> {
+        self.go_to_lsp_location_under_cursor(
+            "type definition",
+            QuickPanelKind::TypeDefinitions,
+            lsp::type_definitions,
+        )
+    }
+
+    fn go_to_implementation_under_cursor(&mut self) -> Result<()> {
+        self.go_to_lsp_location_under_cursor(
+            "implementation",
+            QuickPanelKind::Implementations,
+            lsp::implementations,
+        )
+    }
+
+    fn go_to_lsp_location_under_cursor(
+        &mut self,
+        label: &str,
+        panel_kind: QuickPanelKind,
+        request: fn(&DocumentPosition) -> Result<Vec<lsp::LspLocation>>,
+    ) -> Result<()> {
+        let Some(symbol) = self.active_identifier_under_cursor() else {
+            self.message = Some("no symbol under cursor".to_owned());
+            return Ok(());
+        };
+        let locations = self.lsp_location_items(request)?;
+
+        match locations.len() {
+            0 => {
+                self.message = Some(format!("LSP {label} not found: {symbol}"));
+            }
+            1 => {
+                let item = locations.into_iter().next().unwrap();
+                self.open_quick_item(item, None);
+                self.focus = FocusPanel::Editor;
+                self.message = Some(format!("jumped to LSP {label}: {symbol}"));
+            }
+            count => {
+                self.quick_panel = Some(QuickPanel {
+                    kind: panel_kind,
+                    query: symbol.clone(),
+                    items: locations,
+                    selected: 0,
+                    scroll: 0,
+                });
+                self.message = Some(format!("multiple LSP {label}s: {symbol} ({count})"));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn lsp_location_items(
+        &self,
+        request: fn(&DocumentPosition) -> Result<Vec<lsp::LspLocation>>,
+    ) -> Result<Vec<QuickItem>> {
         let Some(position) = self.active_lsp_position_at_cursor() else {
             return Ok(Vec::new());
         };
         let mut items = Vec::new();
-        for location in lsp::definitions(&position)? {
+        for location in request(&position)? {
             if !location.path.is_file() {
                 continue;
             }
@@ -7608,29 +7699,7 @@ impl App {
     }
 
     fn lsp_reference_items(&self) -> Result<Vec<QuickItem>> {
-        let Some(position) = self.active_lsp_position_at_cursor() else {
-            return Ok(Vec::new());
-        };
-        let mut items = Vec::new();
-        for location in lsp::references(&position)? {
-            if !location.path.is_file() {
-                continue;
-            }
-            let relative = relative_path(&self.root, &location.path);
-            items.push(QuickItem {
-                label: format!("{}:{}", relative, location.line + 1),
-                detail: format!("LSP {}  col {}", location.server, location.col + 1),
-                path: location.path,
-                line: Some(location.line),
-                col: Some(location.col),
-                preview: location.preview,
-                command: None,
-            });
-            if items.len() >= MAX_QUICK_ITEMS {
-                break;
-            }
-        }
-        Ok(items)
+        self.lsp_location_items(lsp::references)
     }
 
     fn active_lsp_position_at_cursor(&self) -> Option<DocumentPosition> {
@@ -8124,6 +8193,8 @@ impl App {
             }
             CommandAction::ShowHover => self.show_lsp_hover_under_cursor()?,
             CommandAction::GoToDefinition => self.go_to_definition_under_cursor()?,
+            CommandAction::GoToTypeDefinition => self.go_to_type_definition_under_cursor()?,
+            CommandAction::GoToImplementation => self.go_to_implementation_under_cursor()?,
             CommandAction::FindReferences => self.find_references_under_cursor()?,
             CommandAction::CodeAction => self.run_code_actions()?,
             CommandAction::GoBack => self.go_back(),
@@ -12052,6 +12123,18 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::CodeAction))
         );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| { item.command == Some(CommandAction::GoToTypeDefinition) })
+        );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| { item.command == Some(CommandAction::GoToImplementation) })
+        );
         let toggle_index = panel
             .items
             .iter()
@@ -13479,6 +13562,18 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::GoToDefinition))
+        );
+        let commands = app.command_palette_items("type definition");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::GoToTypeDefinition))
+        );
+        let commands = app.command_palette_items("implementation");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::GoToImplementation))
         );
         let commands = app.command_palette_items("find references");
         assert!(

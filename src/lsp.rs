@@ -160,6 +160,20 @@ pub fn definitions(position: &DocumentPosition) -> Result<Vec<LspLocation>> {
     request_definitions_with_config(position, &config)
 }
 
+pub fn type_definitions(position: &DocumentPosition) -> Result<Vec<LspLocation>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(Vec::new());
+    };
+    request_type_definitions_with_config(position, &config)
+}
+
+pub fn implementations(position: &DocumentPosition) -> Result<Vec<LspLocation>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(Vec::new());
+    };
+    request_implementations_with_config(position, &config)
+}
+
 pub fn references(position: &DocumentPosition) -> Result<Vec<LspLocation>> {
     let Some(config) = language_server_for_path(&position.path) else {
         return Ok(Vec::new());
@@ -256,9 +270,30 @@ fn request_definitions_with_config(
     position: &DocumentPosition,
     config: &LanguageServerConfig,
 ) -> Result<Vec<LspLocation>> {
+    request_position_locations_with_config(position, config, "textDocument/definition")
+}
+
+fn request_type_definitions_with_config(
+    position: &DocumentPosition,
+    config: &LanguageServerConfig,
+) -> Result<Vec<LspLocation>> {
+    request_position_locations_with_config(position, config, "textDocument/typeDefinition")
+}
+
+fn request_implementations_with_config(
+    position: &DocumentPosition,
+    config: &LanguageServerConfig,
+) -> Result<Vec<LspLocation>> {
+    request_position_locations_with_config(position, config, "textDocument/implementation")
+}
+
+fn request_position_locations_with_config(
+    position: &DocumentPosition,
+    config: &LanguageServerConfig,
+    method: &str,
+) -> Result<Vec<LspLocation>> {
     let params = text_document_position_params(position);
-    let Some(response) = run_lsp_request(position, config, "textDocument/definition", params)?
-    else {
+    let Some(response) = run_lsp_request(position, config, method, params)? else {
         return Ok(Vec::new());
     };
     Ok(parse_locations(
@@ -2848,6 +2883,139 @@ read_msg >/dev/null
         assert_eq!(edit.edits[0].path, file.canonicalize().unwrap());
         assert_eq!(edit.edits[0].start_utf16_col, 3);
         assert_eq!(edit.edits[0].new_text, "new_name");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_type_definitions_and_implementations_from_mock_stdio_language_server() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!("tscode-lsp-type-impl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let main = root.join("main.rs");
+        let types = root.join("types.rs");
+        let implementations = root.join("impls.rs");
+        fs::write(&main, "fn main() {\n    let value = Api::new();\n}\n").unwrap();
+        fs::write(&types, "pub struct Api;\n").unwrap();
+        fs::write(
+            &implementations,
+            "impl Api {\n    pub fn new() -> Self { Api }\n}\n",
+        )
+        .unwrap();
+        let type_response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "targetUri": path_to_file_uri(&types),
+                "targetSelectionRange": {
+                    "start": { "line": 0, "character": 11 },
+                    "end": { "line": 0, "character": 14 }
+                },
+                "targetRange": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 15 }
+                }
+            }
+        })
+        .to_string();
+        let impl_response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": [
+                {
+                    "uri": path_to_file_uri(&implementations),
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 2, "character": 1 }
+                    }
+                }
+            ]
+        })
+        .to_string();
+        let server = root.join("mock-type-impl-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"typeDefinitionProvider":true,"implementationProvider":true}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+body=$(read_msg)
+case "$body" in
+  *textDocument/typeDefinition*) send_msg '{type_response}' ;;
+  *textDocument/implementation*) send_msg '{impl_response}' ;;
+  *) send_msg '{{"jsonrpc":"2.0","id":2,"result":null}}' ;;
+esac
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":3,"result":null}}'
+read_msg >/dev/null
+"#
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-type-impl-lsp".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: main.clone(),
+            text: fs::read_to_string(&main).unwrap(),
+            line: 1,
+            col: 16,
+        };
+
+        let type_definitions = request_type_definitions_with_config(&position, &config).unwrap();
+        assert_eq!(type_definitions.len(), 1);
+        assert!(same_path(&type_definitions[0].path, &types));
+        assert_eq!(type_definitions[0].line, 0);
+        assert_eq!(type_definitions[0].col, 11);
+        assert_eq!(
+            type_definitions[0].preview.as_deref(),
+            Some("pub struct Api;")
+        );
+        assert_eq!(type_definitions[0].server, "mock-type-impl-lsp");
+
+        let implementation_locations =
+            request_implementations_with_config(&position, &config).unwrap();
+        assert_eq!(implementation_locations.len(), 1);
+        assert!(same_path(
+            &implementation_locations[0].path,
+            &implementations
+        ));
+        assert_eq!(implementation_locations[0].line, 0);
+        assert_eq!(implementation_locations[0].col, 0);
+        assert_eq!(
+            implementation_locations[0].preview.as_deref(),
+            Some("impl Api {")
+        );
+        assert_eq!(implementation_locations[0].server, "mock-type-impl-lsp");
 
         let _ = fs::remove_dir_all(root);
     }

@@ -889,6 +889,8 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         crate::app::QuickPanelKind::WorkspaceSymbols => " Go to Symbol in Workspace  Ctrl-T ",
         crate::app::QuickPanelKind::LspHover => " LSP Hover ",
         crate::app::QuickPanelKind::Definitions => " Go to Definition  Ctrl-] ",
+        crate::app::QuickPanelKind::TypeDefinitions => " Go to Type Definition ",
+        crate::app::QuickPanelKind::Implementations => " Go to Implementation ",
         crate::app::QuickPanelKind::References => " Find References  Ctrl-R ",
         crate::app::QuickPanelKind::LspReferences => " LSP References  Ctrl-R ",
         crate::app::QuickPanelKind::Problems => " Problems ",
@@ -945,6 +947,12 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 "No language-server hover content matches the current query."
             }
             crate::app::QuickPanelKind::Definitions => "No definition found for the current query.",
+            crate::app::QuickPanelKind::TypeDefinitions => {
+                "No type definitions match the current query."
+            }
+            crate::app::QuickPanelKind::Implementations => {
+                "No implementations match the current query."
+            }
             crate::app::QuickPanelKind::References => {
                 "No whole-word references found for the current query."
             }

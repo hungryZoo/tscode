@@ -157,6 +157,7 @@ Keyboard fallback:
 - `Ctrl-Shift-F` and `Ctrl-G` open workspace text search, including dirty open buffers from memory, while respecting the explorer's hidden/ignored/generated visibility policy
 - `Ctrl-Shift-H` opens replace-in-files; the command palette provides the same action as an SSH-friendly fallback
 - `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, `Ctrl-R`, and `F2` provide LSP-first document symbols, LSP-first workspace symbols, LSP-first go-to-definition, LSP-first find-references, and LSP-first semantic rename code navigation
+- The command palette and editor context menu provide LSP-backed Go to Type Definition and Go to Implementation navigation
 - `Ctrl-Space` or the command palette opens code suggestions for the identifier at the editor cursor, including installed language-server candidates when available
 - The command palette and editor context menu provide Show Hover for installed language-server hover documentation
 - The command palette and editor context menu provide Code Action for installed language-server quick fixes/refactors; returned workspace edits and edit-producing LSP commands update open buffers as undoable edits and closed files on disk after validation
