@@ -205,6 +205,10 @@ fn terminal_mouse_cell_in_body(mouse: MouseEvent, body: Rect) -> Option<(u16, u1
     Some((row, col))
 }
 
+fn terminal_host_mouse_override(modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::SHIFT)
+}
+
 #[derive(Debug, Clone)]
 struct EditorSnapshot {
     lines: Vec<String>,
@@ -2717,6 +2721,7 @@ impl App {
         }
 
         if matches!(target, HoverTarget::Terminal | HoverTarget::TerminalInput)
+            && !terminal_host_mouse_override(mouse.modifiers)
             && self.forward_terminal_mouse_event(mouse.kind, mouse.modifiers)?
         {
             self.focus = FocusPanel::Terminal;
@@ -2794,8 +2799,8 @@ impl App {
                     self.last_error = Some(error.to_string());
                 }
             }
-            MouseEventKind::ScrollUp => self.handle_scroll(target, -3, true)?,
-            MouseEventKind::ScrollDown => self.handle_scroll(target, 3, false)?,
+            MouseEventKind::ScrollUp => self.handle_scroll(target, -3, true, mouse.modifiers)?,
+            MouseEventKind::ScrollDown => self.handle_scroll(target, 3, false, mouse.modifiers)?,
             MouseEventKind::ScrollLeft => self.scroll_target_horizontal(target, -8),
             MouseEventKind::ScrollRight => self.scroll_target_horizontal(target, 8),
             MouseEventKind::Drag(_) | MouseEventKind::Up(_) => {}
@@ -4482,8 +4487,15 @@ impl App {
         Some(body)
     }
 
-    fn handle_scroll(&mut self, target: HoverTarget, amount: isize, up: bool) -> Result<()> {
+    fn handle_scroll(
+        &mut self,
+        target: HoverTarget,
+        amount: isize,
+        up: bool,
+        modifiers: KeyModifiers,
+    ) -> Result<()> {
         if matches!(target, HoverTarget::Terminal | HoverTarget::TerminalInput)
+            && !terminal_host_mouse_override(modifiers)
             && self.send_terminal_mouse_wheel(up)?
         {
             return Ok(());
@@ -4565,7 +4577,9 @@ impl App {
     }
 
     fn scroll_terminal(&mut self, amount: isize) {
-        self.active_terminal_mut().shell.scroll(amount);
+        self.active_terminal_mut()
+            .shell
+            .scroll(amount.saturating_neg());
     }
 
     fn scroll_quick_panel(&mut self, amount: isize) {
@@ -16919,6 +16933,134 @@ mod tests {
         .unwrap();
 
         assert_eq!(text, "beta\nmiddle row\nomega");
+    }
+
+    #[test]
+    fn terminal_wheel_scrolls_scrollback_in_terminal_direction() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-terminal-wheel-direction-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.focus = FocusPanel::Terminal;
+        app.hit_regions.terminal_bodies = vec![(Rect::new(0, 0, 20, 2), 0)];
+        app.hit_regions.terminal_body = Some(Rect::new(0, 0, 20, 2));
+        app.hit_regions.terminal_input = Some(Rect::new(0, 0, 20, 2));
+        app.active_terminal_mut().shell.clear();
+        app.active_terminal_mut().shell.resize(2, 20);
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(b"one\r\ntwo\r\nthree\r\nfour\r\n");
+        app.active_terminal_mut().shell.scroll_to_bottom();
+        assert_eq!(app.active_terminal().shell.scrollback(), 0);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        assert!(app.active_terminal().shell.scrollback() > 0);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        assert_eq!(app.active_terminal().shell.scrollback(), 0);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_shift_mouse_overrides_child_mouse_mode_for_host_selection_and_scroll() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-terminal-shift-mouse-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.focus = FocusPanel::Terminal;
+        app.hit_regions.terminal_bodies = vec![(Rect::new(0, 0, 20, 3), 0)];
+        app.hit_regions.terminal_body = Some(Rect::new(0, 0, 20, 3));
+        app.hit_regions.terminal_input = Some(Rect::new(0, 0, 20, 3));
+        app.active_terminal_mut().shell.clear();
+        app.active_terminal_mut().shell.resize(3, 20);
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(b"alpha beta\r\nsecond row\r\nthird row\r\nfourth row\r\n");
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(b"\x1b[?1000h");
+        app.active_terminal_mut().shell.scroll_to_bottom();
+        assert_ne!(
+            app.active_terminal().shell.mouse_protocol_mode(),
+            vt100::MouseProtocolMode::None
+        );
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        assert!(app.terminal_selection.is_none());
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        assert_eq!(app.active_terminal().shell.scrollback(), 0);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::SHIFT,
+        })
+        .unwrap();
+        assert!(app.active_terminal().shell.scrollback() > 0);
+
+        app.active_terminal_mut().shell.scroll_to_bottom();
+        app.active_terminal_mut().shell.clear();
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(b"alpha beta");
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(b"\x1b[?1000h");
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::SHIFT,
+        })
+        .unwrap();
+        assert!(app.terminal_selection.is_some());
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 4,
+            row: 0,
+            modifiers: KeyModifiers::SHIFT,
+        })
+        .unwrap();
+        assert_eq!(app.editor_clipboard.as_deref(), Some("alpha"));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

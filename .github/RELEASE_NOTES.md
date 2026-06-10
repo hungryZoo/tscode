@@ -102,6 +102,8 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Full-screen terminal apps now receive terminal-owned keys before tscode shortcuts when alternate-screen or mouse-reporting modes are active, so keys such as `Ctrl-F`, `F3`, `F7`-`F9`, `F12`, `Ctrl-J`, and `Shift-PageUp/Down` reach tools like pagers, editors, and pickers inside the PTY.
 - Terminal ANSI rendering preserves parsed foreground/background colors plus bold, dim, italic, underline, and inverse styles.
 - Terminal paste now honors bracketed paste mode when the child application requests it.
+- Terminal scrollback now follows normal terminal direction: wheel up and `Shift-PageUp` move into older output, while wheel down and `Shift-PageDown` return toward the live bottom.
+- Terminal child apps that request mouse reporting still receive normal mouse input, but `Shift`+wheel and `Shift`+drag now deliberately bypass the child and control tscode's host scrollback/visible-output selection like a desktop terminal emulator.
 - Terminal output selection now works inside the TUI: drag visible shell output to highlight cells and copy on release, use `Ctrl-Shift-C` to copy the active terminal selection again, and use `Ctrl-Shift-V` to paste the internal clipboard into the active PTY shell.
 - Terminal modified navigation keys, function keys, Shift-Tab, null, and application-cursor arrows use xterm-compatible sequences for better shell/editor behavior inside the PTY.
 - Terminal shell-editing shortcuts now forward more real terminal bytes, including `Alt-Backspace`, `Ctrl-Backspace`, `Alt-Enter`, `Alt-Tab`, and control punctuation/digits such as `Ctrl-/`, `Ctrl-6`, and `Ctrl-8`.

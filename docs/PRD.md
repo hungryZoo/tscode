@@ -51,6 +51,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can type into a real shell session, use `Ctrl-c`, and keep session state between commands.
 - As a developer, I can press `F5` or use editor/explorer context menus to run a saved source file in a new integrated PTY terminal rooted at that file's folder.
 - As a developer, I can use full-screen terminal applications such as pagers and editors without tscode stealing their normal terminal keys.
+- As a developer, I can hold `Shift` while scrolling or dragging in a mouse-owning terminal app to control tscode's host scrollback or copy visible output, matching the escape behavior of desktop terminal emulators.
 - As a developer, I can see ANSI-colored command output such as compiler errors, `git status`, and `ls --color` without losing terminal styling.
 - As a developer, I can use shell editing shortcuts such as `Alt-Backspace`, `Ctrl-Backspace`, `Ctrl-/`, and `Ctrl-6` in the integrated terminal and have them reach readline/zsh/fish-style shells as terminal bytes.
 - As a developer, I can click common compiler, test, traceback, and stack-frame file references printed by the shell and jump to that source location in the editor.
@@ -165,6 +166,7 @@ Keyboard fallback:
 - Terminal right-click opens a context menu for copy, paste, search, clear, restart, terminal session switching/creation/splitting/closing, maximize, resize, and focus actions when the child app is not using terminal mouse reporting
 - Terminal top-border hover is visually highlighted and dragging it changes the normal terminal panel height without restarting the PTY session
 - Terminal child apps that request mouse input receive the requested xterm mouse events, including default, SGR, and UTF-8 coordinate encodings where supported by the parser
+- Holding `Shift` over the terminal body overrides child mouse forwarding for host scrollback and visible terminal-output selection
 - Explorer `Space`, `Shift`+click, and `Ctrl`/`Command`/`Meta`+click provide visible multi-select and range-select for file rows
 - Explorer drag/drop moves selected rows into the highlighted target folder, and `Alt`+drag copies selected rows instead of moving them
 - Explorer `Ctrl-Enter`, the explorer context menu, and the command palette open the selected file to the side while preserving the current editor pane
