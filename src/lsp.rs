@@ -55,6 +55,19 @@ pub struct LspCompletion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspDocumentSymbol {
+    pub name: String,
+    pub kind: String,
+    pub detail: Option<String>,
+    pub container_name: Option<String>,
+    pub path: PathBuf,
+    pub line: usize,
+    pub col: usize,
+    pub preview: Option<String>,
+    pub server: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspCodeAction {
     pub title: String,
     pub kind: Option<String>,
@@ -159,6 +172,13 @@ pub fn completions(position: &DocumentPosition) -> Result<Vec<LspCompletion>> {
         return Ok(Vec::new());
     };
     request_completions_with_config(position, &config)
+}
+
+pub fn document_symbols(position: &DocumentPosition) -> Result<Vec<LspDocumentSymbol>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(Vec::new());
+    };
+    request_document_symbols_with_config(position, &config)
 }
 
 pub fn diagnostics(position: &DocumentPosition) -> Result<Vec<LspDiagnostic>> {
@@ -280,6 +300,26 @@ fn request_completions_with_config(
         return Ok(Vec::new());
     };
     Ok(parse_completions(response.result.as_ref(), &config.name))
+}
+
+fn request_document_symbols_with_config(
+    position: &DocumentPosition,
+    config: &LanguageServerConfig,
+) -> Result<Vec<LspDocumentSymbol>> {
+    let Some(response) = run_lsp_request(
+        position,
+        config,
+        "textDocument/documentSymbol",
+        text_document_params(position),
+    )?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(parse_document_symbols(
+        response.result.as_ref(),
+        position,
+        &config.name,
+    ))
 }
 
 fn request_diagnostics_with_config(
@@ -866,6 +906,14 @@ fn text_document_position_params(position: &DocumentPosition) -> Value {
     })
 }
 
+fn text_document_params(position: &DocumentPosition) -> Value {
+    json!({
+        "textDocument": {
+            "uri": path_to_file_uri(&position.path)
+        }
+    })
+}
+
 fn code_action_params(position: &DocumentPosition, diagnostics: &[LspDiagnostic]) -> Value {
     let line_text = position.text.lines().nth(position.line).unwrap_or_default();
     let utf16_col = char_col_to_utf16(line_text, position.col);
@@ -1162,6 +1210,174 @@ fn parse_completions(result: Option<&Value>, server: &str) -> Vec<LspCompletion>
             })
         })
         .collect()
+}
+
+fn parse_document_symbols(
+    result: Option<&Value>,
+    position: &DocumentPosition,
+    server: &str,
+) -> Vec<LspDocumentSymbol> {
+    let Some(items) = result.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    let mut symbols = Vec::new();
+    for item in items {
+        if item.get("location").is_some() {
+            if let Some(symbol) = parse_symbol_information(item, position, server) {
+                symbols.push(symbol);
+            }
+        } else {
+            parse_document_symbol_tree(item, position, server, None, &mut symbols);
+        }
+    }
+    symbols
+}
+
+fn parse_document_symbol_tree(
+    value: &Value,
+    position: &DocumentPosition,
+    server: &str,
+    container_name: Option<String>,
+    output: &mut Vec<LspDocumentSymbol>,
+) {
+    let name = value.get("name").and_then(Value::as_str).map(str::trim);
+    let detail = value
+        .get("detail")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty())
+        .map(str::to_owned);
+    let kind = symbol_kind_label(value.get("kind")).to_owned();
+    if let Some(name) = name.filter(|name| !name.is_empty()) {
+        let range = value
+            .get("selectionRange")
+            .or_else(|| value.get("range"))
+            .and_then(|range| range.get("start"));
+        if let Some(symbol) = lsp_symbol_from_parts(
+            ParsedSymbolFields {
+                name,
+                kind: kind.clone(),
+                detail: detail.clone(),
+                container_name: container_name.clone(),
+                start: range,
+                path: &position.path,
+            },
+            position,
+            server,
+        ) {
+            output.push(symbol);
+        }
+    }
+
+    let next_container = match (container_name, name) {
+        (Some(parent), Some(name)) if !name.is_empty() => Some(format!("{parent}::{name}")),
+        (None, Some(name)) if !name.is_empty() => Some(name.to_owned()),
+        (parent, _) => parent,
+    };
+    if let Some(children) = value.get("children").and_then(Value::as_array) {
+        for child in children {
+            parse_document_symbol_tree(child, position, server, next_container.clone(), output);
+        }
+    }
+}
+
+fn parse_symbol_information(
+    value: &Value,
+    position: &DocumentPosition,
+    server: &str,
+) -> Option<LspDocumentSymbol> {
+    let name = value.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let location = value.get("location")?;
+    let uri = location.get("uri").and_then(Value::as_str)?;
+    let path = file_uri_to_path(uri)?;
+    let range = location.get("range").and_then(|range| range.get("start"));
+    let container_name = value
+        .get("containerName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|container| !container.is_empty())
+        .map(str::to_owned);
+    lsp_symbol_from_parts(
+        ParsedSymbolFields {
+            name,
+            kind: symbol_kind_label(value.get("kind")).to_owned(),
+            detail: None,
+            container_name,
+            start: range,
+            path: &path,
+        },
+        position,
+        server,
+    )
+}
+
+struct ParsedSymbolFields<'a> {
+    name: &'a str,
+    kind: String,
+    detail: Option<String>,
+    container_name: Option<String>,
+    start: Option<&'a Value>,
+    path: &'a Path,
+}
+
+fn lsp_symbol_from_parts(
+    fields: ParsedSymbolFields<'_>,
+    position: &DocumentPosition,
+    server: &str,
+) -> Option<LspDocumentSymbol> {
+    let start = fields.start?;
+    let line = start.get("line")?.as_u64()? as usize;
+    let utf16_col = start.get("character")?.as_u64()? as usize;
+    let line_text = line_text_for_path(fields.path, line, position).unwrap_or_default();
+    let col = utf16_col_to_char_col(&line_text, utf16_col);
+    let preview = (!line_text.trim().is_empty()).then(|| line_text.trim().to_owned());
+    Some(LspDocumentSymbol {
+        name: fields.name.to_owned(),
+        kind: fields.kind,
+        detail: fields.detail,
+        container_name: fields.container_name,
+        path: fields.path.to_path_buf(),
+        line,
+        col,
+        preview,
+        server: server.to_owned(),
+    })
+}
+
+fn symbol_kind_label(value: Option<&Value>) -> &'static str {
+    match value.and_then(Value::as_u64) {
+        Some(1) => "file",
+        Some(2) => "module",
+        Some(3) => "namespace",
+        Some(4) => "package",
+        Some(5) => "class",
+        Some(6) => "method",
+        Some(7) => "property",
+        Some(8) => "field",
+        Some(9) => "constructor",
+        Some(10) => "enum",
+        Some(11) => "interface",
+        Some(12) => "function",
+        Some(13) => "variable",
+        Some(14) => "constant",
+        Some(15) => "string",
+        Some(16) => "number",
+        Some(17) => "boolean",
+        Some(18) => "array",
+        Some(19) => "object",
+        Some(20) => "key",
+        Some(21) => "null",
+        Some(22) => "enum member",
+        Some(23) => "struct",
+        Some(24) => "event",
+        Some(25) => "operator",
+        Some(26) => "type parameter",
+        _ => "symbol",
+    }
 }
 
 fn parse_publish_diagnostics(
@@ -1653,6 +1869,79 @@ mod tests {
     }
 
     #[test]
+    fn parses_document_symbols_from_hierarchical_and_flat_shapes() {
+        let root = env::temp_dir().join(format!(
+            "tscode-lsp-document-symbols-{}",
+            std::process::id()
+        ));
+        let file = root.join("main.rs");
+        let text = "pub struct App {}\nimpl App {\n    pub fn run(&self) {}\n}\nfn free() {}\n";
+        let position = DocumentPosition {
+            root,
+            path: file.clone(),
+            text: text.to_owned(),
+            line: 0,
+            col: 0,
+        };
+        let result = json!([
+            {
+                "name": "App",
+                "kind": 23,
+                "selectionRange": {
+                    "start": { "line": 0, "character": 11 },
+                    "end": { "line": 0, "character": 14 }
+                },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 3, "character": 1 }
+                },
+                "children": [
+                    {
+                        "name": "run",
+                        "detail": "pub",
+                        "kind": 6,
+                        "selectionRange": {
+                            "start": { "line": 2, "character": 11 },
+                            "end": { "line": 2, "character": 14 }
+                        },
+                        "range": {
+                            "start": { "line": 2, "character": 4 },
+                            "end": { "line": 2, "character": 25 }
+                        }
+                    }
+                ]
+            },
+            {
+                "name": "free",
+                "kind": 12,
+                "containerName": "crate",
+                "location": {
+                    "uri": path_to_file_uri(&file),
+                    "range": {
+                        "start": { "line": 4, "character": 3 },
+                        "end": { "line": 4, "character": 7 }
+                    }
+                }
+            }
+        ]);
+
+        let symbols = parse_document_symbols(Some(&result), &position, "mock-symbols");
+        assert_eq!(symbols.len(), 3);
+        assert_eq!(symbols[0].name, "App");
+        assert_eq!(symbols[0].kind, "struct");
+        assert_eq!(symbols[0].line, 0);
+        assert_eq!(symbols[0].col, 11);
+        assert_eq!(symbols[1].name, "run");
+        assert_eq!(symbols[1].kind, "method");
+        assert_eq!(symbols[1].detail.as_deref(), Some("pub"));
+        assert_eq!(symbols[1].container_name.as_deref(), Some("App"));
+        assert_eq!(symbols[1].preview.as_deref(), Some("pub fn run(&self) {}"));
+        assert_eq!(symbols[2].name, "free");
+        assert_eq!(symbols[2].kind, "function");
+        assert_eq!(symbols[2].container_name.as_deref(), Some("crate"));
+    }
+
+    #[test]
     fn parses_publish_diagnostics_notification() {
         let root = env::temp_dir().join(format!("tscode-lsp-diagnostics-{}", std::process::id()));
         let file = root.join("main.rs");
@@ -1993,6 +2282,124 @@ read_msg >/dev/null
             edit.edits[0].new_text,
             "fn main() {\n    println!(\"hi\");\n}\n"
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_document_symbols_from_mock_stdio_language_server() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!(
+            "tscode-lsp-document-symbols-stdio-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(
+            &file,
+            "pub struct App {}\nimpl App {\n    pub fn run(&self) {}\n}\n",
+        )
+        .unwrap();
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": [
+                {
+                    "name": "App",
+                    "kind": 23,
+                    "selectionRange": {
+                        "start": { "line": 0, "character": 11 },
+                        "end": { "line": 0, "character": 14 }
+                    },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 3, "character": 1 }
+                    },
+                    "children": [
+                        {
+                            "name": "run",
+                            "kind": 6,
+                            "selectionRange": {
+                                "start": { "line": 2, "character": 11 },
+                                "end": { "line": 2, "character": 14 }
+                            },
+                            "range": {
+                                "start": { "line": 2, "character": 4 },
+                                "end": { "line": 2, "character": 25 }
+                            }
+                        }
+                    ]
+                }
+            ]
+        })
+        .to_string();
+        let server = root.join("mock-document-symbol-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"documentSymbolProvider":true}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+body=$(read_msg)
+case "$body" in
+  *textDocument/documentSymbol*) send_msg '{}' ;;
+  *) send_msg '{{"jsonrpc":"2.0","id":2,"result":[]}}' ;;
+esac
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":3,"result":null}}'
+read_msg >/dev/null
+"#,
+                response
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-symbols".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: file.clone(),
+            text: fs::read_to_string(&file).unwrap(),
+            line: 0,
+            col: 0,
+        };
+
+        let symbols = request_document_symbols_with_config(&position, &config).unwrap();
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "App");
+        assert_eq!(symbols[0].kind, "struct");
+        assert_eq!(symbols[1].name, "run");
+        assert_eq!(symbols[1].kind, "method");
+        assert_eq!(symbols[1].container_name.as_deref(), Some("App"));
+        assert_eq!(symbols[1].server, "mock-symbols");
 
         let _ = fs::remove_dir_all(root);
     }

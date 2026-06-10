@@ -256,7 +256,7 @@ The app shall detect when an open editor tab's backing file is modified or delet
 
 ### R-233 Document Symbols
 
-`Ctrl-shift-o` or the command palette shall open a quick panel listing code symbols extracted from the active editor buffer. Selecting a symbol shall focus the editor and move the cursor to the symbol's file location. The extractor shall recognize common function, method, type, class, interface, module, namespace, and implementation declarations without requiring a language server.
+`Ctrl-shift-o` or the command palette shall open a quick panel listing code symbols for the active editor buffer. For file types with a configured or discoverable language server, the app shall first publish the current in-memory buffer and request `textDocument/documentSymbol`, accepting both hierarchical `DocumentSymbol[]` and flat `SymbolInformation[]` responses. Returned symbols shall be filterable in the quick panel and selecting one shall focus the editor and move the cursor to the symbol's file location. If no LSP symbols are available, the app shall fall back to extracting common function, method, type, class, interface, module, namespace, and implementation declarations from the active buffer without requiring a language server.
 
 ### R-234 Workspace Symbols
 

@@ -2007,6 +2007,7 @@ pub struct App {
     pub quick_panel: Option<QuickPanel>,
     pub completion_state: Option<CompletionState>,
     pub lsp_completion_items: Vec<QuickItem>,
+    pub lsp_document_symbol_items: Vec<QuickItem>,
     pub lsp_code_actions: Vec<lsp::LspCodeAction>,
     pub editor_hover: Option<EditorHoverInfo>,
     pub quick_panel_height: usize,
@@ -2082,6 +2083,7 @@ impl App {
             quick_panel: None,
             completion_state: None,
             lsp_completion_items: Vec::new(),
+            lsp_document_symbol_items: Vec::new(),
             lsp_code_actions: Vec::new(),
             editor_hover: None,
             quick_panel_height: 0,
@@ -4336,6 +4338,11 @@ impl App {
             self.completion_state = None;
             self.lsp_completion_items.clear();
         }
+        if kind == QuickPanelKind::DocumentSymbols {
+            self.lsp_document_symbol_items = self.lsp_document_symbol_items_for_active_tab()?;
+        } else {
+            self.lsp_document_symbol_items.clear();
+        }
         if kind != QuickPanelKind::CodeActions {
             self.lsp_code_actions.clear();
         }
@@ -5165,6 +5172,12 @@ impl App {
     }
 
     fn document_symbol_items(&self, query: &str) -> Vec<QuickItem> {
+        if !self.lsp_document_symbol_items.is_empty() {
+            return filter_existing_quick_items(self.lsp_document_symbol_items.clone(), query)
+                .into_iter()
+                .take(MAX_QUICK_ITEMS)
+                .collect();
+        }
         let Some(tab) = self.active_tab() else {
             return Vec::new();
         };
@@ -5175,6 +5188,18 @@ impl App {
         };
         let items = symbols_to_quick_items(&tab.path, &tab.text(), &relative, query, false);
         items.into_iter().take(MAX_QUICK_ITEMS).collect()
+    }
+
+    fn lsp_document_symbol_items_for_active_tab(&self) -> Result<Vec<QuickItem>> {
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            return Ok(Vec::new());
+        };
+        let mut items = lsp::document_symbols(&position)?
+            .into_iter()
+            .map(lsp_document_symbol_to_quick_item)
+            .collect::<Vec<_>>();
+        items.truncate(MAX_QUICK_ITEMS);
+        Ok(items)
     }
 
     fn workspace_symbol_items(&self, query: &str) -> Result<Vec<QuickItem>> {
@@ -9576,6 +9601,33 @@ fn filter_existing_quick_items(items: Vec<QuickItem>, query: &str) -> Vec<QuickI
             .is_some()
         })
         .collect()
+}
+
+fn lsp_document_symbol_to_quick_item(symbol: lsp::LspDocumentSymbol) -> QuickItem {
+    let mut detail_parts = vec![
+        format!("LSP {}", symbol.server),
+        format!("line {}", symbol.line + 1),
+        symbol.kind,
+    ];
+    if let Some(container) = symbol
+        .container_name
+        .filter(|container| !container.is_empty())
+    {
+        detail_parts.push(format!("in {container}"));
+    }
+    if let Some(detail) = symbol.detail.filter(|detail| !detail.is_empty()) {
+        detail_parts.push(detail);
+    }
+
+    QuickItem {
+        label: symbol.name,
+        detail: detail_parts.join("  "),
+        path: symbol.path,
+        line: Some(symbol.line),
+        col: Some(symbol.col),
+        preview: symbol.preview,
+        command: None,
+    }
 }
 
 fn code_action_detail(action: &lsp::LspCodeAction) -> String {
@@ -14885,6 +14937,41 @@ src/lib.rs:3:1: note: trailing note
 
         assert_eq!(app.focus, FocusPanel::Editor);
         assert_eq!(app.active_tab().unwrap().cursor_position(), (2, 11));
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn document_symbol_panel_prefers_cached_lsp_symbols() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-lsp-document-symbols-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "fn heuristic_only() {}\nfn semantic_run() {}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.lsp_document_symbol_items = vec![QuickItem {
+            label: "semantic_run".to_owned(),
+            detail: "LSP mock-symbols  line 2  function".to_owned(),
+            path: path.clone(),
+            line: Some(1),
+            col: Some(3),
+            preview: Some("fn semantic_run() {}".to_owned()),
+            command: None,
+        }];
+
+        let items = app.document_symbol_items("semantic");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "semantic_run");
+        assert!(items[0].detail.contains("LSP mock-symbols"));
+
+        let empty = app.document_symbol_items("heuristic");
+        assert!(empty.is_empty());
+
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
