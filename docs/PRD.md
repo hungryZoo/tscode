@@ -69,6 +69,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can right-click inside the editor and run common editing, navigation, formatting, path-copy, terminal-send, revert, and tab actions from a mouse-selectable context menu.
 - As a developer, I can right-click the integrated terminal and run terminal copy/paste/search/session-management actions from a mouse-selectable context menu when the shell application is not owning mouse input.
 - As a developer, I can select text with the keyboard or mouse, copy or cut it to both the editor clipboard and a terminal clipboard export where supported, then paste it back into the editor.
+- As a developer, I can drag across code with the mouse, continue dragging past the visible editor edge to scroll, and keep the selected text available to copy, cut, replace, or send to the terminal.
 - As a developer, I can `Alt`+click inside the editor to place multiple cursors and type the same edit at every clicked location.
 - As a developer, I can use `Ctrl-D` and `Ctrl-Shift-L` to select the next or all active-file occurrences of the current word or selection, then replace the selected occurrences together as one undoable edit.
 - As a developer, I can copy active-file or selected-explorer absolute and workspace-relative paths for use in shell commands, bug reports, or external tools.
@@ -125,6 +126,7 @@ Mouse input is first-class:
 - left click changes focus or activates items
 - right click opens explorer, editor, or terminal context menus backed by the same commands as keyboard shortcuts and the command palette
 - `Alt`+click in the editor toggles mouse-placed extra cursors
+- left-button drag in the editor creates or extends a text selection, including edge scrolling when dragging past the visible editor body
 - mouse wheel scrolls the hovered/focused panel
 - horizontal wheel gestures pan long editor lines
 
@@ -161,7 +163,7 @@ Keyboard fallback:
 - `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions; `Ctrl-S` on an Untitled tab opens Save As, and dirty tab close opens Save and Close / Don't Save / Cancel choices
 - Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, definition/references/rename/suggest, format, fold/unfold, comments, send-to-terminal, path-copy, revert, and close-tab actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor
-- `Shift` with arrow keys and mouse drag select editor text
+- `Shift` with arrow keys and mouse drag select editor text; mouse drag can continue outside the visible editor edge to extend the range while scrolling
 - `Enter` preserves indentation and adds one extra indent level after opening braces/brackets/parentheses
 - bracket, quote, apostrophe, and backtick entry provides editor auto-pair insertion, selection wrapping, closing-pair skip-over, and paired Backspace deletion
 - `Ctrl-A`, `Ctrl-C`, `Ctrl-X`, and `Ctrl-V` provide editor select-all, copy, cut, and paste when editor focus is active; copy and cut also export text through OSC52-compatible terminal clipboards

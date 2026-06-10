@@ -40,6 +40,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Save As from the command palette writes the active editor buffer to a new relative or absolute path, creates parent folders, retargets the tab, refreshes explorer and Git status, and refuses dirty open target tabs.
 - Open editor tabs now detect external disk changes while the app is running: clean tabs reload automatically after terminal/Git/tool writes, dirty tabs keep unsaved edits with `!`/status-bar conflict markers, deleted files show deleted-on-disk state, and Save File/Save All refuse accidental overwrites until Reload/Revert or Save As is chosen.
 - Long editor lines now support horizontal scrolling with cursor tracking, mouse-click coordinate mapping, and horizontal wheel panning.
+- Editor mouse drag selection now keeps the drag active after leaving the editor body, clamps the endpoint to the nearest code location, edge-scrolls the viewport, and feeds the same copy/cut/replace/run-selection paths as keyboard selection.
 - In-file search now highlights visible matches and shows a match count in the status bar.
 - `Ctrl-H` and the command palette can replace the current/next active-file match, while replace-all changes every match as one undoable edit.
 - Editor text selection with `Shift`+arrow keys and mouse drag, visual selection highlighting, and selection counts in the status bar.

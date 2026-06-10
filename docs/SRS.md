@@ -196,7 +196,7 @@ The command palette shall include a save-all command that writes every dirty fil
 
 ### R-221 Editor Selection
 
-The editor shall support text selection with `Shift` plus arrow keys and with mouse drag inside the editor body. Selected text shall be visually highlighted. The editor shall also support multiple selected occurrence ranges in the active file.
+The editor shall support text selection with `Shift` plus arrow keys and with mouse left-button drag inside the editor body. Editor drag selection shall preserve the drag session even when the pointer moves outside the editor body, clamp the endpoint to the nearest editor location, scroll vertically or horizontally at the visible edge, and reuse the same selected-text model used by copy, cut, replacement, run-selection-in-terminal, and selection-aware line commands. Selected text shall be visually highlighted. The editor shall also support multiple selected occurrence ranges in the active file.
 
 ### R-221A Mouse Multi-Cursor
 
@@ -494,7 +494,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use `F1` to open the command palette and execute an editor command.
 - Use `Ctrl-l` or the command palette to jump to a line.
 - Select all text, cut it, paste it back, save, and confirm file contents on disk.
-- Drag in the editor or use `Shift` with arrow keys and confirm selected text is highlighted.
+- Drag in the editor, including past the bottom/right visible edge, confirm the selection extends while the viewport scrolls, then copy or cut the selected text and confirm the clipboard/file contents match the selected range.
 - Type brackets/quotes and press `Enter` inside a brace pair, then confirm auto-pairing, skip-over, paired deletion, and auto-indent behavior.
 - Use line editing commands, save, and confirm file contents on disk.
 - Use `Ctrl-p` to quick-open a file by path fragment.
