@@ -145,6 +145,7 @@ Keyboard fallback:
 - arrow keys navigate focused panels
 - `Enter` opens files, edits newlines, or submits shell input depending on focus
 - Terminal `Ctrl-Shift-C` copies the active terminal text selection; terminal `Ctrl-Shift-V` pastes the internal clipboard to the PTY shell
+- Child terminal apps that emit OSC52 clipboard writes update tscode's internal clipboard and forward the copy to the host terminal clipboard where supported
 - Terminal `Ctrl-F` searches terminal scrollback; terminal `F3` and `Shift-F3` move to next and previous terminal search matches
 - Terminal right-click opens a context menu for copy, paste, search, clear, restart, terminal session switching/creation/splitting/closing, maximize, resize, and focus actions when the child app is not using terminal mouse reporting
 - Terminal top-border hover is visually highlighted and dragging it changes the normal terminal panel height without restarting the PTY session

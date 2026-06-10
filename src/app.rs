@@ -3255,6 +3255,7 @@ impl App {
     pub fn drain_terminal(&mut self) -> bool {
         let mut changed = false;
         let mut exited = Vec::new();
+        let mut clipboard_updates = Vec::new();
         for terminal in &mut self.terminals {
             changed |= terminal.shell.drain();
             if let Some(cwd) = terminal.shell.take_cwd_update()
@@ -3270,6 +3271,10 @@ impl App {
                 terminal.title = title;
                 changed = true;
             }
+            if let Some(text) = terminal.shell.take_clipboard_update() {
+                clipboard_updates.push((terminal.title.clone(), text));
+                changed = true;
+            }
             if !terminal.exited
                 && let Some(status) = terminal.shell.child_exit_status()
             {
@@ -3278,13 +3283,32 @@ impl App {
                 exited.push(format!("{} ({})", terminal.title, status.label()));
             }
         }
+
+        let mut notifications = Vec::new();
         if !exited.is_empty() {
-            self.message = if self.terminals.len() == 1 {
-                Some(format!("terminal shell exited {}", exited[0]))
+            notifications.push(if self.terminals.len() == 1 {
+                format!("terminal shell exited {}", exited[0])
             } else {
-                Some(format!("terminal exited: {}", exited.join(", ")))
-            };
+                format!("terminal exited: {}", exited.join(", "))
+            });
             changed = true;
+        }
+        if let Some((title, text)) = clipboard_updates.pop() {
+            let count = text.chars().count();
+            self.editor_clipboard = Some(text.clone());
+            if self.queue_clipboard_export(&text) {
+                notifications.push(format!(
+                    "terminal {title} copied {count} char(s) through OSC52"
+                ));
+            } else {
+                notifications.push(format!(
+                    "terminal {title} copied {count} char(s) internally; OSC52 export too large"
+                ));
+            }
+            changed = true;
+        }
+        if !notifications.is_empty() {
+            self.message = Some(notifications.join("; "));
         }
         self.normalize_terminal_split();
         changed
@@ -16188,6 +16212,34 @@ index 1111111..2222222 100644
 
         assert!(!app.drain_terminal());
         assert_eq!(app.active_terminal().title, "manual name");
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_osc52_updates_internal_and_host_clipboards() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-terminal-osc52-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(b"\x1b]52;c;Y29weSBmcm9tIGNoaWxkIHR1aQ==\x07");
+
+        assert!(app.drain_terminal());
+        assert_eq!(app.editor_clipboard.as_deref(), Some("copy from child tui"));
+        assert_eq!(
+            app.take_clipboard_export(),
+            Some("copy from child tui".to_owned())
+        );
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("copied 19 char(s) through OSC52"))
+        );
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

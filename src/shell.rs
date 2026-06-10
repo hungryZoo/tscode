@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use vt100::{Color as VtColor, MouseProtocolEncoding, MouseProtocolMode};
@@ -192,6 +193,10 @@ impl ShellPanel {
 
     pub fn take_title_update(&mut self) -> Option<String> {
         self.osc.take_title_update()
+    }
+
+    pub fn take_clipboard_update(&mut self) -> Option<String> {
+        self.osc.take_clipboard_update()
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -514,6 +519,7 @@ struct OscTracker {
     buffer: Vec<u8>,
     cwd_update: Option<PathBuf>,
     title_update: Option<String>,
+    clipboard_update: Option<String>,
 }
 
 impl Default for OscTracker {
@@ -523,6 +529,7 @@ impl Default for OscTracker {
             buffer: Vec::new(),
             cwd_update: None,
             title_update: None,
+            clipboard_update: None,
         }
     }
 }
@@ -578,6 +585,10 @@ impl OscTracker {
         self.title_update.take()
     }
 
+    fn take_clipboard_update(&mut self) -> Option<String> {
+        self.clipboard_update.take()
+    }
+
     fn push_osc_byte(&mut self, byte: u8) {
         if self.buffer.len() < MAX_OSC_PAYLOAD_BYTES {
             self.buffer.push(byte);
@@ -588,14 +599,14 @@ impl OscTracker {
     }
 
     fn finish_osc(&mut self) {
-        if let Ok(payload) = std::str::from_utf8(&self.buffer)
-            && let Some(path) = osc7_path(payload)
-        {
-            self.cwd_update = Some(path);
-        } else if let Ok(payload) = std::str::from_utf8(&self.buffer)
-            && let Some(title) = osc_title(payload)
-        {
-            self.title_update = Some(title);
+        if let Ok(payload) = std::str::from_utf8(&self.buffer) {
+            if let Some(path) = osc7_path(payload) {
+                self.cwd_update = Some(path);
+            } else if let Some(title) = osc_title(payload) {
+                self.title_update = Some(title);
+            } else if let Some(text) = osc52_clipboard_text(payload) {
+                self.clipboard_update = Some(text);
+            }
         }
         self.buffer.clear();
     }
@@ -639,6 +650,18 @@ fn osc_title(payload: &str) -> Option<String> {
         .or_else(|| payload.strip_prefix("2;"))?;
     let title = sanitize_terminal_title(title);
     (!title.is_empty()).then_some(title)
+}
+
+fn osc52_clipboard_text(payload: &str) -> Option<String> {
+    let payload = payload.strip_prefix("52;")?;
+    let (_, encoded) = payload.split_once(';')?;
+    let encoded = encoded.trim();
+    if encoded.is_empty() || encoded == "?" {
+        return None;
+    }
+
+    let decoded = BASE64.decode(encoded).ok()?;
+    String::from_utf8(decoded).ok()
 }
 
 fn sanitize_terminal_title(title: &str) -> String {
@@ -1087,6 +1110,22 @@ mod tests {
 
         tracker.process(b"\x1b]1;ignored\x07");
         assert_eq!(tracker.take_title_update(), None);
+    }
+
+    #[test]
+    fn osc_tracker_reads_osc52_clipboard_updates() {
+        let mut tracker = OscTracker::default();
+        tracker.process(b"\x1b]52;c;aGVsbG8gZnJvbSBwdHk=\x07");
+        assert_eq!(
+            tracker.take_clipboard_update(),
+            Some("hello from pty".to_owned())
+        );
+
+        tracker.process(b"\x1b]52;p;dHNjb2Rl\x1b\\");
+        assert_eq!(tracker.take_clipboard_update(), Some("tscode".to_owned()));
+
+        tracker.process(b"\x1b]52;c;?\x07");
+        assert_eq!(tracker.take_clipboard_update(), None);
     }
 
     #[test]

@@ -408,9 +408,9 @@ When the child terminal application requests xterm mouse events, terminal mouse 
 
 When the child terminal application has not requested xterm mouse events, dragging across the terminal body shall select visible terminal cells and render a visual highlight over the selected range. Releasing a non-empty terminal selection shall copy the selected visible text to the internal clipboard and queue an OSC52 terminal clipboard export when it is within the configured terminal-safe size limit. Clicking without dragging shall continue to resolve visible terminal file references.
 
-### R-317 Terminal Clipboard Shortcuts
+### R-317 Terminal Clipboard Shortcuts and OSC52
 
-When terminal focus is active, `Ctrl-Shift-C` shall copy the active terminal text selection without sending `Ctrl-C` to the PTY, and `Ctrl-Shift-V` shall paste the internal clipboard into the active PTY shell using bracketed paste when the child application has enabled it. Plain terminal `Ctrl-C` shall remain a PTY signal.
+When terminal focus is active, `Ctrl-Shift-C` shall copy the active terminal text selection without sending `Ctrl-C` to the PTY, and `Ctrl-Shift-V` shall paste the internal clipboard into the active PTY shell using bracketed paste when the child application has enabled it. Plain terminal `Ctrl-C` shall remain a PTY signal. When a child PTY program emits an OSC52 clipboard write, the app shall decode the clipboard payload, update the internal clipboard, and queue the same host-terminal OSC52 export used by editor and terminal selection copy actions. OSC52 clipboard read/query requests shall not overwrite the internal clipboard.
 
 ### R-318 Terminal Layout Controls
 
