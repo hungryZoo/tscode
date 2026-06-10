@@ -492,7 +492,7 @@ The application shall support moving focus in and out of the terminal, maximizin
 
 ### R-319 Multiple Terminal Sessions
 
-The integrated terminal shall support multiple PTY shell sessions. The user shall be able to create a new terminal, switch the active terminal, close a terminal, and preserve each terminal's independent shell state while it remains open.
+The integrated terminal shall support multiple PTY shell sessions. The user shall be able to create a new terminal with ``Ctrl-Shift-` ``/`F7`, switch the active terminal, close a terminal, and preserve each terminal's independent shell state while it remains open.
 
 ### R-319A Split Terminal Panes
 
@@ -516,7 +516,7 @@ When terminal focus is active, `Ctrl-f` or the command palette shall prompt for 
 
 ### R-324 Terminal Child Keyboard Ownership
 
-When the active terminal child has entered alternate-screen mode or requested terminal mouse reporting, terminal-focused app conveniences that would otherwise intercept shell input, including terminal search, terminal search navigation, terminal tab management shortcuts, terminal maximize shortcuts, and terminal scrollback shortcuts, shall be forwarded to the PTY instead. `F6` and ``Ctrl-` `` shall remain available to move focus out of the terminal, and `Ctrl-Shift-C`/`Ctrl-Shift-V` shall remain terminal selection copy and clipboard paste shortcuts.
+When the active terminal child has entered alternate-screen mode or requested terminal mouse reporting, terminal-focused app conveniences that would otherwise intercept shell input, including terminal search, terminal search navigation, terminal tab management shortcuts such as ``Ctrl-Shift-` ``/`F7`, terminal maximize shortcuts, and terminal scrollback shortcuts, shall be forwarded to the PTY instead. `F6` and ``Ctrl-` `` shall remain available to move focus out of the terminal, and `Ctrl-Shift-C`/`Ctrl-Shift-V` shall remain terminal selection copy and clipboard paste shortcuts.
 
 ### R-325 Terminal Context Menu
 

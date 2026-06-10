@@ -976,7 +976,7 @@ fn terminal_panel_title(app: &App) -> String {
         ""
     };
     format!(
-        " Terminal  {}  cwd:{}  {}{}{}{}{}  F6 focus  F7 new  F8 next  F9 close  F12 max ",
+        " Terminal  {}  cwd:{}  {}{}{}{}{}  F6 focus  Ctrl-Shift-` new  F8 next  F9 close  F12 max ",
         terminal.title, cwd, state, scroll, modes, search, split
     )
 }

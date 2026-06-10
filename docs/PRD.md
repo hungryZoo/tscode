@@ -224,7 +224,7 @@ Keyboard fallback:
 - `q` exits outside terminal focus; `Ctrl-q` exits globally
 - `Shift-PageUp` and `Shift-PageDown` scroll terminal scrollback when terminal focus is active
 - `F6` or ``Ctrl-` `` moves focus in or out of the integrated terminal and `F12` or `Ctrl-J` toggles the maximized terminal layout from any panel
-- `F7`, `F8`, and `F9` create a new terminal, switch to the next terminal, and close the active terminal
+- ``Ctrl-Shift-` ``/`F7`, `F8`, and `F9` create a new terminal, switch to the next terminal, and close the active terminal
 - `Ctrl-Shift-5` splits the active terminal into a side-by-side PTY pane when the child terminal app is not owning terminal keyboard shortcuts
 
 ## 8. Release Requirements

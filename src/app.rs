@@ -2861,7 +2861,14 @@ impl App {
                     self.split_terminal()?;
                     return Ok(());
                 }
-                KeyCode::Char('`') => {
+                KeyCode::Char('`') | KeyCode::Char('~')
+                    if key.modifiers.contains(KeyModifiers::SHIFT)
+                        && !terminal_child_owns_keyboard =>
+                {
+                    self.new_terminal()?;
+                    return Ok(());
+                }
+                KeyCode::Char('`') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.toggle_terminal_focus();
                     return Ok(());
                 }
@@ -6179,7 +6186,7 @@ fn command_catalog() -> Vec<CommandSpec> {
         CommandSpec {
             label: "New Terminal",
             detail: "Create a new integrated PTY terminal session",
-            shortcut: "F7",
+            shortcut: "Ctrl-Shift-` / F7",
             action: CommandAction::NewTerminal,
         },
         CommandSpec {
@@ -7071,7 +7078,7 @@ impl App {
             ContextMenuAction {
                 label: "New Terminal",
                 detail: "Create a new workspace-root PTY terminal session".to_owned(),
-                shortcut: "F7",
+                shortcut: "Ctrl-Shift-` / F7",
                 action: CommandAction::NewTerminal,
             },
             ContextMenuAction {
@@ -21070,6 +21077,15 @@ mod tests {
             .unwrap();
         assert_eq!(app.focus, FocusPanel::Terminal);
 
+        let terminal_count = app.terminals.len();
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('`'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ))
+        .unwrap();
+        assert_eq!(app.terminals.len(), terminal_count + 1);
+        assert_eq!(app.focus, FocusPanel::Terminal);
+
         app.handle_key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE))
             .unwrap();
         assert!(app.terminal_maximized);
@@ -21108,6 +21124,22 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE))
             .unwrap();
         assert_eq!(app.terminals.len(), terminal_count);
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('`'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ))
+        .unwrap();
+        assert_eq!(app.terminals.len(), terminal_count);
+        assert_eq!(app.focus, FocusPanel::Terminal);
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('~'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ))
+        .unwrap();
+        assert_eq!(app.terminals.len(), terminal_count);
+        assert_eq!(app.focus, FocusPanel::Terminal);
 
         app.handle_key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE))
             .unwrap();
