@@ -2096,6 +2096,15 @@ pub struct ExplorerClipboard {
     pub paths: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+struct ExplorerDragState {
+    source_paths: Vec<PathBuf>,
+    source_index: usize,
+    target_index: Option<usize>,
+    moved: bool,
+    copy: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalSelection {
     pub terminal_id: usize,
@@ -2273,6 +2282,7 @@ pub struct App {
     pub explorer_multi_selection: BTreeSet<PathBuf>,
     pub explorer_selection_anchor: Option<PathBuf>,
     pub explorer_clipboard: Option<ExplorerClipboard>,
+    explorer_drag: Option<ExplorerDragState>,
     pub editor_clipboard: Option<String>,
     pub git_statuses: HashMap<PathBuf, GitStatusKind>,
     pub git_dirty_dirs: HashSet<PathBuf>,
@@ -2351,6 +2361,7 @@ impl App {
             explorer_multi_selection: BTreeSet::new(),
             explorer_selection_anchor: None,
             explorer_clipboard: None,
+            explorer_drag: None,
             editor_clipboard: None,
             git_statuses,
             git_dirty_dirs,
@@ -2567,6 +2578,16 @@ impl App {
         self.hover = target.clone();
         self.update_editor_hover_for_target(&target);
 
+        if self.explorer_drag.is_some()
+            && matches!(
+                mouse.kind,
+                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+            )
+            && self.handle_explorer_drag_mouse(mouse, target.clone())?
+        {
+            return Ok(());
+        }
+
         if self.terminal_selection.is_some()
             && matches!(
                 mouse.kind,
@@ -2657,6 +2678,13 @@ impl App {
                     self.toggle_explorer_multi_selection();
                 }
             }
+            MouseEventKind::Down(MouseButton::Left)
+                if matches!(target, HoverTarget::ExplorerRow(_)) =>
+            {
+                if let HoverTarget::ExplorerRow(index) = target {
+                    self.start_explorer_drag_or_click(index, mouse.modifiers);
+                }
+            }
             MouseEventKind::Down(MouseButton::Left) if target == HoverTarget::Editor => {
                 self.start_editor_selection_from_mouse();
             }
@@ -2687,6 +2715,218 @@ impl App {
             MouseEventKind::Drag(_) | MouseEventKind::Up(_) => {}
         }
 
+        Ok(())
+    }
+
+    fn start_explorer_drag_or_click(&mut self, index: usize, modifiers: KeyModifiers) {
+        let Some(node) = self.visible_nodes().get(index).cloned() else {
+            return;
+        };
+        self.focus = FocusPanel::Explorer;
+        self.explorer.selected = index;
+
+        let source_paths = if !self.explorer_multi_selection.is_empty()
+            && self.explorer_multi_selection.contains(&node.path)
+        {
+            self.selected_explorer_paths()
+        } else {
+            self.clear_explorer_multi_selection();
+            self.explorer_selection_anchor = Some(node.path.clone());
+            vec![node.path]
+        };
+        let source_paths = normalize_file_op_paths(source_paths);
+        if source_paths.is_empty() {
+            return;
+        }
+
+        self.explorer_drag = Some(ExplorerDragState {
+            source_paths,
+            source_index: index,
+            target_index: Some(index),
+            moved: false,
+            copy: modifiers.contains(KeyModifiers::ALT),
+        });
+    }
+
+    fn handle_explorer_drag_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        target: HoverTarget,
+    ) -> Result<bool> {
+        match mouse.kind {
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let (count, copy, target_index) = {
+                    let Some(drag) = self.explorer_drag.as_mut() else {
+                        return Ok(false);
+                    };
+                    drag.moved = true;
+                    drag.copy = mouse.modifiers.contains(KeyModifiers::ALT);
+                    drag.target_index = match target {
+                        HoverTarget::ExplorerRow(index) => Some(index),
+                        _ => None,
+                    };
+                    (drag.source_paths.len(), drag.copy, drag.target_index)
+                };
+                let action = if copy { "copy" } else { "move" };
+                let destination = self
+                    .explorer_drop_target_label(target_index)
+                    .unwrap_or_else(|| "the explorer".to_owned());
+                self.message = Some(format!(
+                    "drop to {action} {count} item(s) into {destination}"
+                ));
+                Ok(true)
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let Some(drag) = self.explorer_drag.take() else {
+                    return Ok(false);
+                };
+                if !drag.moved {
+                    self.explorer.selected = drag.source_index;
+                    self.open_or_toggle_selected()?;
+                    return Ok(true);
+                }
+
+                let Some(target_dir) = self.explorer_drop_target_dir(&target) else {
+                    self.message = Some("drop cancelled".to_owned());
+                    return Ok(true);
+                };
+                self.drop_explorer_paths(drag.source_paths, target_dir, drag.copy)?;
+                Ok(true)
+            }
+            _ => {
+                self.explorer_drag = None;
+                Ok(false)
+            }
+        }
+    }
+
+    pub fn explorer_drag_target_index(&self) -> Option<usize> {
+        self.explorer_drag
+            .as_ref()
+            .filter(|drag| drag.moved)
+            .and_then(|drag| drag.target_index)
+    }
+
+    fn explorer_drop_target_label(&self, index: Option<usize>) -> Option<String> {
+        match index {
+            Some(index) => {
+                let nodes = self.visible_nodes();
+                let node = nodes.get(index)?;
+                let target = if node.is_dir {
+                    node.path.clone()
+                } else {
+                    node.path.parent()?.to_path_buf()
+                };
+                Some(relative_path(&self.root, &target))
+            }
+            None => Some(relative_path(&self.root, &self.root)),
+        }
+    }
+
+    fn explorer_drop_target_dir(&self, target: &HoverTarget) -> Option<PathBuf> {
+        match target {
+            HoverTarget::Explorer => Some(self.root.clone()),
+            HoverTarget::ExplorerRow(index) => {
+                let nodes = self.visible_nodes();
+                let node = nodes.get(*index)?;
+                if node.is_dir {
+                    Some(node.path.clone())
+                } else {
+                    node.path.parent().map(Path::to_path_buf)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn drop_explorer_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        target_dir: PathBuf,
+        copy: bool,
+    ) -> Result<()> {
+        let sources = normalize_file_op_paths(paths);
+        if sources.is_empty() {
+            self.message = Some("drop cancelled".to_owned());
+            return Ok(());
+        }
+        if sources.iter().any(|path| path == &self.root) {
+            self.message = Some("refusing to drag workspace root".to_owned());
+            return Ok(());
+        }
+        if sources.iter().any(|source| !source.exists()) {
+            self.message = Some("one or more dragged sources no longer exist".to_owned());
+            return Ok(());
+        }
+
+        let target_dir = canonical_existing_path(&target_dir);
+        if !target_dir.is_dir() {
+            self.message = Some(format!(
+                "drop target is not a folder: {}",
+                target_dir.display()
+            ));
+            return Ok(());
+        }
+        if sources
+            .iter()
+            .any(|source| source.is_dir() && target_dir.starts_with(source))
+        {
+            self.message = Some("cannot drop a folder into itself".to_owned());
+            return Ok(());
+        }
+
+        let mut destinations = Vec::new();
+        let mut skipped = 0usize;
+        for source in &sources {
+            let Some(name) = source.file_name() else {
+                continue;
+            };
+            let candidate = target_dir.join(name);
+            if !copy && candidate == *source {
+                skipped += 1;
+                continue;
+            }
+            let destination = if candidate.exists() {
+                unique_copy_path(&candidate)
+            } else {
+                candidate
+            };
+            if copy {
+                copy_path_recursive(source, &destination)?;
+                destinations.push(destination);
+            } else {
+                fs::rename(source, &destination)?;
+                let destination = destination
+                    .canonicalize()
+                    .unwrap_or_else(|_| destination.clone());
+                self.update_open_tabs_for_move(source, &destination);
+                self.update_navigation_for_move(source, &destination);
+                destinations.push(destination);
+            }
+        }
+
+        if destinations.is_empty() {
+            self.message = if skipped > 0 {
+                Some("drop target is already the current location".to_owned())
+            } else {
+                Some("drop moved no files".to_owned())
+            };
+            return Ok(());
+        }
+
+        if !copy {
+            self.clear_explorer_multi_selection();
+        }
+        self.refresh_explorer()?;
+        if let Some(destination) = destinations.last() {
+            self.reveal_path(destination)?;
+        }
+        let action = if copy { "copied" } else { "moved" };
+        self.message = Some(format!(
+            "drag-{action} {} item(s) into {}",
+            destinations.len(),
+            target_dir.display()
+        ));
         Ok(())
     }
 
@@ -19378,6 +19618,171 @@ src/lib.rs:3:1: note: trailing note
             app.quick_panel.as_ref().map(|panel| &panel.kind),
             Some(QuickPanelKind::ExplorerContextMenu)
         ));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_mouse_click_opens_file_on_release() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-click-open-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let file = canonical_root.join("main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        let visible = app.visible_nodes();
+        app.hit_regions.explorer_rows = visible
+            .iter()
+            .enumerate()
+            .map(|(row, _)| (Rect::new(0, row as u16, 40, 1), row))
+            .collect();
+        let file_index = visible.iter().position(|node| node.path == file).unwrap();
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: file_index as u16,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        assert!(app.active_tab().is_none());
+        assert!(app.explorer_drag.is_some());
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 1,
+            row: file_index as u16,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        assert_eq!(app.focus, FocusPanel::Editor);
+        assert_eq!(app.active_tab().map(|tab| tab.path.clone()), Some(file));
+        assert!(app.explorer_drag.is_none());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_mouse_drag_moves_and_alt_drag_copies_selected_files() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-drag-drop-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let dst = root.join("dst");
+        let alt_dst = root.join("copy-dst");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::create_dir_all(&alt_dst).unwrap();
+        fs::write(src.join("a.txt"), "alpha").unwrap();
+        fs::write(src.join("b.txt"), "beta").unwrap();
+        fs::write(src.join("c.txt"), "gamma").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let a = canonical_root.join("src/a.txt");
+        let b = canonical_root.join("src/b.txt");
+        let c = canonical_root.join("src/c.txt");
+        let dst = canonical_root.join("dst");
+        let alt_dst = canonical_root.join("copy-dst");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&a);
+        app.explorer.reveal(&a).unwrap();
+        app.toggle_explorer_multi_selection();
+        app.explorer.reveal(&b).unwrap();
+        app.toggle_explorer_multi_selection();
+
+        let visible = app.visible_nodes();
+        app.hit_regions.explorer_rows = visible
+            .iter()
+            .enumerate()
+            .map(|(row, _)| (Rect::new(0, row as u16, 40, 1), row))
+            .collect();
+        let a_index = visible.iter().position(|node| node.path == a).unwrap();
+        let dst_index = visible.iter().position(|node| node.path == dst).unwrap();
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: a_index as u16,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 1,
+            row: dst_index as u16,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        assert_eq!(app.explorer_drag_target_index(), Some(dst_index));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 1,
+            row: dst_index as u16,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        assert!(!a.exists());
+        assert!(!b.exists());
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "alpha");
+        assert_eq!(fs::read_to_string(dst.join("b.txt")).unwrap(), "beta");
+        assert_eq!(
+            app.tabs
+                .iter()
+                .find(|tab| tab.title == "a.txt")
+                .map(|tab| tab.path.clone()),
+            Some(dst.join("a.txt"))
+        );
+        assert!(app.explorer_multi_selection.is_empty());
+        assert!(app.explorer_drag.is_none());
+
+        app.explorer.reveal(&c).unwrap();
+        let visible = app.visible_nodes();
+        app.hit_regions.explorer_rows = visible
+            .iter()
+            .enumerate()
+            .map(|(row, _)| (Rect::new(0, row as u16, 40, 1), row))
+            .collect();
+        let c_index = visible.iter().position(|node| node.path == c).unwrap();
+        let alt_dst_index = visible
+            .iter()
+            .position(|node| node.path == alt_dst)
+            .unwrap();
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: c_index as u16,
+            modifiers: KeyModifiers::ALT,
+        })
+        .unwrap();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 1,
+            row: alt_dst_index as u16,
+            modifiers: KeyModifiers::ALT,
+        })
+        .unwrap();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 1,
+            row: alt_dst_index as u16,
+            modifiers: KeyModifiers::ALT,
+        })
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&c).unwrap(), "gamma");
+        assert_eq!(fs::read_to_string(alt_dst.join("c.txt")).unwrap(), "gamma");
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

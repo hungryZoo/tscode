@@ -11,6 +11,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Explorer copy, cut, paste, duplicate, and reveal-active-file actions backed by real filesystem operations.
 - Explorer New File/New Folder now prefill the selected folder path, create items under the selected folder or selected file's parent, reveal new folders, open new files, and refuse workspace-escaping paths.
 - Explorer multi-select is now a real file-operation selection model: `Space` toggles the focused row, `Shift`+click range-selects visible rows, `Ctrl`/`Command`/`Meta`+click toggles rows, selected rows show a distinct marker/background, and copy/cut/paste/duplicate/delete/path-copy apply to the whole selected set.
+- Explorer drag/drop now moves selected rows into the highlighted destination folder, while `Alt`+drag copies them instead; normal click-to-open still happens on release when no drag occurs.
 - Explorer rows now support a right-click context menu whose mouse-selectable actions call the same real open/toggle, create, copy/cut/paste/duplicate, rename, delete, path-copy, New Terminal Here, refresh, collapse, and visibility operations as shortcuts and the command palette.
 - Explorer Compare Selected Files with `v`, the command palette, or the right-click context menu now reads two selected text files from disk and opens a protected read-only unified diff tab.
 - Explorer `Right`/`Left` keys now follow normal file-tree semantics: expand, descend into the first child, collapse, and move back to the parent instead of using a simple toggle-only behavior.

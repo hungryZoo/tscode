@@ -243,7 +243,7 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
         String::new()
     } else {
         format!(
-            " sel:{}  Space toggle  Shift/Ctrl-click",
+            " sel:{}  Space toggle  Shift/Ctrl-click  drag move  Alt-drag copy",
             app.explorer_multi_selection.len()
         )
     };
@@ -274,7 +274,8 @@ fn draw_explorer(frame: &mut Frame, app: &mut App, area: Rect) {
         let selected = focused && app.explorer.selected == row;
         let multi_selected = app.explorer_multi_selection.contains(&node.path);
         let hovered = app.hover == HoverTarget::ExplorerRow(row);
-        let style = explorer_row_style(selected, hovered, multi_selected);
+        let drop_target = app.explorer_drag_target_index() == Some(row);
+        let style = explorer_row_style(selected, hovered, multi_selected, drop_target);
         let marker = if node.is_dir {
             if node.expanded { "-" } else { "+" }
         } else {
@@ -1148,8 +1149,18 @@ fn row_style(selected: bool, hovered: bool) -> Style {
     }
 }
 
-fn explorer_row_style(selected: bool, hovered: bool, multi_selected: bool) -> Style {
-    if selected {
+fn explorer_row_style(
+    selected: bool,
+    hovered: bool,
+    multi_selected: bool,
+    drop_target: bool,
+) -> Style {
+    if drop_target {
+        Style::default()
+            .fg(Color::White)
+            .bg(ACCENT)
+            .add_modifier(Modifier::BOLD)
+    } else if selected {
         Style::default().fg(Color::White).bg(ACTIVE_BG)
     } else if hovered && multi_selected {
         Style::default().fg(Color::White).bg(Color::Rgb(42, 64, 92))

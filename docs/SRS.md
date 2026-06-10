@@ -62,6 +62,10 @@ The explorer shall support a visible multi-selection model. Pressing `Space` on 
 
 New File and New Folder shall prompt with the selected folder, or the selected file's parent folder, prefilled as the workspace-relative target prefix. Simple names shall be created under that selected base; explicit relative paths shall be resolved under the workspace root; parent-directory traversal and workspace-escaping absolute paths shall be rejected. Creating a new file shall open the created file in the editor, and creating a new folder shall reveal the created folder in the explorer. Explorer rename shall operate on one item at a time, shall reject workspace-root rename, shall require a single file or folder name rather than a path, and shall refuse to overwrite an existing target.
 
+### R-106C Explorer Drag and Drop
+
+Dragging an explorer row shall start a file-operation drag without opening the row until the mouse is released. Releasing without moving shall keep the existing click behavior: files open and directories toggle. Releasing after dragging over a folder row shall move the dragged selected set into that folder, and releasing over a file row shall use that file's parent folder as the destination. Holding `Alt` during the drag shall copy rather than move. The current drop-target row shall be visually highlighted while dragging. The operation shall use the same multi-selection normalization as explorer copy/cut/paste, shall refuse to drag the workspace root, shall refuse dropping a directory into itself or its descendants, shall avoid overwriting by choosing a unique copy-style destination name when needed, shall update open editor tab paths and navigation history after moves, shall refresh the explorer, and shall reveal the final destination.
+
 ### R-107 Open Tab Synchronization
 
 Renaming a file or folder shall update matching open tab paths. Deleting one or more files or folders shall close matching clean open tabs. If any delete target contains a dirty open file-backed tab, the application shall refuse the filesystem delete, keep all matching tabs open, keep the dirty buffer contents intact, and tell the user to save, close, or discard the unsaved tab first.
@@ -543,6 +547,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Click a file and confirm a tab opens.
 - Hover rows/tabs and confirm highlight changes.
 - Copy, paste, duplicate, and cut/move explorer items and confirm filesystem results.
+- Drag one or more selected explorer files onto another folder and confirm the files move, then repeat with `Alt` held and confirm the files are copied while originals remain.
 - Select two text files in the explorer, run Compare Selected Files from the context menu or command palette, confirm a read-only unified diff tab opens, and confirm Save File does not modify either source file.
 - Open a file, reveal it in the explorer, and confirm its row is selected.
 - In the explorer, use `Right` on a folder to expand it, press `Right` again to move into its first child, then use `Left` to return to the folder, collapse it, and move to its parent.
