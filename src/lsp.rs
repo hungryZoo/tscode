@@ -101,6 +101,22 @@ pub struct LspCallHierarchyEntry {
     pub server: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspDocumentHighlightKind {
+    Text,
+    Read,
+    Write,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspDocumentHighlight {
+    pub line: usize,
+    pub start_col: usize,
+    pub end_col: usize,
+    pub kind: LspDocumentHighlightKind,
+    pub server: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspCodeAction {
     pub title: String,
@@ -258,6 +274,13 @@ pub fn outgoing_calls(position: &DocumentPosition) -> Result<Vec<LspCallHierarch
         return Ok(Vec::new());
     };
     request_call_hierarchy_with_config(position, &config, CallHierarchyDirection::Outgoing)
+}
+
+pub fn document_highlights(position: &DocumentPosition) -> Result<Vec<LspDocumentHighlight>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(Vec::new());
+    };
+    request_document_highlights_with_config(position, &config)
 }
 
 pub fn diagnostics(position: &DocumentPosition) -> Result<Vec<LspDiagnostic>> {
@@ -459,6 +482,26 @@ fn request_workspace_symbols_with_config(
         return Ok(Vec::new());
     };
     Ok(parse_workspace_symbols(
+        response.result.as_ref(),
+        position,
+        &config.name,
+    ))
+}
+
+fn request_document_highlights_with_config(
+    position: &DocumentPosition,
+    config: &LanguageServerConfig,
+) -> Result<Vec<LspDocumentHighlight>> {
+    let Some(response) = run_lsp_request(
+        position,
+        config,
+        "textDocument/documentHighlight",
+        text_document_position_params(position),
+    )?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(parse_document_highlights(
         response.result.as_ref(),
         position,
         &config.name,
@@ -1575,6 +1618,49 @@ fn parse_locations(
         .collect()
 }
 
+fn parse_document_highlights(
+    result: Option<&Value>,
+    position: &DocumentPosition,
+    server: &str,
+) -> Vec<LspDocumentHighlight> {
+    let Some(items) = result.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter_map(|item| {
+            let range = item.get("range")?;
+            let start = range.get("start")?;
+            let end = range.get("end")?;
+            let line = start.get("line")?.as_u64()? as usize;
+            if end.get("line")?.as_u64()? as usize != line {
+                return None;
+            }
+            let start_utf16_col = start.get("character")?.as_u64()? as usize;
+            let end_utf16_col = end.get("character")?.as_u64()? as usize;
+            let line_text = line_text_for_path(&position.path, line, position).unwrap_or_default();
+            let start_col = utf16_col_to_char_col(&line_text, start_utf16_col);
+            let end_col = utf16_col_to_char_col(&line_text, end_utf16_col).max(start_col);
+            (end_col > start_col).then(|| LspDocumentHighlight {
+                line,
+                start_col,
+                end_col,
+                kind: document_highlight_kind(item.get("kind")),
+                server: server.to_owned(),
+            })
+        })
+        .collect()
+}
+
+fn document_highlight_kind(value: Option<&Value>) -> LspDocumentHighlightKind {
+    match value.and_then(Value::as_u64) {
+        Some(2) => LspDocumentHighlightKind::Read,
+        Some(3) => LspDocumentHighlightKind::Write,
+        _ => LspDocumentHighlightKind::Text,
+    }
+}
+
 fn parse_completions(result: Option<&Value>, server: &str) -> Vec<LspCompletion> {
     let Some(result) = result else {
         return Vec::new();
@@ -2314,6 +2400,51 @@ mod tests {
             help.signatures[0].parameters[1].documentation.as_deref(),
             Some("number of calls")
         );
+    }
+
+    #[test]
+    fn parses_document_highlights_with_utf16_ranges_and_kinds() {
+        let file = env::temp_dir().join(format!(
+            "tscode-lsp-document-highlights-{}.rs",
+            std::process::id()
+        ));
+        let text = "let crab = 1;\nlet icon = \"🦀\"; crab\n";
+        let prefix = "let icon = \"🦀\"; ";
+        let value = json!([
+            {
+                "range": {
+                    "start": { "line": 0, "character": 4 },
+                    "end": { "line": 0, "character": 8 }
+                },
+                "kind": 3
+            },
+            {
+                "range": {
+                    "start": { "line": 1, "character": prefix.encode_utf16().count() },
+                    "end": { "line": 1, "character": prefix.encode_utf16().count() + "crab".encode_utf16().count() }
+                },
+                "kind": 2
+            }
+        ]);
+        let position = DocumentPosition {
+            root: env::temp_dir(),
+            path: file,
+            text: text.to_owned(),
+            line: 0,
+            col: 5,
+        };
+
+        let highlights = parse_document_highlights(Some(&value), &position, "mock-highlight");
+        assert_eq!(highlights.len(), 2);
+        assert_eq!(highlights[0].line, 0);
+        assert_eq!(highlights[0].start_col, 4);
+        assert_eq!(highlights[0].end_col, 8);
+        assert_eq!(highlights[0].kind, LspDocumentHighlightKind::Write);
+        assert_eq!(highlights[1].line, 1);
+        assert_eq!(highlights[1].start_col, prefix.chars().count());
+        assert_eq!(highlights[1].end_col, prefix.chars().count() + 4);
+        assert_eq!(highlights[1].kind, LspDocumentHighlightKind::Read);
+        assert_eq!(highlights[1].server, "mock-highlight");
     }
 
     #[test]
@@ -3979,6 +4110,107 @@ read_msg >/dev/null
         assert_eq!(references[1].line, 1);
         assert_eq!(references[1].col, 3);
         assert_eq!(references[1].preview.as_deref(), Some("fn hello() {}"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_document_highlights_from_mock_stdio_language_server() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!(
+            "tscode-lsp-document-highlights-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "let value = 1;\nvalue += 1;\n").unwrap();
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": [
+                {
+                    "range": {
+                        "start": { "line": 0, "character": 4 },
+                        "end": { "line": 0, "character": 9 }
+                    },
+                    "kind": 3
+                },
+                {
+                    "range": {
+                        "start": { "line": 1, "character": 0 },
+                        "end": { "line": 1, "character": 5 }
+                    },
+                    "kind": 2
+                }
+            ]
+        })
+        .to_string();
+        let server = root.join("mock-highlight-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"documentHighlightProvider":true}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+body=$(read_msg)
+case "$body" in
+  *textDocument/documentHighlight*) send_msg '{}' ;;
+  *) send_msg '{{"jsonrpc":"2.0","id":2,"result":null}}' ;;
+esac
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":3,"result":null}}'
+read_msg >/dev/null
+"#,
+                response
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-highlight-lsp".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: file.clone(),
+            text: fs::read_to_string(&file).unwrap(),
+            line: 0,
+            col: 5,
+        };
+
+        let highlights = request_document_highlights_with_config(&position, &config).unwrap();
+        assert_eq!(highlights.len(), 2);
+        assert_eq!(highlights[0].kind, LspDocumentHighlightKind::Write);
+        assert_eq!(highlights[1].kind, LspDocumentHighlightKind::Read);
+        assert_eq!(highlights[1].line, 1);
+        assert_eq!(highlights[1].start_col, 0);
+        assert_eq!(highlights[1].server, "mock-highlight-lsp");
 
         let _ = fs::remove_dir_all(root);
     }

@@ -10,6 +10,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     app::{App, ClipboardAction, ExternalFileState, FocusPanel, HoverTarget, ProblemSeverity},
     fs_tree::VisibleNode,
+    lsp::{LspDocumentHighlight, LspDocumentHighlightKind},
     shell::{TerminalSpan, TerminalStyle},
 };
 
@@ -19,6 +20,9 @@ const HOVER_BG: Color = Color::Rgb(42, 54, 71);
 const ACTIVE_BG: Color = Color::Rgb(24, 64, 92);
 const SEARCH_BG: Color = Color::Rgb(104, 76, 28);
 const SEARCH_ACTIVE_BG: Color = Color::Rgb(222, 184, 75);
+const HIGHLIGHT_TEXT_BG: Color = Color::Rgb(43, 54, 79);
+const HIGHLIGHT_READ_BG: Color = Color::Rgb(28, 71, 58);
+const HIGHLIGHT_WRITE_BG: Color = Color::Rgb(91, 56, 38);
 const ERROR_BG: Color = Color::Rgb(61, 27, 34);
 const WARNING_BG: Color = Color::Rgb(58, 48, 24);
 const INFO_BG: Color = Color::Rgb(29, 44, 61);
@@ -125,6 +129,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 format!("  Problems {problem_count}")
             };
+            let highlights = if tab.document_highlights.is_empty() {
+                String::new()
+            } else {
+                format!("  Highlights {}", tab.document_highlights.len())
+            };
             let line_problem = app
                 .active_line_problem_summary()
                 .map(|problem| {
@@ -136,7 +145,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 })
                 .unwrap_or_default();
             format!(
-                "{}{}  Ln {}, Col {}{}{}{}{}{}",
+                "{}{}  Ln {}, Col {}{}{}{}{}{}{}",
                 path_label,
                 dirty,
                 tab.cursor_line + 1,
@@ -145,6 +154,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 selection,
                 search,
                 problems,
+                highlights,
                 line_problem
             )
         })
@@ -373,6 +383,11 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
         ];
         let mut code_spans = Vec::new();
+        let syntax_spans = highlighted
+            .get(line_index.saturating_sub(raw_start))
+            .cloned()
+            .unwrap_or_else(|| vec![Span::raw(tab.lines[line_index].clone())]);
+        let document_highlights = tab.document_highlight_ranges_for_line(line_index);
         let selection_ranges = line_selection_ranges(tab, line_index);
         if !selection_ranges.is_empty() {
             code_spans.extend(selection_line_spans(
@@ -382,20 +397,35 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
         } else if focused {
             let cursor_cols = line_cursor_cols(tab, line_index);
             if !cursor_cols.is_empty() {
-                code_spans.extend(cursor_line_spans(&tab.lines[line_index], &cursor_cols));
+                let base_spans = if document_highlights.is_empty() {
+                    syntax_spans
+                } else {
+                    document_highlight_line_spans(syntax_spans, &document_highlights)
+                };
+                code_spans.extend(cursor_overlay_line_spans(base_spans, &cursor_cols));
             } else if let Some(needle) = &search_needle
                 && let Some(search_spans) = search_line_spans(tab, line_index, needle, focused)
             {
                 code_spans.extend(search_spans);
-            } else if let Some(parts) = highlighted.get(line_index.saturating_sub(raw_start)) {
-                code_spans.extend(parts.clone());
+            } else if !document_highlights.is_empty() {
+                code_spans.extend(document_highlight_line_spans(
+                    syntax_spans,
+                    &document_highlights,
+                ));
+            } else {
+                code_spans.extend(syntax_spans);
             }
         } else if let Some(needle) = &search_needle
             && let Some(search_spans) = search_line_spans(tab, line_index, needle, focused)
         {
             code_spans.extend(search_spans);
-        } else if let Some(parts) = highlighted.get(line_index.saturating_sub(raw_start)) {
-            code_spans.extend(parts.clone());
+        } else if !document_highlights.is_empty() {
+            code_spans.extend(document_highlight_line_spans(
+                syntax_spans,
+                &document_highlights,
+            ));
+        } else {
+            code_spans.extend(syntax_spans);
         }
         if tab.is_line_folded(line_index)
             && let Some(end) = tab.fold_end_for_line(line_index)
@@ -1463,6 +1493,71 @@ fn selection_line_spans(source: &str, ranges: &[(usize, usize)]) -> Vec<Span<'st
     spans
 }
 
+fn document_highlight_line_spans(
+    base_spans: Vec<Span<'static>>,
+    highlights: &[LspDocumentHighlight],
+) -> Vec<Span<'static>> {
+    if highlights.is_empty() {
+        return base_spans;
+    }
+
+    let mut spans = Vec::new();
+    let mut col = 0usize;
+    for span in base_spans {
+        let mut buffer = String::new();
+        let mut current_style = None::<Style>;
+        for ch in span.content.chars() {
+            let style = document_highlight_cell_style(span.style, col, highlights);
+            if current_style == Some(style) {
+                buffer.push(ch);
+            } else {
+                flush_owned_span(&mut spans, &mut buffer, current_style);
+                current_style = Some(style);
+                buffer.push(ch);
+            }
+            col += 1;
+        }
+        flush_owned_span(&mut spans, &mut buffer, current_style);
+    }
+    spans
+}
+
+fn document_highlight_cell_style(
+    base_style: Style,
+    col: usize,
+    highlights: &[LspDocumentHighlight],
+) -> Style {
+    match document_highlight_kind_at_col(col, highlights) {
+        Some(LspDocumentHighlightKind::Write) => base_style
+            .fg(Color::White)
+            .bg(HIGHLIGHT_WRITE_BG)
+            .add_modifier(Modifier::BOLD),
+        Some(LspDocumentHighlightKind::Read) => base_style.bg(HIGHLIGHT_READ_BG),
+        Some(LspDocumentHighlightKind::Text) => base_style.bg(HIGHLIGHT_TEXT_BG),
+        None => base_style,
+    }
+}
+
+fn document_highlight_kind_at_col(
+    col: usize,
+    highlights: &[LspDocumentHighlight],
+) -> Option<LspDocumentHighlightKind> {
+    let mut matched = None;
+    for highlight in highlights {
+        if col < highlight.start_col || col >= highlight.end_col {
+            continue;
+        }
+        match highlight.kind {
+            LspDocumentHighlightKind::Write => return Some(LspDocumentHighlightKind::Write),
+            LspDocumentHighlightKind::Read => matched = Some(LspDocumentHighlightKind::Read),
+            LspDocumentHighlightKind::Text => {
+                matched.get_or_insert(LspDocumentHighlightKind::Text);
+            }
+        }
+    }
+    matched
+}
+
 fn line_cursor_cols(tab: &crate::app::EditorTab, line_index: usize) -> Vec<usize> {
     let line_len = tab.lines[line_index].chars().count();
     tab.cursor_positions()
@@ -1471,32 +1566,55 @@ fn line_cursor_cols(tab: &crate::app::EditorTab, line_index: usize) -> Vec<usize
         .collect()
 }
 
-fn cursor_line_spans(source: &str, cursor_cols: &[usize]) -> Vec<Span<'static>> {
+fn cursor_overlay_line_spans(
+    base_spans: Vec<Span<'static>>,
+    cursor_cols: &[usize],
+) -> Vec<Span<'static>> {
+    if cursor_cols.is_empty() {
+        return base_spans;
+    }
+
     let mut cursor_cols = cursor_cols.to_vec();
     cursor_cols.sort();
     cursor_cols.dedup();
-    let chars = source.chars().collect::<Vec<_>>();
-    let mut spans = Vec::new();
     let mut cursor_index = 0usize;
-    for (index, c) in chars.iter().enumerate() {
-        if cursor_index < cursor_cols.len() && cursor_cols[cursor_index] == index {
-            spans.push(Span::styled(
-                c.to_string(),
-                Style::default().fg(Color::Black).bg(ACCENT),
-            ));
-            while cursor_index < cursor_cols.len() && cursor_cols[cursor_index] == index {
-                cursor_index += 1;
+    let mut col = 0usize;
+    let mut spans = Vec::new();
+    let mut buffer = String::new();
+    let mut current_style = None::<Style>;
+
+    for span in base_spans {
+        for ch in span.content.chars() {
+            let style = if cursor_index < cursor_cols.len() && cursor_cols[cursor_index] == col {
+                while cursor_index < cursor_cols.len() && cursor_cols[cursor_index] == col {
+                    cursor_index += 1;
+                }
+                Style::default().fg(Color::Black).bg(ACCENT)
+            } else {
+                span.style
+            };
+            if current_style == Some(style) {
+                buffer.push(ch);
+            } else {
+                flush_owned_span(&mut spans, &mut buffer, current_style);
+                current_style = Some(style);
+                buffer.push(ch);
             }
-        } else {
-            spans.push(Span::raw(c.to_string()));
+            col += 1;
         }
     }
-    if cursor_cols.iter().any(|col| *col >= chars.len()) {
-        spans.push(Span::styled(
-            " ",
-            Style::default().fg(Color::Black).bg(ACCENT),
-        ));
+    flush_owned_span(&mut spans, &mut buffer, current_style);
+
+    while cursor_index < cursor_cols.len() {
+        if cursor_cols[cursor_index] >= col {
+            spans.push(Span::styled(
+                " ",
+                Style::default().fg(Color::Black).bg(ACCENT),
+            ));
+        }
+        cursor_index += 1;
     }
+
     spans
 }
 

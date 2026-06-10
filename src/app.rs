@@ -274,6 +274,7 @@ pub struct EditorTab {
     pub extra_selections: Vec<EditorSelection>,
     pub extra_cursors: Vec<(usize, usize)>,
     pub folded_lines: BTreeSet<usize>,
+    pub document_highlights: Vec<lsp::LspDocumentHighlight>,
     pub dirty: bool,
     pub external_state: ExternalFileState,
     pub untitled: bool,
@@ -308,6 +309,7 @@ impl EditorTab {
             extra_selections: Vec::new(),
             extra_cursors: Vec::new(),
             folded_lines: BTreeSet::new(),
+            document_highlights: Vec::new(),
             dirty: false,
             external_state: ExternalFileState::Clean,
             untitled: false,
@@ -331,6 +333,7 @@ impl EditorTab {
             extra_selections: Vec::new(),
             extra_cursors: Vec::new(),
             folded_lines: BTreeSet::new(),
+            document_highlights: Vec::new(),
             dirty: false,
             external_state: ExternalFileState::Clean,
             untitled: true,
@@ -361,6 +364,7 @@ impl EditorTab {
         self.extra_selections.clear();
         self.extra_cursors.clear();
         self.folded_lines.clear();
+        self.document_highlights.clear();
         self.dirty = false;
         self.external_state = ExternalFileState::Clean;
         self.disk_stamp = file_stamp(&self.path);
@@ -402,6 +406,7 @@ impl EditorTab {
         self.extra_selections.clear();
         self.extra_cursors.clear();
         self.folded_lines.clear();
+        self.document_highlights.clear();
         self.dirty = true;
         true
     }
@@ -971,6 +976,17 @@ impl EditorTab {
         } else {
             0
         }
+    }
+
+    pub fn document_highlight_ranges_for_line(
+        &self,
+        line_index: usize,
+    ) -> Vec<lsp::LspDocumentHighlight> {
+        self.document_highlights
+            .iter()
+            .filter(|highlight| highlight.line == line_index)
+            .cloned()
+            .collect()
     }
 
     fn has_selection(&self) -> bool {
@@ -1551,6 +1567,7 @@ impl EditorTab {
         self.extra_selections = snapshot.extra_selections;
         self.extra_cursors = snapshot.extra_cursors;
         self.folded_lines.clear();
+        self.document_highlights.clear();
         self.clamp_cursor_col();
         self.clamp_selections();
     }
@@ -1562,6 +1579,7 @@ impl EditorTab {
         }
         self.redo_stack.clear();
         self.folded_lines.clear();
+        self.document_highlights.clear();
     }
 
     fn clamp_selections(&mut self) {
@@ -1734,6 +1752,8 @@ pub enum CommandAction {
     GoToImplementation,
     ShowIncomingCalls,
     ShowOutgoingCalls,
+    HighlightSymbol,
+    ClearDocumentHighlights,
     FindReferences,
     CodeAction,
     GoBack,
@@ -2219,6 +2239,14 @@ impl App {
                 }
                 KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.open_quick_panel(QuickPanelKind::DocumentSymbols)?;
+                    return Ok(());
+                }
+                KeyCode::Char('E') => {
+                    self.highlight_symbol_under_cursor()?;
+                    return Ok(());
+                }
+                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.highlight_symbol_under_cursor()?;
                     return Ok(());
                 }
                 KeyCode::Char('p') => {
@@ -3844,6 +3872,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::ShowOutgoingCalls,
         },
         CommandSpec {
+            label: "Highlight Symbol",
+            detail: "Ask an installed language server to highlight reads and writes for the symbol under the cursor",
+            shortcut: "Ctrl-Shift-E",
+            action: CommandAction::HighlightSymbol,
+        },
+        CommandSpec {
+            label: "Clear Symbol Highlights",
+            detail: "Clear active language-server document highlights from the editor",
+            shortcut: "",
+            action: CommandAction::ClearDocumentHighlights,
+        },
+        CommandSpec {
             label: "Find References",
             detail: "List whole-word workspace references for the symbol under the editor cursor",
             shortcut: "Ctrl-R",
@@ -4856,6 +4896,18 @@ impl App {
                 detail: format!("List LSP callees used by {symbol}"),
                 shortcut: "",
                 action: CommandAction::ShowOutgoingCalls,
+            },
+            ContextMenuAction {
+                label: "Highlight Symbol",
+                detail: format!("Highlight LSP read/write ranges for {symbol}"),
+                shortcut: "Ctrl-Shift-E",
+                action: CommandAction::HighlightSymbol,
+            },
+            ContextMenuAction {
+                label: "Clear Symbol Highlights",
+                detail: "Clear active LSP document highlights from this editor tab".to_owned(),
+                shortcut: "",
+                action: CommandAction::ClearDocumentHighlights,
             },
             ContextMenuAction {
                 label: "Find References",
@@ -7799,6 +7851,65 @@ impl App {
         Ok(())
     }
 
+    fn highlight_symbol_under_cursor(&mut self) -> Result<()> {
+        let Some(symbol) = self.active_identifier_under_cursor() else {
+            self.message = Some("no symbol under cursor".to_owned());
+            return Ok(());
+        };
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            self.message = Some("no language server configured for the active file".to_owned());
+            return Ok(());
+        };
+        let highlights = lsp::document_highlights(&position)?;
+        if highlights.is_empty() {
+            let server = lsp::server_name_for_path(&position.path)
+                .unwrap_or_else(|| "language server".to_owned());
+            if let Some(tab) = self.active_tab_mut() {
+                tab.document_highlights.clear();
+            }
+            self.message = Some(format!(
+                "no LSP document highlights returned by {server}: {symbol}"
+            ));
+            return Ok(());
+        }
+
+        let server = highlights
+            .first()
+            .map(|highlight| highlight.server.clone())
+            .unwrap_or_else(|| "language server".to_owned());
+        let read_count = highlights
+            .iter()
+            .filter(|highlight| highlight.kind == lsp::LspDocumentHighlightKind::Read)
+            .count();
+        let write_count = highlights
+            .iter()
+            .filter(|highlight| highlight.kind == lsp::LspDocumentHighlightKind::Write)
+            .count();
+        let count = highlights.len();
+        if let Some(tab) = self.active_tab_mut() {
+            tab.document_highlights = highlights;
+        }
+        self.focus = FocusPanel::Editor;
+        self.message = Some(format!(
+            "LSP highlights from {server}: {symbol} ({count}, read:{read_count}, write:{write_count})"
+        ));
+        Ok(())
+    }
+
+    fn clear_document_highlights(&mut self) {
+        let Some(tab) = self.active_tab_mut() else {
+            self.message = Some("no active editor tab".to_owned());
+            return;
+        };
+        let count = tab.document_highlights.len();
+        tab.document_highlights.clear();
+        self.message = if count == 0 {
+            Some("no symbol highlights to clear".to_owned())
+        } else {
+            Some(format!("cleared {count} symbol highlight(s)"))
+        };
+    }
+
     fn find_references_under_cursor(&mut self) -> Result<()> {
         let Some(symbol) = self.active_identifier_under_cursor() else {
             self.message = Some("no symbol under cursor".to_owned());
@@ -8335,6 +8446,8 @@ impl App {
                 QuickPanelKind::OutgoingCalls,
                 lsp::outgoing_calls,
             )?,
+            CommandAction::HighlightSymbol => self.highlight_symbol_under_cursor()?,
+            CommandAction::ClearDocumentHighlights => self.clear_document_highlights(),
             CommandAction::FindReferences => self.find_references_under_cursor()?,
             CommandAction::CodeAction => self.run_code_actions()?,
             CommandAction::GoBack => self.go_back(),
@@ -12404,6 +12517,18 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ShowOutgoingCalls))
         );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::HighlightSymbol))
+        );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ClearDocumentHighlights))
+        );
         let toggle_index = panel
             .items
             .iter()
@@ -12463,6 +12588,48 @@ mod tests {
             && item.command == Some(CommandAction::ClearTerminal)));
         assert!(panel.items.iter().any(|item| item.label == "Split Terminal"
             && item.command == Some(CommandAction::SplitTerminal)));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clear_document_highlights_removes_active_tab_ranges() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-clear-highlights-{}",
+            std::process::id()
+        ));
+        let file = root.join("main.rs");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&file, "let value = 1;\nvalue += 1;\n").unwrap();
+
+        let mut app = App::new(file.clone()).unwrap();
+        app.active_tab_mut()
+            .unwrap()
+            .document_highlights
+            .push(lsp::LspDocumentHighlight {
+                line: 0,
+                start_col: 4,
+                end_col: 9,
+                kind: lsp::LspDocumentHighlightKind::Write,
+                server: "mock".to_owned(),
+            });
+        assert_eq!(
+            app.active_tab()
+                .unwrap()
+                .document_highlight_ranges_for_line(0)
+                .len(),
+            1
+        );
+
+        app.run_command(CommandAction::ClearDocumentHighlights)
+            .unwrap();
+        assert!(app.active_tab().unwrap().document_highlights.is_empty());
+        assert_eq!(
+            app.message.as_deref(),
+            Some("cleared 1 symbol highlight(s)")
+        );
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
@@ -13783,6 +13950,18 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ShowOutgoingCalls))
+        );
+        let commands = app.command_palette_items("highlight symbol");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::HighlightSymbol))
+        );
+        let commands = app.command_palette_items("clear symbol highlights");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ClearDocumentHighlights))
         );
         let commands = app.command_palette_items("replace files");
         assert!(
