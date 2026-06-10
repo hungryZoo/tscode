@@ -136,7 +136,22 @@ jobs:
         if: matrix.packages == true
         shell: bash
         run: |
-          cargo install cargo-deb cargo-generate-rpm --locked
+          set -euo pipefail
+          install_tool() {
+            local tool="$1"
+            for attempt in 1 2 3; do
+              if CARGO_HTTP_MULTIPLEXING=false cargo install "$tool" --locked --force; then
+                return 0
+              fi
+              if [[ "$attempt" == "3" ]]; then
+                echo "failed to install $tool after $attempt attempts" >&2
+                return 1
+              fi
+              sleep $((attempt * 10))
+            done
+          }
+          install_tool cargo-deb
+          install_tool cargo-generate-rpm
 
       - name: Build Linux packages
         if: matrix.packages == true
