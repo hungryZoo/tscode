@@ -1802,6 +1802,7 @@ pub enum PromptKind {
 pub struct PromptState {
     pub kind: PromptKind,
     pub input: String,
+    pub cursor: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2025,6 +2026,7 @@ pub enum CommandAction {
 pub struct QuickPanel {
     pub kind: QuickPanelKind,
     pub query: String,
+    pub query_cursor: usize,
     pub items: Vec<QuickItem>,
     pub selected: usize,
     pub scroll: usize,
@@ -2971,15 +2973,34 @@ impl App {
         match key.code {
             KeyCode::Esc => self.prompt = None,
             KeyCode::Enter => self.finish_prompt()?,
-            KeyCode::Backspace => {
-                if let Some(prompt) = &mut self.prompt {
-                    prompt.input.pop();
-                }
+            KeyCode::Left => self.edit_prompt_input(PromptEdit::MoveLeft),
+            KeyCode::Right => self.edit_prompt_input(PromptEdit::MoveRight),
+            KeyCode::Home => self.edit_prompt_input(PromptEdit::MoveStart),
+            KeyCode::End => self.edit_prompt_input(PromptEdit::MoveEnd),
+            KeyCode::Backspace => self.edit_prompt_input(PromptEdit::Backspace),
+            KeyCode::Delete => self.edit_prompt_input(PromptEdit::Delete),
+            KeyCode::Char('a') | KeyCode::Char('A')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.edit_prompt_input(PromptEdit::MoveStart)
+            }
+            KeyCode::Char('e') | KeyCode::Char('E')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.edit_prompt_input(PromptEdit::MoveEnd)
+            }
+            KeyCode::Char('u') | KeyCode::Char('U')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.edit_prompt_input(PromptEdit::DeleteBeforeCursor)
+            }
+            KeyCode::Char('k') | KeyCode::Char('K')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.edit_prompt_input(PromptEdit::DeleteAfterCursor)
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(prompt) = &mut self.prompt {
-                    prompt.input.push(c);
-                }
+                self.edit_prompt_input(PromptEdit::Insert(&c.to_string()));
             }
             _ => {}
         }
@@ -3004,23 +3025,42 @@ impl App {
             KeyCode::Down => self.move_quick_selection(1),
             KeyCode::PageUp => self.move_quick_selection(-(self.quick_panel_height as isize)),
             KeyCode::PageDown => self.move_quick_selection(self.quick_panel_height as isize),
-            KeyCode::Home => self.set_quick_selection(0),
-            KeyCode::End => {
+            KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.set_quick_selection(0)
+            }
+            KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(panel) = &self.quick_panel {
                     self.set_quick_selection(panel.items.len().saturating_sub(1));
                 }
             }
-            KeyCode::Backspace => {
-                if let Some(panel) = &mut self.quick_panel {
-                    panel.query.pop();
-                }
-                self.refresh_quick_panel()?;
+            KeyCode::Home => self.edit_quick_query(PromptEdit::MoveStart)?,
+            KeyCode::End => self.edit_quick_query(PromptEdit::MoveEnd)?,
+            KeyCode::Left => self.edit_quick_query(PromptEdit::MoveLeft)?,
+            KeyCode::Right => self.edit_quick_query(PromptEdit::MoveRight)?,
+            KeyCode::Backspace => self.edit_quick_query(PromptEdit::Backspace)?,
+            KeyCode::Delete => self.edit_quick_query(PromptEdit::Delete)?,
+            KeyCode::Char('a') | KeyCode::Char('A')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.edit_quick_query(PromptEdit::MoveStart)?
+            }
+            KeyCode::Char('e') | KeyCode::Char('E')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.edit_quick_query(PromptEdit::MoveEnd)?
+            }
+            KeyCode::Char('u') | KeyCode::Char('U')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.edit_quick_query(PromptEdit::DeleteBeforeCursor)?
+            }
+            KeyCode::Char('k') | KeyCode::Char('K')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.edit_quick_query(PromptEdit::DeleteAfterCursor)?
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(panel) = &mut self.quick_panel {
-                    panel.query.push(c);
-                }
-                self.refresh_quick_panel()?;
+                self.edit_quick_query(PromptEdit::Insert(&c.to_string()))?;
             }
             _ => {}
         }
@@ -3036,13 +3076,22 @@ impl App {
     }
 
     pub fn handle_paste(&mut self, text: String) -> Result<()> {
+        let prompt_text = text.replace(['\r', '\n'], " ");
         if let Some(panel) = &mut self.quick_panel {
-            panel.query.push_str(&text.replace(['\r', '\n'], " "));
+            edit_text_at_cursor(
+                &mut panel.query,
+                &mut panel.query_cursor,
+                PromptEdit::Insert(&prompt_text),
+            );
             return self.refresh_quick_panel();
         }
 
         if let Some(prompt) = &mut self.prompt {
-            prompt.input.push_str(&text.replace(['\r', '\n'], " "));
+            edit_text_at_cursor(
+                &mut prompt.input,
+                &mut prompt.cursor,
+                PromptEdit::Insert(&prompt_text),
+            );
             return Ok(());
         }
 
@@ -3064,6 +3113,19 @@ impl App {
 
     pub fn take_clipboard_export(&mut self) -> Option<String> {
         self.pending_clipboard_export.take()
+    }
+
+    fn edit_prompt_input(&mut self, edit: PromptEdit<'_>) {
+        if let Some(prompt) = &mut self.prompt {
+            edit_text_at_cursor(&mut prompt.input, &mut prompt.cursor, edit);
+        }
+    }
+
+    fn edit_quick_query(&mut self, edit: PromptEdit<'_>) -> Result<()> {
+        if let Some(panel) = &mut self.quick_panel {
+            edit_text_at_cursor(&mut panel.query, &mut panel.query_cursor, edit);
+        }
+        self.refresh_quick_panel()
     }
 
     fn queue_clipboard_export(&mut self, text: &str) -> bool {
@@ -3883,6 +3945,89 @@ impl App {
         let proposed = terminal_area.bottom().saturating_sub(row);
         self.terminal_rows = proposed.clamp(min_terminal_rows, max_terminal_rows);
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PromptEdit<'a> {
+    Insert(&'a str),
+    MoveLeft,
+    MoveRight,
+    MoveStart,
+    MoveEnd,
+    Backspace,
+    Delete,
+    DeleteBeforeCursor,
+    DeleteAfterCursor,
+}
+
+fn edit_text_at_cursor(text: &mut String, cursor: &mut usize, edit: PromptEdit<'_>) {
+    *cursor = (*cursor).min(text.chars().count());
+    match edit {
+        PromptEdit::Insert(inserted) => {
+            if inserted.is_empty() {
+                return;
+            }
+            let byte = byte_index_for_char(text, *cursor);
+            text.insert_str(byte, inserted);
+            *cursor += inserted.chars().count();
+        }
+        PromptEdit::MoveLeft => {
+            *cursor = cursor.saturating_sub(1);
+        }
+        PromptEdit::MoveRight => {
+            *cursor = (*cursor + 1).min(text.chars().count());
+        }
+        PromptEdit::MoveStart => {
+            *cursor = 0;
+        }
+        PromptEdit::MoveEnd => {
+            *cursor = text.chars().count();
+        }
+        PromptEdit::Backspace => {
+            if *cursor == 0 {
+                return;
+            }
+            let end = byte_index_for_char(text, *cursor);
+            let start = byte_index_for_char(text, *cursor - 1);
+            text.replace_range(start..end, "");
+            *cursor -= 1;
+        }
+        PromptEdit::Delete => {
+            let char_len = text.chars().count();
+            if *cursor >= char_len {
+                return;
+            }
+            let start = byte_index_for_char(text, *cursor);
+            let end = byte_index_for_char(text, *cursor + 1);
+            text.replace_range(start..end, "");
+        }
+        PromptEdit::DeleteBeforeCursor => {
+            if *cursor == 0 {
+                return;
+            }
+            let end = byte_index_for_char(text, *cursor);
+            text.replace_range(..end, "");
+            *cursor = 0;
+        }
+        PromptEdit::DeleteAfterCursor => {
+            let char_len = text.chars().count();
+            if *cursor >= char_len {
+                return;
+            }
+            let start = byte_index_for_char(text, *cursor);
+            text.replace_range(start.., "");
+        }
+    }
+}
+
+pub(crate) fn editable_text_with_cursor(text: &str, cursor: usize) -> String {
+    let cursor = cursor.min(text.chars().count());
+    let byte = byte_index_for_char(text, cursor);
+    let mut rendered = String::with_capacity(text.len() + 1);
+    rendered.push_str(&text[..byte]);
+    rendered.push('|');
+    rendered.push_str(&text[byte..]);
+    rendered
 }
 
 fn add_signed(value: usize, amount: isize) -> usize {
@@ -4764,6 +4909,7 @@ impl App {
         self.prompt = Some(PromptState {
             kind,
             input: initial.to_owned(),
+            cursor: initial.chars().count(),
         });
     }
 
@@ -4838,6 +4984,7 @@ impl App {
         }
         self.quick_panel = Some(QuickPanel {
             kind,
+            query_cursor: query.chars().count(),
             query,
             items: Vec::new(),
             selected: 0,
@@ -8179,6 +8326,7 @@ impl App {
             _ => {
                 self.quick_panel = Some(QuickPanel {
                     kind: QuickPanelKind::Definitions,
+                    query_cursor: symbol.chars().count(),
                     query: symbol.clone(),
                     items: definitions,
                     selected: 0,
@@ -8240,6 +8388,7 @@ impl App {
             count => {
                 self.quick_panel = Some(QuickPanel {
                     kind: panel_kind,
+                    query_cursor: symbol.chars().count(),
                     query: symbol.clone(),
                     items: locations,
                     selected: 0,
@@ -8297,6 +8446,7 @@ impl App {
         self.quick_panel = Some(QuickPanel {
             kind: QuickPanelKind::LspHover,
             query: String::new(),
+            query_cursor: 0,
             items: vec![QuickItem {
                 label: "LSP Hover".to_owned(),
                 detail: format!("{}  {}", hover.server, summary),
@@ -8338,6 +8488,7 @@ impl App {
         self.quick_panel = Some(QuickPanel {
             kind: QuickPanelKind::SignatureHelp,
             query: String::new(),
+            query_cursor: 0,
             items,
             selected,
             scroll: 0,
@@ -8376,6 +8527,7 @@ impl App {
         let count = items.len();
         self.quick_panel = Some(QuickPanel {
             kind,
+            query_cursor: symbol.chars().count(),
             query: symbol.clone(),
             items,
             selected: 0,
@@ -8454,6 +8606,7 @@ impl App {
             let count = references.len();
             self.quick_panel = Some(QuickPanel {
                 kind: QuickPanelKind::LspReferences,
+                query_cursor: symbol.chars().count(),
                 query: symbol.clone(),
                 items: references,
                 selected: 0,
@@ -14984,6 +15137,98 @@ mod tests {
     }
 
     #[test]
+    fn prompt_input_supports_cursor_editing_and_paste() {
+        let root = std::env::temp_dir().join(format!("tscode-test-prompt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.start_prompt(PromptKind::Search, "alpha");
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE))
+            .unwrap();
+
+        let prompt = app.prompt.as_ref().unwrap();
+        assert_eq!(prompt.input, "alpXha");
+        assert_eq!(prompt.cursor, 4);
+        assert_eq!(
+            editable_text_with_cursor(&prompt.input, prompt.cursor),
+            "alpX|ha"
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE))
+            .unwrap();
+        let prompt = app.prompt.as_ref().unwrap();
+        assert_eq!(prompt.input, "alpa");
+        assert_eq!(prompt.cursor, 3);
+
+        app.handle_paste(" β\nz".to_owned()).unwrap();
+        let prompt = app.prompt.as_ref().unwrap();
+        assert_eq!(prompt.input, "alp β za");
+        assert_eq!(prompt.cursor, 7);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .unwrap();
+        let prompt = app.prompt.as_ref().unwrap();
+        assert_eq!(prompt.input, "a");
+        assert_eq!(prompt.cursor, 0);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quick_panel_query_supports_cursor_editing() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-quick-query-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_quick_panel(QuickPanelKind::CommandPalette)
+            .unwrap();
+        for c in "save".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                .unwrap();
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE))
+            .unwrap();
+
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.query, "saXve");
+        assert_eq!(panel.query_cursor, 3);
+        assert_eq!(
+            editable_text_with_cursor(&panel.query, panel.query_cursor),
+            "saX|ve"
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL))
+            .unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.query, "saX");
+        assert_eq!(panel.query_cursor, 3);
+
+        app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_paste("run ".to_owned()).unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.query, "run saX");
+        assert_eq!(panel.query_cursor, 4);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn command_palette_finds_executable_commands() {
         let root = std::env::temp_dir().join(format!("tscode-test-command-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -15746,7 +15991,8 @@ mod tests {
                 kind: PromptKind::RenameSymbol {
                     old: "make_client".to_owned()
                 },
-                input: "make_client".to_owned()
+                input: "make_client".to_owned(),
+                cursor: "make_client".chars().count(),
             })
         );
         app.prompt = None;
@@ -17049,6 +17295,7 @@ src/lib.rs:3:1: note: trailing note
 
         app.quick_panel = Some(QuickPanel {
             kind: QuickPanelKind::DocumentSymbols,
+            query_cursor: "run".chars().count(),
             query: "run".to_owned(),
             items,
             selected: 0,

@@ -20,6 +20,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Explorer now auto-refreshes when visible workspace files or folders are created, deleted, renamed, or have metadata changed by the integrated terminal, Git, build tools, or other external processes; expanded folders, selection, active filters, newly matching filtered paths, and Git badges are preserved/refreshed without a manual `r`.
 - Explorer rows now show Git working tree badges such as `git:M`, `git:?`, and dirty folder `git:*` when the workspace is inside a Git repository.
 - Command Palette with `F1` or `Ctrl-Shift-P`, fuzzy command matching, and actions for files, editor commands, explorer operations, focus changes, and terminal management.
+- Prompt and quick-panel inputs now behave like editable command fields: `Left`/`Right`, `Home`/`End`, `Backspace`, `Delete`, `Ctrl-A`/`Ctrl-E`, `Ctrl-U`/`Ctrl-K`, and paste operate at the visible cursor instead of only appending text.
 - Quick Open overlay with `Ctrl-P` fuzzy matching across workspace file paths.
 - Workspace text search overlay with `Ctrl-Shift-F` or `Ctrl-G`, real file scanning plus unsaved open-buffer scanning, result previews, dirty-buffer markers, and jump-to-line open.
 - Document Symbols with `Ctrl-Shift-O` asks an installed language server for `textDocument/documentSymbol` first, lists hierarchical or flat LSP symbols in a filterable quick panel, falls back to local extraction when needed, and jumps to the selected symbol.

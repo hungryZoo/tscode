@@ -86,7 +86,8 @@ fn draw_title(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(prompt) = &app.prompt {
-        let text = format!(" {}: {} ", prompt_title(&prompt.kind), prompt.input);
+        let input = crate::app::editable_text_with_cursor(&prompt.input, prompt.cursor);
+        let text = format!(" {}: {} ", prompt_title(&prompt.kind), input);
         frame.render_widget(
             Paragraph::new(text).style(Style::default().fg(Color::White).bg(ACTIVE_BG)),
             area,
@@ -936,7 +937,10 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!("{title}  {} ", panel.query))
+        .title(format!(
+            "{title}  {} ",
+            crate::app::editable_text_with_cursor(&panel.query, panel.query_cursor)
+        ))
         .border_style(Style::default().fg(ACCENT));
     let inner = block.inner(panel_area);
     app.quick_panel_height = inner.height as usize;
