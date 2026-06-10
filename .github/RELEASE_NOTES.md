@@ -22,6 +22,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Command Palette with `F1` or `Ctrl-Shift-P`, fuzzy command matching, and actions for files, editor commands, explorer operations, focus changes, and terminal management.
 - Prompt and quick-panel inputs now behave like editable command fields: `Left`/`Right`, `Home`/`End`, `Backspace`, `Delete`, `Ctrl-A`/`Ctrl-E`, `Ctrl-U`/`Ctrl-K`, and paste operate at the visible cursor instead of only appending text.
 - Quick Open overlay with `Ctrl-P` fuzzy matching across workspace file paths.
+- Binary, non-UTF-8, and very large files now open as protected read-only hex/ascii previews, and those previews are excluded from workspace search, replace, symbol scans, rename fallback, and completion token scans so original bytes cannot be rewritten accidentally.
 - Workspace text search overlay with `Ctrl-Shift-F` or `Ctrl-G`, real file scanning plus unsaved open-buffer scanning, result previews, dirty-buffer markers, and jump-to-line open.
 - Document Symbols with `Ctrl-Shift-O` asks an installed language server for `textDocument/documentSymbol` first, lists hierarchical or flat LSP symbols in a filterable quick panel, falls back to local extraction when needed, and jumps to the selected symbol.
 - Workspace Symbols with `Ctrl-T` asks an installed language server for `workspace/symbol` first, lists returned server symbols in the same filterable quick panel, falls back to visible workspace scans including dirty open buffers, and jumps directly to the selected file location.

@@ -154,6 +154,10 @@ Right-clicking the editor body or an editor tab shall focus the editor and open 
 
 Closing a clean editor tab through `Ctrl-w`, the tab close target, middle-click, the editor context menu, or the command palette shall close it immediately. Closing a dirty editor tab through the same entry points shall open a mouse-selectable quick panel with Save and Close, Don't Save, and Cancel actions. Save and Close shall write file-backed tabs before closing them; for Untitled tabs it shall prompt for Save As and close the tab after the target file is written. Don't Save shall close the tab without modifying the backing file or creating an Untitled placeholder. Cancel shall leave the dirty tab open.
 
+### R-208E Binary and Large File Safety
+
+Opening a file that contains NUL bytes, is not valid UTF-8 text, or exceeds the configured editable-size limit shall create a read-only editor tab containing a bounded hex/ascii preview instead of a writable text buffer. Editing, Save, Save As, formatting, rename, replace, workspace search, and workspace replace shall not treat that preview as writable source text for the original file.
+
 ### R-209 Search
 
 `Ctrl-f` in editor focus shall prompt for text and move the cursor to the next match when found.
@@ -532,6 +536,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Edit text, use `Ctrl-z`/`Ctrl-y`, save with `Ctrl-s`, and confirm file contents on disk.
 - Use Save As from the command palette to write the active buffer to a nested new path, confirm parent folders are created, confirm the active tab retargets to the new file, confirm the original source file is unchanged, and confirm a dirty open target is refused.
 - Create an Untitled tab with `Ctrl-n`, type text, confirm no `Untitled-*` placeholder exists on disk, confirm Save File opens Save As, confirm Save As writes the real target and retargets the tab, and confirm Save All skips any remaining dirty Untitled tab.
+- Open a binary file containing NUL bytes, confirm the editor tab is read-only with a hex/ascii preview, attempt typing and saving, and confirm the original bytes on disk are unchanged and workspace search does not return that preview as source text.
 - Close a dirty file-backed tab and confirm Save and Close writes the file then closes the tab, Don't Save closes without changing disk, and Cancel keeps the dirty tab open.
 - Close a dirty Untitled tab, choose Save and Close, confirm Save As writes the target file, closes the tab, and leaves no `Untitled-*` placeholder on disk.
 - Use `Ctrl-f` and `F3` to move through search matches.

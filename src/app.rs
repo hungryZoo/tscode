@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     env, fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     time::{Duration, Instant, SystemTime},
@@ -24,6 +24,8 @@ use crate::{
 
 const MAX_QUICK_ITEMS: usize = 200;
 const MAX_FILE_SCAN_BYTES: u64 = 1_000_000;
+const MAX_FILE_OPEN_BYTES: u64 = 5_000_000;
+const READ_ONLY_PREVIEW_BYTES: usize = 4096;
 const MAX_OSC52_CLIPBOARD_BYTES: usize = 512 * 1024;
 const MAX_NAVIGATION_HISTORY: usize = 200;
 const WORKSPACE_TREE_CHECK_INTERVAL: Duration = Duration::from_millis(750);
@@ -287,16 +289,35 @@ pub struct EditorTab {
 
 impl EditorTab {
     fn open(path: PathBuf) -> Result<Self> {
-        let bytes = std::fs::read(&path)?;
-        let text = String::from_utf8_lossy(&bytes);
-        let (lines, trailing_newline) = split_editor_text(&text);
-        let disk_stamp = file_stamp(&path);
-
         let title = path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("[file]")
             .to_owned();
+        let metadata = fs::metadata(&path)?;
+        if metadata.len() > MAX_FILE_OPEN_BYTES {
+            let preview = read_file_prefix(&path, READ_ONLY_PREVIEW_BYTES)?;
+            let text =
+                guarded_file_preview(&path, FileOpenGuard::TooLarge(metadata.len()), &preview);
+            return Ok(Self::read_only(path, title, &text));
+        }
+
+        let bytes = fs::read(&path)?;
+        if bytes.contains(&0) {
+            let text = guarded_file_preview(&path, FileOpenGuard::Binary, &bytes);
+            return Ok(Self::read_only(path, title, &text));
+        }
+
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(error) => {
+                let text =
+                    guarded_file_preview(&path, FileOpenGuard::InvalidUtf8, &error.into_bytes());
+                return Ok(Self::read_only(path, title, &text));
+            }
+        };
+        let (lines, trailing_newline) = split_editor_text(&text);
+        let disk_stamp = file_stamp(&path);
 
         Ok(Self {
             path,
@@ -2338,7 +2359,9 @@ impl App {
         if let Some(file) = initial_file {
             app.open_file(&file);
             let _ = app.explorer.reveal(&file);
-            app.message = Some(format!("opened {}", file.display()));
+            if app.active_tab().is_some_and(|tab| !tab.read_only) {
+                app.message = Some(format!("opened {}", file.display()));
+            }
         }
 
         Ok(app)
@@ -3365,9 +3388,14 @@ impl App {
 
         match EditorTab::open(path) {
             Ok(tab) => {
+                let read_only = tab.read_only;
+                let title = tab.title.clone();
                 self.tabs.push(tab);
                 self.active_tab = Some(self.tabs.len() - 1);
                 self.focus = FocusPanel::Editor;
+                if read_only {
+                    self.message = Some(format!("opened read-only preview for {title}"));
+                }
             }
             Err(error) => self.last_error = Some(error.to_string()),
         }
@@ -6277,6 +6305,7 @@ impl App {
         let open_texts = self
             .tabs
             .iter()
+            .filter(|tab| !tab.read_only)
             .map(|tab| (tab.path.clone(), tab.text()))
             .collect::<HashMap<_, _>>();
         let mut files = Vec::new();
@@ -10039,6 +10068,86 @@ fn split_editor_text(text: &str) -> (Vec<String>, bool) {
         lines.push(String::new());
     }
     (lines, trailing_newline)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileOpenGuard {
+    Binary,
+    InvalidUtf8,
+    TooLarge(u64),
+}
+
+fn read_file_prefix(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let mut bytes = vec![0; limit];
+    let read = file.read(&mut bytes)?;
+    bytes.truncate(read);
+    Ok(bytes)
+}
+
+fn guarded_file_preview(path: &Path, guard: FileOpenGuard, bytes: &[u8]) -> String {
+    let reason = match guard {
+        FileOpenGuard::Binary => "binary data was detected",
+        FileOpenGuard::InvalidUtf8 => "file is not valid UTF-8 text",
+        FileOpenGuard::TooLarge(_) => "file is larger than the editable safety limit",
+    };
+    let total = match guard {
+        FileOpenGuard::TooLarge(total) => total,
+        FileOpenGuard::Binary | FileOpenGuard::InvalidUtf8 => bytes.len() as u64,
+    };
+
+    let mut lines = vec![
+        "Read-only file preview".to_owned(),
+        format!("Path: {}", path.display()),
+        format!("Reason: {reason}"),
+        format!("Size: {total} bytes"),
+        String::new(),
+        "This tab is protected so Save, edit, replace, rename, and workspace search cannot rewrite the original bytes.".to_owned(),
+        format!(
+            "Showing the first {} byte(s) as hex/ascii.",
+            bytes.len().min(READ_ONLY_PREVIEW_BYTES)
+        ),
+        String::new(),
+    ];
+    lines.extend(hex_preview_lines(bytes));
+    if total > bytes.len() as u64 {
+        lines.push(format!(
+            "... {} byte(s) not shown",
+            total - bytes.len() as u64
+        ));
+    }
+    lines.join("\n")
+}
+
+fn hex_preview_lines(bytes: &[u8]) -> Vec<String> {
+    if bytes.is_empty() {
+        return vec!["<empty>".to_owned()];
+    }
+
+    bytes
+        .chunks(16)
+        .enumerate()
+        .map(|(index, chunk)| {
+            let offset = index * 16;
+            let mut line = format!("{offset:08x}  ");
+            for byte in chunk {
+                line.push_str(&format!("{byte:02x} "));
+            }
+            for _ in chunk.len()..16 {
+                line.push_str("   ");
+            }
+            line.push(' ');
+            for byte in chunk {
+                let ch = if (0x20..=0x7e).contains(byte) {
+                    *byte as char
+                } else {
+                    '.'
+                };
+                line.push(ch);
+            }
+            line
+        })
+        .collect()
 }
 
 fn file_stamp(path: &Path) -> Option<FileStamp> {
@@ -18411,6 +18520,93 @@ src/lib.rs:3:1: note: trailing note
             app.quick_panel.as_ref().map(|panel| &panel.kind),
             Some(QuickPanelKind::ExplorerContextMenu)
         ));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn binary_files_open_as_read_only_preview_and_do_not_rewrite_bytes() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-binary-open-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let binary = root.join("image.bin");
+        let original = b"needle\0\xffPNG\r\n".to_vec();
+        fs::write(&binary, &original).unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let canonical_binary = canonical_root.join("image.bin");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&canonical_binary);
+
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.path, canonical_binary);
+        assert!(tab.read_only);
+        assert!(tab.text().contains("Read-only file preview"));
+        assert!(tab.text().contains("binary data was detected"));
+        assert!(tab.text().contains("00000000"));
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("read-only preview"))
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+            .unwrap();
+        app.save_active_tab();
+
+        assert_eq!(fs::read(&canonical_binary).unwrap(), original);
+        assert_eq!(app.message.as_deref(), Some("image.bin is read-only"));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn app_new_with_binary_file_path_preserves_read_only_preview_status() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-binary-file-arg-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let binary = root.join("image.bin");
+        fs::write(&binary, b"not text\0").unwrap();
+
+        let app = App::new(binary.clone()).unwrap();
+
+        assert_eq!(app.root, root.canonicalize().unwrap());
+        assert!(app.active_tab().unwrap().read_only);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("read-only preview"))
+        );
+
+        let mut app = app;
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_only_previews_are_not_treated_as_workspace_text_files() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-binary-search-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("binary.bin"), b"needle\0skip").unwrap();
+        fs::write(root.join("notes.txt"), "plain needle\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let binary = canonical_root.join("binary.bin");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&binary);
+
+        let items = app.workspace_search_items("needle").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].detail, "notes.txt");
+        assert!(!items.iter().any(|item| item.path == binary));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

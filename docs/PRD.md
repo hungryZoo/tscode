@@ -83,6 +83,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can rely on editor conveniences such as auto-indent on newline, bracket/quote auto-pairs, skip-over of existing closing pairs, and paired deletion with Backspace.
 - As a developer, I can move and select by word in the editor with modified arrow keys.
 - As a developer, I can quickly open files by typing a fuzzy path fragment.
+- As a developer, I can click or quick-open binary, non-UTF-8, or very large files without risking byte corruption because they open as read-only hex/ascii previews instead of writable lossy text buffers.
 - As a developer, I can edit command palette, quick-open, search, replace, rename, Save As, terminal search, and confirmation prompts with a visible cursor instead of retyping the whole input after a typo.
 - As a developer, I can search text across the workspace, including unsaved edits in open buffers, see file/line previews, and jump to a matching location.
 - As a developer, I can list functions, types, classes, interfaces, modules, and similar code symbols in the active file or across the workspace, then jump to the selected symbol.
