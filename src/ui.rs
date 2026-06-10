@@ -98,6 +98,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         .active_tab()
         .map(|tab| {
             let dirty = if tab.dirty { " *" } else { "" };
+            let read_only = if tab.read_only { "  ro" } else { "" };
             let disk = match tab.external_state {
                 ExternalFileState::Clean => String::new(),
                 state => format!("  Disk {}", state.label()),
@@ -145,9 +146,10 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 })
                 .unwrap_or_default();
             format!(
-                "{}{}  Ln {}, Col {}{}{}{}{}{}{}",
+                "{}{}{}  Ln {}, Col {}{}{}{}{}{}{}",
                 path_label,
                 dirty,
+                read_only,
                 tab.cursor_line + 1,
                 tab.cursor_col + 1,
                 disk,
@@ -564,7 +566,8 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
             ExternalFileState::Modified => "!",
             ExternalFileState::Deleted => "?",
         };
-        let label = format!(" {}{}{} x ", tab.title, dirty, external);
+        let read_only = if tab.read_only { " ro" } else { "" };
+        let label = format!(" {}{}{}{} x ", tab.title, dirty, read_only, external);
         let width = label.width().clamp(8, 24) as u16;
         let remaining = area.x.saturating_add(area.width).saturating_sub(x);
         let width = width.min(remaining);

@@ -278,6 +278,7 @@ pub struct EditorTab {
     pub dirty: bool,
     pub external_state: ExternalFileState,
     pub untitled: bool,
+    pub read_only: bool,
     disk_stamp: Option<FileStamp>,
     trailing_newline: bool,
     undo_stack: Vec<EditorSnapshot>,
@@ -313,11 +314,38 @@ impl EditorTab {
             dirty: false,
             external_state: ExternalFileState::Clean,
             untitled: false,
+            read_only: false,
             disk_stamp,
             trailing_newline,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         })
+    }
+
+    fn read_only(path: PathBuf, title: String, text: &str) -> Self {
+        let (lines, trailing_newline) = split_editor_text(text);
+        Self {
+            path,
+            title,
+            lines,
+            scroll: 0,
+            horizontal_scroll: 0,
+            cursor_line: 0,
+            cursor_col: 0,
+            selection_anchor: None,
+            extra_selections: Vec::new(),
+            extra_cursors: Vec::new(),
+            folded_lines: BTreeSet::new(),
+            document_highlights: Vec::new(),
+            dirty: false,
+            external_state: ExternalFileState::Clean,
+            untitled: false,
+            read_only: true,
+            disk_stamp: None,
+            trailing_newline,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        }
     }
 
     fn untitled(id: usize, root: &Path) -> Self {
@@ -337,6 +365,7 @@ impl EditorTab {
             dirty: false,
             external_state: ExternalFileState::Clean,
             untitled: true,
+            read_only: false,
             disk_stamp: None,
             trailing_newline: false,
             undo_stack: Vec::new(),
@@ -379,7 +408,7 @@ impl EditorTab {
     }
 
     fn current_disk_state(&self) -> ExternalFileState {
-        if self.untitled {
+        if self.untitled || self.read_only {
             return ExternalFileState::Clean;
         }
         match file_stamp(&self.path) {
@@ -1764,6 +1793,7 @@ pub enum CommandAction {
     RunLspDiagnostics,
     ShowProblems,
     ShowSourceControl,
+    OpenSourceControlDiff,
     StageSourceControlItem,
     UnstageSourceControlItem,
     StageAllChanges,
@@ -2866,6 +2896,9 @@ impl App {
 
         match self.focus {
             FocusPanel::Editor => {
+                if !self.ensure_active_tab_writable("paste") {
+                    return Ok(());
+                }
                 if let Some(tab) = self.active_tab_mut() {
                     tab.insert_text(&text);
                     self.ensure_editor_cursor_visible();
@@ -3064,6 +3097,25 @@ impl App {
                 self.focus = FocusPanel::Editor;
             }
             Err(error) => self.last_error = Some(error.to_string()),
+        }
+    }
+
+    fn open_read_only_text_tab(&mut self, path: PathBuf, title: String, text: String) {
+        if let Some(index) = self.tabs.iter().position(|tab| tab.path == path) {
+            self.tabs[index].set_clean_text(&text);
+            self.tabs[index].title = title;
+            self.tabs[index].read_only = true;
+            self.active_tab = Some(index);
+        } else {
+            self.tabs.push(EditorTab::read_only(path, title, &text));
+            self.active_tab = Some(self.tabs.len() - 1);
+        }
+        self.focus = FocusPanel::Editor;
+        if let Some(tab) = self.active_tab_mut()
+            && let Some(line) = first_diff_hunk_line(&tab.lines)
+        {
+            tab.set_cursor(line, 0);
+            self.ensure_editor_cursor_visible();
         }
     }
 
@@ -3369,6 +3421,18 @@ impl App {
 
     pub fn active_tab_mut(&mut self) -> Option<&mut EditorTab> {
         self.active_tab.and_then(|index| self.tabs.get_mut(index))
+    }
+
+    fn ensure_active_tab_writable(&mut self, action: &str) -> bool {
+        let Some(tab) = self.active_tab() else {
+            self.message = Some(format!("{action} requires an active editor tab"));
+            return false;
+        };
+        if tab.read_only {
+            self.message = Some(format!("{} is read-only; {action} skipped", tab.title));
+            return false;
+        }
+        true
     }
 
     pub fn active_terminal(&self) -> &TerminalSession {
@@ -5646,12 +5710,12 @@ impl App {
             let preview = (!path.is_file()).then(|| "not available in working tree".to_owned());
             items.push(QuickItem {
                 label: format!("{} {relative}", status.short_label()),
-                detail: status.description().to_owned(),
+                detail: format!("{} - open diff", status.description()),
                 path: path.clone(),
                 line: None,
                 col: None,
                 preview,
-                command: None,
+                command: Some(CommandAction::OpenSourceControlDiff),
             });
             if entry.can_stage() {
                 items.push(QuickItem {
@@ -6612,6 +6676,10 @@ impl App {
         let Some(index) = self.active_tab else {
             return;
         };
+        if self.tabs[index].read_only {
+            self.message = Some(format!("{} is read-only", self.tabs[index].title));
+            return;
+        }
         if self.tabs[index].untitled {
             self.start_save_as_prompt();
             self.message = Some(format!("{} needs Save As", self.tabs[index].title));
@@ -6656,6 +6724,10 @@ impl App {
     ) -> Result<Option<usize>> {
         if index >= self.tabs.len() {
             self.message = Some("tab to save is no longer open".to_owned());
+            return Ok(None);
+        }
+        if self.tabs[index].read_only {
+            self.message = Some(format!("{} is read-only", self.tabs[index].title));
             return Ok(None);
         }
         let Some(target) = resolve_prompt_path(&self.root, &input) else {
@@ -6738,6 +6810,11 @@ impl App {
             return Ok(());
         };
 
+        if self.tabs[index].read_only {
+            self.message = Some(format!("{} is read-only", self.tabs[index].title));
+            return Ok(());
+        }
+
         if self.tabs[index].untitled {
             let title = self.tabs[index].title.clone();
             self.tabs[index].set_clean_text("");
@@ -6771,6 +6848,9 @@ impl App {
         let mut untitled = 0usize;
         for tab in &mut self.tabs {
             if !tab.dirty {
+                continue;
+            }
+            if tab.read_only {
                 continue;
             }
             if tab.untitled {
@@ -6816,6 +6896,9 @@ impl App {
     }
 
     fn replace_find_from_prompt(&mut self, needle: String, all: bool) {
+        if !self.ensure_active_tab_writable("replace") {
+            return;
+        }
         let needle = needle.trim().to_owned();
         if needle.is_empty() {
             self.message = Some("replace requires a search string".to_owned());
@@ -6827,6 +6910,9 @@ impl App {
     }
 
     fn replace_next_active_match(&mut self, needle: String, replacement: String) {
+        if !self.ensure_active_tab_writable("replace") {
+            return;
+        }
         if needle.is_empty() {
             self.message = Some("replace requires a search string".to_owned());
             return;
@@ -6853,6 +6939,9 @@ impl App {
     }
 
     fn replace_all_active_matches(&mut self, needle: String, replacement: String) {
+        if !self.ensure_active_tab_writable("replace all") {
+            return;
+        }
         if needle.is_empty() {
             self.message = Some("replace all requires a search string".to_owned());
             return;
@@ -6883,6 +6972,9 @@ impl App {
     }
 
     fn start_rename_symbol_prompt(&mut self) {
+        if !self.ensure_active_tab_writable("rename symbol") {
+            return;
+        }
         let Some(symbol) = self.active_identifier_under_cursor() else {
             self.message = Some("no symbol under cursor".to_owned());
             return;
@@ -6957,6 +7049,9 @@ impl App {
                 .iter()
                 .position(|tab| canonical_existing_path(&tab.path) == path)
             {
+                if self.tabs[tab_index].read_only {
+                    continue;
+                }
                 let original = self.tabs[tab_index].text();
                 let Some((updated, count)) = apply_lsp_text_edits_to_text(&original, &edits) else {
                     continue;
@@ -7036,6 +7131,9 @@ impl App {
         let mut file_count = 0usize;
 
         for tab in &mut self.tabs {
+            if tab.read_only {
+                continue;
+            }
             let (replaced, count) =
                 replace_identifier_occurrences_in_text(&tab.text(), &old, &new_name);
             if count == 0 {
@@ -7220,6 +7318,9 @@ impl App {
     }
 
     fn edit_insert(&mut self, c: char) {
+        if !self.ensure_active_tab_writable("insert") {
+            return;
+        }
         if let Some(tab) = self.active_tab_mut() {
             tab.insert_char(c);
             self.ensure_editor_cursor_visible();
@@ -7227,6 +7328,9 @@ impl App {
     }
 
     fn edit_newline(&mut self) {
+        if !self.ensure_active_tab_writable("insert newline") {
+            return;
+        }
         if let Some(tab) = self.active_tab_mut() {
             tab.newline();
             self.ensure_editor_cursor_visible();
@@ -7234,6 +7338,9 @@ impl App {
     }
 
     fn edit_backspace(&mut self) {
+        if !self.ensure_active_tab_writable("backspace") {
+            return;
+        }
         if let Some(tab) = self.active_tab_mut() {
             tab.backspace();
             self.ensure_editor_cursor_visible();
@@ -7241,6 +7348,9 @@ impl App {
     }
 
     fn edit_delete(&mut self) {
+        if !self.ensure_active_tab_writable("delete") {
+            return;
+        }
         if let Some(tab) = self.active_tab_mut() {
             tab.delete();
             self.ensure_editor_cursor_visible();
@@ -7248,6 +7358,9 @@ impl App {
     }
 
     fn indent_active_line(&mut self) {
+        if !self.ensure_active_tab_writable("indent") {
+            return;
+        }
         if let Some(tab) = self.active_tab_mut() {
             tab.indent_line();
             self.ensure_editor_cursor_visible();
@@ -7256,6 +7369,9 @@ impl App {
     }
 
     fn outdent_active_line(&mut self) {
+        if !self.ensure_active_tab_writable("outdent") {
+            return;
+        }
         if let Some(tab) = self.active_tab_mut() {
             if tab.outdent_line() {
                 self.ensure_editor_cursor_visible();
@@ -7267,6 +7383,9 @@ impl App {
     }
 
     fn duplicate_active_line(&mut self) {
+        if !self.ensure_active_tab_writable("duplicate line") {
+            return;
+        }
         if let Some(tab) = self.active_tab_mut() {
             tab.duplicate_line();
             self.ensure_editor_cursor_visible();
@@ -7275,6 +7394,9 @@ impl App {
     }
 
     fn delete_active_line(&mut self) {
+        if !self.ensure_active_tab_writable("delete line") {
+            return;
+        }
         if let Some(tab) = self.active_tab_mut() {
             tab.delete_line();
             self.ensure_editor_cursor_visible();
@@ -7283,6 +7405,9 @@ impl App {
     }
 
     fn move_active_line_up(&mut self) {
+        if !self.ensure_active_tab_writable("move line") {
+            return;
+        }
         if let Some(tab) = self.active_tab_mut() {
             if tab.move_line_up() {
                 self.ensure_editor_cursor_visible();
@@ -7294,6 +7419,9 @@ impl App {
     }
 
     fn move_active_line_down(&mut self) {
+        if !self.ensure_active_tab_writable("move line") {
+            return;
+        }
         if let Some(tab) = self.active_tab_mut() {
             if tab.move_line_down() {
                 self.ensure_editor_cursor_visible();
@@ -7339,6 +7467,9 @@ impl App {
     }
 
     fn toggle_active_line_comment(&mut self) {
+        if !self.ensure_active_tab_writable("toggle line comment") {
+            return;
+        }
         if let Some(tab) = self.active_tab_mut() {
             if tab.toggle_line_comment() {
                 self.ensure_editor_cursor_visible();
@@ -7350,6 +7481,9 @@ impl App {
     }
 
     fn trim_active_trailing_whitespace(&mut self) {
+        if !self.ensure_active_tab_writable("trim trailing whitespace") {
+            return;
+        }
         let Some(tab) = self.active_tab_mut() else {
             self.message = Some("no active editor tab".to_owned());
             return;
@@ -7370,6 +7504,10 @@ impl App {
             self.message = Some("no active editor tab".to_owned());
             return Ok(());
         };
+        if self.tabs[index].read_only {
+            self.message = Some(format!("{} is read-only", self.tabs[index].title));
+            return Ok(());
+        }
 
         let path = self.tabs[index].path.clone();
         let title = self.tabs[index].title.clone();
@@ -7569,6 +7707,9 @@ impl App {
     }
 
     fn cut_editor_selection(&mut self) {
+        if !self.ensure_active_tab_writable("cut") {
+            return;
+        }
         let Some(tab) = self.active_tab_mut() else {
             return;
         };
@@ -7589,6 +7730,9 @@ impl App {
     }
 
     fn paste_editor_clipboard(&mut self) {
+        if !self.ensure_active_tab_writable("paste") {
+            return;
+        }
         let Some(text) = self.editor_clipboard.clone() else {
             self.message = Some("editor clipboard empty".to_owned());
             return;
@@ -8371,6 +8515,13 @@ impl App {
 
         if kind == QuickPanelKind::SourceControl {
             match item.command {
+                Some(CommandAction::OpenSourceControlDiff) => {
+                    self.quick_panel = None;
+                    if let Err(error) = self.open_source_control_diff(&item.path) {
+                        self.last_error = Some(error.to_string());
+                    }
+                    return;
+                }
                 Some(CommandAction::StageSourceControlItem) => {
                     self.quick_panel = None;
                     if let Err(error) = self.stage_source_control_path(&item.path) {
@@ -8424,6 +8575,23 @@ impl App {
         self.message = Some(format!("opened {}", item.path.display()));
     }
 
+    fn open_source_control_diff(&mut self, path: &Path) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        let relative = relative_path(&top_level, path);
+        let text = load_git_path_diff(&self.root, &top_level, path)?;
+        if text.trim().is_empty() {
+            self.message = Some(format!("no diff for {relative}"));
+            return Ok(());
+        }
+
+        let tab_path = source_control_diff_tab_path(&top_level, path);
+        let title = format!("Diff {relative}");
+        self.open_read_only_text_tab(tab_path, title, text);
+        self.search_needle = None;
+        self.message = Some(format!("opened diff for {relative}"));
+        Ok(())
+    }
+
     fn stage_source_control_path(&mut self, path: &Path) -> Result<()> {
         let top_level = git_top_level(&self.root).context("not a git repository")?;
         let relative = relative_path(&top_level, path);
@@ -8464,6 +8632,9 @@ impl App {
             return;
         };
 
+        if !self.ensure_active_tab_writable("completion") {
+            return;
+        }
         let Some(tab) = self.active_tab_mut() else {
             self.message = Some("no active editor for completion".to_owned());
             return;
@@ -8596,6 +8767,9 @@ impl App {
                     self.message = Some("not a git repository".to_owned());
                 }
                 self.open_quick_panel(QuickPanelKind::SourceControl)?;
+            }
+            CommandAction::OpenSourceControlDiff => {
+                self.message = Some("select a Source Control file row to open its diff".to_owned());
             }
             CommandAction::StageSourceControlItem => {
                 self.message =
@@ -10116,6 +10290,118 @@ fn git_output_message(output: &Output) -> String {
         return stdout;
     }
     output.status.to_string()
+}
+
+fn load_git_path_diff(root: &Path, top_level: &Path, path: &Path) -> Result<String> {
+    let attempts = [
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--find-renames",
+            "HEAD",
+        ][..],
+        &[
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-color",
+            "--find-renames",
+        ][..],
+        &["diff", "--no-ext-diff", "--no-color", "--find-renames"][..],
+    ];
+
+    let mut last_error = None;
+    for args in attempts {
+        match git_command_output_with_path(root, args, path) {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout).into_owned();
+                if !text.trim().is_empty() {
+                    return Ok(text);
+                }
+            }
+            Ok(output) => last_error = Some(git_output_message(&output)),
+            Err(error) => last_error = Some(error.to_string()),
+        }
+    }
+
+    if path.is_file() {
+        return build_untracked_file_diff(top_level, path);
+    }
+
+    Err(anyhow!(
+        "no diff available for {}{}",
+        path.display(),
+        last_error
+            .map(|error| format!(": {error}"))
+            .unwrap_or_default()
+    ))
+}
+
+fn git_command_output_with_path(root: &Path, args: &[&str], path: &Path) -> Result<Output> {
+    let top_level = git_top_level(root).unwrap_or_else(|| root.to_path_buf());
+    let path_arg = git_relative_os_arg(&top_level, path);
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .arg("--")
+        .arg(path_arg)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run git {} for {}",
+                args.join(" "),
+                path.display()
+            )
+        })
+}
+
+fn build_untracked_file_diff(top_level: &Path, path: &Path) -> Result<String> {
+    let relative = relative_path(top_level, path);
+    let bytes = fs::read(path)?;
+    if bytes.contains(&0) {
+        return Ok(format!(
+            "diff --git a/{relative} b/{relative}\nnew file mode 100644\nBinary files /dev/null and b/{relative} differ\n"
+        ));
+    }
+
+    let text = String::from_utf8_lossy(&bytes);
+    let mut diff = format!(
+        "diff --git a/{relative} b/{relative}\nnew file mode 100644\n--- /dev/null\n+++ b/{relative}\n"
+    );
+    let line_count = text.lines().count();
+    diff.push_str(&format!("@@ -0,0 +1,{line_count} @@\n"));
+    for line in text.lines() {
+        diff.push('+');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        diff.push_str("\\ No newline at end of file\n");
+    }
+    Ok(diff)
+}
+
+fn source_control_diff_tab_path(top_level: &Path, path: &Path) -> PathBuf {
+    let relative = relative_path(top_level, path);
+    let sanitized = relative
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    top_level
+        .join(".tscode-diff")
+        .join(format!("{sanitized}.diff"))
+}
+
+fn first_diff_hunk_line(lines: &[String]) -> Option<usize> {
+    lines.iter().position(|line| line.starts_with("@@ "))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15386,6 +15672,8 @@ index 1111111..2222222 100644
                     && item.command == Some(CommandAction::StageAllChanges))
         );
         assert!(panel.items.iter().any(|item| item.label == "M src/lib.rs"));
+        assert!(panel.items.iter().any(|item| item.label == "M src/lib.rs"
+            && item.command == Some(CommandAction::OpenSourceControlDiff)));
         assert!(
             panel
                 .items
@@ -15413,6 +15701,81 @@ index 1111111..2222222 100644
         assert_eq!(app.focus, FocusPanel::Editor);
         assert_eq!(app.active_tab().unwrap().path, lib);
         assert_eq!(app.active_tab().unwrap().cursor_position(), (1, 0));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn source_control_panel_opens_read_only_diff_tabs() {
+        if !git_available() {
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-source-control-diff-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    1\n}\n").unwrap();
+
+        init_git_repo(&root);
+        assert_git(&root, &["add", "src/lib.rs"]);
+        assert_git(
+            &root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+            ],
+        );
+
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    2\n}\n").unwrap();
+        fs::write(root.join("new.txt"), "new file\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.run_command(CommandAction::ShowSourceControl).unwrap();
+
+        select_quick_item(&mut app, "M src/lib.rs");
+        app.activate_selected_quick_item();
+        let tab = app.active_tab().unwrap();
+        assert!(tab.read_only);
+        assert_eq!(tab.title, "Diff src/lib.rs");
+        let diff_text = tab.text();
+        assert!(diff_text.contains("diff --git a/src/lib.rs b/src/lib.rs"));
+        assert!(diff_text.contains("-    1"));
+        assert!(diff_text.contains("+    2"));
+        assert!(tab.path.ends_with(".tscode-diff/src_lib.rs.diff"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+            .unwrap();
+        let tab = app.active_tab().unwrap();
+        assert!(tab.read_only);
+        assert!(!tab.dirty);
+        assert_eq!(tab.text(), diff_text);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("read-only"))
+        );
+
+        app.run_command(CommandAction::ShowSourceControl).unwrap();
+        select_quick_item(&mut app, "? new.txt");
+        app.activate_selected_quick_item();
+        let tab = app.active_tab().unwrap();
+        assert!(tab.read_only);
+        assert_eq!(tab.title, "Diff new.txt");
+        let diff_text = tab.text();
+        assert!(diff_text.contains("new file mode"));
+        assert!(diff_text.contains("--- /dev/null"));
+        assert!(diff_text.contains("+new file"));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
