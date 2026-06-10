@@ -434,6 +434,10 @@ When the child terminal application has not requested xterm mouse events, draggi
 
 When terminal focus is active, `Ctrl-Shift-C` shall copy the active terminal text selection without sending `Ctrl-C` to the PTY, and `Ctrl-Shift-V` shall paste the internal clipboard into the active PTY shell using bracketed paste when the child application has enabled it. Plain terminal `Ctrl-C` shall remain a PTY signal. When a child PTY program emits an OSC52 clipboard write, the app shall decode the clipboard payload, update the internal clipboard, and queue the same host-terminal OSC52 export used by editor and terminal selection copy actions. OSC52 clipboard read/query requests shall not overwrite the internal clipboard.
 
+### R-317A Terminal Output Copy and Live Scroll
+
+The command palette and terminal context menu shall include Copy Terminal Output and Scroll Terminal to Bottom actions. Copy Terminal Output shall collect the active terminal session's retained scrollback plus visible viewport text, trim only terminal padding at row ends and trailing blank rows, copy that text to the internal clipboard, and queue an OSC52 terminal clipboard export when it is within the configured terminal-safe size limit. Scroll Terminal to Bottom shall reset the active terminal session's user scrollback offset to the live PTY output without clearing terminal contents or restarting the shell.
+
 ### R-318 Terminal Layout Controls
 
 The application shall support moving focus in and out of the terminal, maximizing/restoring the terminal panel, and increasing/decreasing the normal terminal panel height through shortcuts such as `F6`/``Ctrl-` `` and `F12`/`Ctrl-J`, command palette actions, or mouse dragging the terminal panel's highlighted top border. Mouse drag resizing shall clamp the terminal panel to a usable minimum height while leaving editor space visible. The terminal focus and maximize shortcuts shall work even when the terminal panel is currently focused.
@@ -468,7 +472,7 @@ When the active terminal child has entered alternate-screen mode or requested te
 
 ### R-325 Terminal Context Menu
 
-Right-clicking the terminal body or terminal tabs shall focus the terminal and open a mouse-selectable context menu when the active child application has not requested terminal mouse reporting. Right-clicking a terminal tab shall first select that terminal session. The menu shall expose actions for copy, paste, terminal search, clear terminal, restart terminal, rename terminal, new terminal, close terminal, next terminal, previous terminal, toggle terminal maximize, increase terminal height, decrease terminal height, focus editor, and focus explorer. When the child application has requested terminal mouse reporting, right-click mouse events over the terminal body shall be forwarded to the PTY instead of opening the app-owned context menu.
+Right-clicking the terminal body or terminal tabs shall focus the terminal and open a mouse-selectable context menu when the active child application has not requested terminal mouse reporting. Right-clicking a terminal tab shall first select that terminal session. The menu shall expose actions for copy selection, copy all output, paste, terminal search, clear terminal, restart terminal, rename terminal, new terminal, close terminal, next terminal, previous terminal, toggle terminal maximize, scroll to bottom, increase terminal height, decrease terminal height, focus editor, and focus explorer. When the child application has requested terminal mouse reporting, right-click mouse events over the terminal body shall be forwarded to the PTY instead of opening the app-owned context menu.
 
 ## 6. Mouse Requirements
 
@@ -564,6 +568,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use `Ctrl-shift-b` or the command palette in a project with task metadata and confirm detected tasks appear, filtering works, and selecting one starts a new PTY terminal running that command.
 - Use Split Terminal or `Ctrl-shift-5`, confirm a second side-by-side PTY pane appears in the same working directory, click each pane and confirm input goes to the clicked shell, then close one pane and confirm the other shell remains usable.
 - Print repeated text in the terminal, use terminal `Ctrl-f`, confirm matches are highlighted and counted, and use `F3`/`Shift-F3` to move between matches in scrollback.
+- Scroll terminal output away from the bottom, run Copy Terminal Output, confirm retained output is copied, then run Scroll Terminal to Bottom and confirm the live prompt/output is visible again.
 - Use the command palette to clear and restart the integrated terminal.
 - Use the mouse wheel over explorer/editor/terminal and confirm scroll changes.
 - Type `pwd` in the terminal panel and confirm the output points at the workspace.

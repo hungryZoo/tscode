@@ -120,6 +120,8 @@ Each terminal session also stores the working directory used to spawn its PTY an
 
 Terminal Search is an app-owned overlay on top of the real PTY session. `ShellPanel` can snapshot the `vt100` parser's accessible scrollback by temporarily moving the parser scrollback offset across the retained buffer and restoring the user's offset afterward. Search results are stored as stable global row and character-column ranges tied to the terminal session id. Activating a match moves the parser scrollback offset so the matched row is visible, while the renderer maps visible rows back to global rows and splits terminal spans to apply normal and active-match highlight backgrounds without changing the PTY child state.
 
+Terminal output copy reuses the same parser scrollback traversal as terminal search. `ShellPanel::all_text` snapshots retained scrollback plus the visible screen, trims terminal padding at row ends and trailing blank screen rows, and restores the user's scrollback offset before returning. The app-level Copy Terminal Output command copies that text through the internal clipboard and normal OSC52 export path. Scroll Terminal to Bottom is the inverse of user scrollback: it sets the active parser scrollback offset and `user_scrollback` marker to zero so subsequent PTY output follows the live shell again without clearing screen state.
+
 ## 4. Rendering Design
 
 The UI uses a vertical root layout:

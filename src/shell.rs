@@ -324,6 +324,15 @@ impl ShellPanel {
             .collect()
     }
 
+    pub fn all_text(&mut self) -> String {
+        terminal_rows_to_text(self.all_row_text())
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.user_scrollback = 0;
+        self.parser.screen_mut().set_scrollback(0);
+    }
+
     pub fn cursor(&self) -> (u16, u16) {
         self.parser.screen().cursor_position()
     }
@@ -631,6 +640,16 @@ fn terminal_line_matches(line: &str, needle: &str) -> Vec<(usize, usize)> {
         byte_start = end_byte;
     }
     matches
+}
+
+fn terminal_rows_to_text(mut rows: Vec<String>) -> String {
+    for row in &mut rows {
+        *row = row.trim_end_matches(' ').to_owned();
+    }
+    while rows.last().is_some_and(|row| row.is_empty()) {
+        rows.pop();
+    }
+    rows.join("\n")
 }
 
 fn osc7_path(payload: &str) -> Option<PathBuf> {

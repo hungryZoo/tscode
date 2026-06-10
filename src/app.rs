@@ -2027,6 +2027,7 @@ pub enum CommandAction {
     PasteClipboard,
     RunSelectionInTerminal,
     CopyTerminalSelection,
+    CopyTerminalOutput,
     PasteClipboardToTerminal,
     FindInTerminal,
     TerminalSearchNext,
@@ -2045,6 +2046,7 @@ pub enum CommandAction {
     PreviousTerminal,
     ToggleTerminalFocus,
     ToggleTerminalMaximized,
+    ScrollTerminalToBottom,
     IncreaseTerminalHeight,
     DecreaseTerminalHeight,
 }
@@ -4816,6 +4818,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::CopyTerminalSelection,
         },
         CommandSpec {
+            label: "Copy Terminal Output",
+            detail: "Copy the active terminal viewport and retained scrollback",
+            shortcut: "",
+            action: CommandAction::CopyTerminalOutput,
+        },
+        CommandSpec {
             label: "Paste Clipboard to Terminal",
             detail: "Paste the internal clipboard into the active PTY shell",
             shortcut: "Ctrl-Shift-V",
@@ -4922,6 +4930,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Expand the integrated terminal to fill the main workspace area",
             shortcut: "F12 / Ctrl-J",
             action: CommandAction::ToggleTerminalMaximized,
+        },
+        CommandSpec {
+            label: "Scroll Terminal to Bottom",
+            detail: "Return the active terminal viewport to the live shell output",
+            shortcut: "",
+            action: CommandAction::ScrollTerminalToBottom,
         },
         CommandSpec {
             label: "Increase Terminal Height",
@@ -5588,6 +5602,12 @@ impl App {
                 action: CommandAction::CopyTerminalSelection,
             },
             ContextMenuAction {
+                label: "Copy All Output",
+                detail: "Copy the active terminal viewport and retained scrollback".to_owned(),
+                shortcut: "",
+                action: CommandAction::CopyTerminalOutput,
+            },
+            ContextMenuAction {
                 label: "Paste",
                 detail: "Paste the internal clipboard into the PTY shell".to_owned(),
                 shortcut: "Ctrl-Shift-V",
@@ -5652,6 +5672,12 @@ impl App {
                 detail: "Expand or restore the integrated terminal panel".to_owned(),
                 shortcut: "F12",
                 action: CommandAction::ToggleTerminalMaximized,
+            },
+            ContextMenuAction {
+                label: "Scroll to Bottom",
+                detail: "Return the active terminal viewport to the live shell output".to_owned(),
+                shortcut: "",
+                action: CommandAction::ScrollTerminalToBottom,
             },
             ContextMenuAction {
                 label: "Increase Terminal Height",
@@ -9384,6 +9410,7 @@ impl App {
             CommandAction::PasteClipboard => self.paste_editor_clipboard(),
             CommandAction::RunSelectionInTerminal => self.run_selection_in_terminal()?,
             CommandAction::CopyTerminalSelection => self.copy_terminal_selection(),
+            CommandAction::CopyTerminalOutput => self.copy_terminal_output(),
             CommandAction::PasteClipboardToTerminal => self.paste_clipboard_to_terminal()?,
             CommandAction::FindInTerminal => self.start_terminal_search_prompt(),
             CommandAction::TerminalSearchNext => self.next_terminal_search_match(),
@@ -9405,6 +9432,7 @@ impl App {
             CommandAction::PreviousTerminal => self.previous_terminal(),
             CommandAction::ToggleTerminalFocus => self.toggle_terminal_focus(),
             CommandAction::ToggleTerminalMaximized => self.toggle_terminal_maximized(),
+            CommandAction::ScrollTerminalToBottom => self.scroll_terminal_to_bottom(),
             CommandAction::IncreaseTerminalHeight => self.resize_terminal_panel(2),
             CommandAction::DecreaseTerminalHeight => self.resize_terminal_panel(-2),
         }
@@ -9549,6 +9577,29 @@ impl App {
                 "copied {count} terminal char(s) internally; selection too large for terminal clipboard"
             ));
         }
+    }
+
+    fn copy_terminal_output(&mut self) {
+        let text = self.active_terminal_mut().shell.all_text();
+        if text.is_empty() {
+            self.message = Some("terminal output empty".to_owned());
+            return;
+        }
+        let count = text.chars().count();
+        self.editor_clipboard = Some(text.clone());
+        if self.queue_clipboard_export(&text) {
+            self.message = Some(format!("copied {count} terminal output char(s)"));
+        } else {
+            self.message = Some(format!(
+                "copied {count} terminal output char(s) internally; output too large for terminal clipboard"
+            ));
+        }
+    }
+
+    fn scroll_terminal_to_bottom(&mut self) {
+        self.active_terminal_mut().shell.scroll_to_bottom();
+        self.focus = FocusPanel::Terminal;
+        self.message = Some("terminal scrolled to bottom".to_owned());
     }
 
     fn paste_clipboard_to_terminal(&mut self) -> Result<()> {
@@ -14196,6 +14247,20 @@ mod tests {
             && item.command == Some(CommandAction::ClearTerminal)));
         assert!(panel.items.iter().any(|item| item.label == "Split Terminal"
             && item.command == Some(CommandAction::SplitTerminal)));
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "Copy All Output"
+                    && item.command == Some(CommandAction::CopyTerminalOutput))
+        );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "Scroll to Bottom"
+                    && item.command == Some(CommandAction::ScrollTerminalToBottom))
+        );
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
@@ -14436,6 +14501,42 @@ mod tests {
         .unwrap();
 
         assert_eq!(text, "beta\nmiddle row\nomega");
+    }
+
+    #[test]
+    fn terminal_output_copy_captures_scrollback_and_scroll_bottom_restores_live_view() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-terminal-copy-output-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.focus = FocusPanel::Terminal;
+        app.active_terminal_mut().shell.clear();
+        app.active_terminal_mut().shell.resize(2, 20);
+        app.active_terminal_mut()
+            .shell
+            .process_output_for_test(b"alpha\r\nbeta\r\ngamma\r\n");
+        app.active_terminal_mut().shell.scroll(10);
+        assert!(app.active_terminal().shell.scrollback() > 0);
+
+        app.run_command(CommandAction::CopyTerminalOutput).unwrap();
+        let copied = app.editor_clipboard.clone().unwrap();
+        assert!(copied.contains("alpha"));
+        assert!(copied.contains("beta"));
+        assert!(copied.contains("gamma"));
+        assert_eq!(app.take_clipboard_export(), Some(copied));
+        assert!(app.active_terminal().shell.scrollback() > 0);
+
+        app.run_command(CommandAction::ScrollTerminalToBottom)
+            .unwrap();
+        assert_eq!(app.active_terminal().shell.scrollback(), 0);
+        assert_eq!(app.focus, FocusPanel::Terminal);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -15921,6 +16022,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::CopyTerminalSelection))
         );
+        let commands = app.command_palette_items("copy terminal output");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::CopyTerminalOutput))
+        );
         let commands = app.command_palette_items("paste clipboard terminal");
         assert!(
             commands
@@ -15968,6 +16075,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::NextTerminal))
+        );
+        let commands = app.command_palette_items("scroll terminal bottom");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ScrollTerminalToBottom))
         );
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
