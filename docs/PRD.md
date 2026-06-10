@@ -75,6 +75,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can undo and redo edits, paste text, repeat search matches, close clean tabs immediately, close all/other/right-side clean editor tabs in one action while preserving dirty tabs, choose whether to save, discard, or cancel when closing a dirty tab, and reopen the most recently closed editor when I closed the wrong tab.
 - As a developer, I can save the active editor buffer as a new relative or absolute path, have missing parent folders created, and keep editing the newly saved file.
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
+- As a developer, I can toggle word wrap for long code lines so narrow SSH terminals can show the full line without horizontal panning, while mouse clicks still move the cursor to the correct buffer column.
 - As a developer, I can fold and unfold code blocks from the editor gutter, keyboard, command palette, or editor context menu so large files are easier to scan over SSH.
 - As a developer, I can jump between matching `()`, `[]`, and `{}` brackets from the keyboard, command palette, or editor context menu and return through editor navigation history.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.

@@ -230,6 +230,10 @@ The editor shall support indenting, outdenting, duplicating, deleting, moving, a
 
 `Shift-alt-a`, the command palette, and the editor context menu shall include a Toggle Block Comment action. For supported file types, the action shall wrap the active selection or indentation-preserving current line with the file type's block comment delimiters, and shall unwrap the same region when it is already surrounded by matching delimiters. Supported delimiters shall include C-style `/* */`, HTML/XML/Markdown `<!-- -->`, Lua `--[[ ]]`, and Python triple-quote blocks. The command shall update the in-memory editor buffer as one undoable edit, mark the tab dirty, preserve file contents on disk until save, and report a clear status message when the active file type has no block comment token.
 
+### R-218B Word Wrap
+
+`Alt-z`, the command palette, and the editor context menu shall toggle word wrap for editor panes. When word wrap is enabled, long visual editor lines shall wrap to the current pane code width without inserting newline characters, mutating the buffer, changing dirty state, or changing line numbers. Vertical scrolling, cursor visibility, hover lookup, fold-gutter clicks, mouse cursor placement, mouse drag selection, and wheel scrolling shall map wrapped visual rows back to the correct underlying file line and character column. Horizontal scrolling shall be disabled while word wrap is enabled, and the status bar shall show that wrap mode is active.
+
 ### R-219 Go To Line
 
 The editor shall support jumping to one-based `line` or `line:column` input through `Ctrl-l` or the command palette.
@@ -240,11 +244,11 @@ The command palette shall include a save-all command that writes every dirty fil
 
 ### R-221 Editor Selection
 
-The editor shall support text selection with `Shift` plus arrow keys and with mouse left-button drag inside the editor body. Editor drag selection shall preserve the drag session even when the pointer moves outside the editor body, clamp the endpoint to the nearest editor location, scroll vertically or horizontally at the visible edge, and reuse the same selected-text model used by copy, cut, replacement, run-selection-in-terminal, and selection-aware line commands. Selected text shall be visually highlighted. The editor shall also support multiple selected occurrence ranges in the active file.
+The editor shall support text selection with `Shift` plus arrow keys and with mouse left-button drag inside the editor body. Editor drag selection shall preserve the drag session even when the pointer moves outside the editor body, clamp the endpoint to the nearest editor location, scroll vertically or horizontally at the visible edge when word wrap is disabled, use wrapped visual rows when word wrap is enabled, and reuse the same selected-text model used by copy, cut, replacement, run-selection-in-terminal, and selection-aware line commands. Selected text shall be visually highlighted. The editor shall also support multiple selected occurrence ranges in the active file.
 
 ### R-221A Mouse Multi-Cursor
 
-`Alt`+click inside the editor body shall toggle an additional editor cursor at the clicked text position after applying line-number gutter, vertical scroll, and horizontal scroll offsets. Typing, paste, `Enter`, `Backspace`, and `Delete` shall operate on every active cursor as one undoable edit when no explicit selection ranges are active. A regular editor click shall clear extra cursors and move back to a single cursor.
+`Alt`+click inside the editor body shall toggle an additional editor cursor at the clicked text position after applying line-number gutter, vertical scroll, wrapped visual row mapping when word wrap is enabled, and horizontal scroll offsets when word wrap is disabled. Typing, paste, `Enter`, `Backspace`, and `Delete` shall operate on every active cursor as one undoable edit when no explicit selection ranges are active. A regular editor click shall clear extra cursors and move back to a single cursor.
 
 ### R-222 Editor Clipboard
 

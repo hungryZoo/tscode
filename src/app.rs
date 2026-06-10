@@ -1953,6 +1953,13 @@ pub struct LineProblemSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorVisualRow {
+    pub line: usize,
+    pub start_col: usize,
+    pub continuation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BracketMatch {
     source: (usize, usize),
     target: (usize, usize),
@@ -2067,6 +2074,7 @@ pub enum CommandAction {
     MoveLineDown,
     ToggleLineComment,
     ToggleBlockComment,
+    ToggleWordWrap,
     ToggleFold,
     FoldAll,
     UnfoldAll,
@@ -2312,6 +2320,7 @@ pub struct App {
     pub explorer_height: usize,
     pub editor_height: usize,
     pub editor_width: usize,
+    pub word_wrap: bool,
     pub terminal_height: usize,
     pub terminal_rows: u16,
     pub terminal_maximized: bool,
@@ -2396,6 +2405,7 @@ impl App {
             explorer_height: 0,
             editor_height: 0,
             editor_width: 0,
+            word_wrap: false,
             terminal_height: 0,
             terminal_rows: 10,
             terminal_maximized: false,
@@ -3173,6 +3183,7 @@ impl App {
                 {
                     self.toggle_active_block_comment()
                 }
+                KeyCode::Char('z') | KeyCode::Char('Z') => self.toggle_word_wrap(),
                 KeyCode::Char('f') | KeyCode::Char('F')
                     if key.modifiers.contains(KeyModifiers::SHIFT) =>
                 {
@@ -4513,8 +4524,13 @@ impl App {
 
     fn scroll_editor(&mut self, amount: isize) {
         let height = self.editor_height.max(1);
+        let editor_width = self.editor_width;
+        let word_wrap = self.word_wrap;
         if let Some(tab) = self.active_tab_mut() {
-            let max_scroll = tab.visible_line_indices().len().saturating_sub(height);
+            let code_width = editor_code_width(tab, editor_width);
+            let max_scroll = editor_visual_rows(tab, code_width, word_wrap)
+                .len()
+                .saturating_sub(height);
             tab.scroll = add_signed(tab.scroll, amount).min(max_scroll);
         }
     }
@@ -4534,6 +4550,12 @@ impl App {
     }
 
     fn scroll_editor_horizontal(&mut self, amount: isize) {
+        if self.word_wrap {
+            if let Some(tab) = self.active_tab_mut() {
+                tab.horizontal_scroll = 0;
+            }
+            return;
+        }
         let editor_width = self.editor_width;
         if let Some(tab) = self.active_tab_mut() {
             let code_width = editor_code_width(tab, editor_width);
@@ -4758,6 +4780,98 @@ fn editor_code_width(tab: &EditorTab, editor_width: usize) -> usize {
 
 fn editor_gutter_width(line_count: usize) -> usize {
     line_count.max(1).to_string().len().max(3) + 2
+}
+
+pub fn editor_visual_rows(
+    tab: &EditorTab,
+    code_width: usize,
+    word_wrap: bool,
+) -> Vec<EditorVisualRow> {
+    let visible_lines = tab.visible_line_indices();
+    if !word_wrap || code_width == 0 {
+        return visible_lines
+            .into_iter()
+            .map(|line| EditorVisualRow {
+                line,
+                start_col: 0,
+                continuation: false,
+            })
+            .collect();
+    }
+
+    let mut rows = Vec::new();
+    for line in visible_lines {
+        let line_len = tab
+            .lines
+            .get(line)
+            .map(|text| text.chars().count())
+            .unwrap_or(0);
+        if line_len == 0 {
+            rows.push(EditorVisualRow {
+                line,
+                start_col: 0,
+                continuation: false,
+            });
+            continue;
+        }
+        let mut start_col = 0usize;
+        while start_col < line_len {
+            rows.push(EditorVisualRow {
+                line,
+                start_col,
+                continuation: start_col > 0,
+            });
+            start_col = start_col.saturating_add(code_width.max(1));
+        }
+    }
+    rows
+}
+
+pub fn editor_visual_row_for_line_col(
+    tab: &EditorTab,
+    line: usize,
+    col: usize,
+    code_width: usize,
+    word_wrap: bool,
+) -> Option<usize> {
+    if !word_wrap || code_width == 0 {
+        return tab.visible_row_for_line(line);
+    }
+
+    let mut row = 0usize;
+    for visible_line in tab.visible_line_indices() {
+        if visible_line == line {
+            let line_len = tab
+                .lines
+                .get(line)
+                .map(|text| text.chars().count())
+                .unwrap_or(0);
+            if line_len == 0 {
+                return Some(row);
+            }
+            let cursor_col = col.min(line_len.saturating_sub(1));
+            return Some(row + cursor_col / code_width.max(1));
+        }
+        row += visual_row_count_for_line(tab, visible_line, code_width, word_wrap);
+    }
+    None
+}
+
+fn visual_row_count_for_line(
+    tab: &EditorTab,
+    line: usize,
+    code_width: usize,
+    word_wrap: bool,
+) -> usize {
+    if !word_wrap || code_width == 0 {
+        return 1;
+    }
+    let line_len = tab
+        .lines
+        .get(line)
+        .map(|text| text.chars().count())
+        .unwrap_or(0);
+    line_len.saturating_sub(1) / code_width.max(1) + 1
 }
 
 fn max_editor_horizontal_scroll(tab: &EditorTab, code_width: usize) -> usize {
@@ -5432,6 +5546,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Wrap or unwrap the selection or current line with the file type's block comment tokens",
             shortcut: "Shift-Alt-A",
             action: CommandAction::ToggleBlockComment,
+        },
+        CommandSpec {
+            label: "Toggle Word Wrap",
+            detail: "Wrap long editor lines to the visible pane width without changing file contents",
+            shortcut: "Alt-Z",
+            action: CommandAction::ToggleWordWrap,
         },
         CommandSpec {
             label: "Toggle Fold",
@@ -6279,6 +6399,12 @@ impl App {
                 detail: "Wrap or unwrap the current selection with block comment tokens".to_owned(),
                 shortcut: "Shift-Alt-A",
                 action: CommandAction::ToggleBlockComment,
+            },
+            ContextMenuAction {
+                label: "Toggle Word Wrap",
+                detail: "Wrap long visual lines to the current editor pane width".to_owned(),
+                shortcut: "Alt-Z",
+                action: CommandAction::ToggleWordWrap,
             },
             ContextMenuAction {
                 label: "Toggle Fold",
@@ -8910,6 +9036,22 @@ impl App {
         }
     }
 
+    fn toggle_word_wrap(&mut self) {
+        self.word_wrap = !self.word_wrap;
+        if self.word_wrap
+            && let Some(tab) = self.active_tab_mut()
+        {
+            tab.horizontal_scroll = 0;
+        }
+        self.ensure_editor_cursor_visible();
+        self.focus = FocusPanel::Editor;
+        self.message = Some(if self.word_wrap {
+            "word wrap enabled".to_owned()
+        } else {
+            "word wrap disabled".to_owned()
+        });
+    }
+
     fn fold_all_active_tab(&mut self) {
         if let Some(tab) = self.active_tab_mut() {
             let count = tab.fold_all();
@@ -9773,17 +9915,27 @@ impl App {
     fn ensure_editor_cursor_visible(&mut self) {
         let height = self.editor_height.max(1);
         let editor_width = self.editor_width;
+        let word_wrap = self.word_wrap;
         if let Some(tab) = self.active_tab_mut() {
             tab.unfold_line_containing(tab.cursor_line);
-            let cursor_row = tab.visible_row_for_line(tab.cursor_line).unwrap_or(0);
+            let code_width = editor_code_width(tab, editor_width);
+            let cursor_row = editor_visual_row_for_line_col(
+                tab,
+                tab.cursor_line,
+                tab.cursor_col,
+                code_width,
+                word_wrap,
+            )
+            .unwrap_or(0);
             if cursor_row < tab.scroll {
                 tab.scroll = cursor_row;
             } else if cursor_row >= tab.scroll + height {
                 tab.scroll = cursor_row.saturating_sub(height - 1);
             }
 
-            let code_width = editor_code_width(tab, editor_width);
-            if code_width > 0 {
+            if word_wrap {
+                tab.horizontal_scroll = 0;
+            } else if code_width > 0 {
                 if tab.cursor_col < tab.horizontal_scroll {
                     tab.horizontal_scroll = tab.cursor_col;
                 } else if tab.cursor_col >= tab.horizontal_scroll.saturating_add(code_width) {
@@ -9866,6 +10018,10 @@ impl App {
             self.scroll_editor(1);
         }
 
+        if self.word_wrap {
+            return;
+        }
+
         let gutter_width = self
             .active_tab()
             .map(|tab| editor_gutter_width(tab.lines.len()) as u16)
@@ -9892,19 +10048,60 @@ impl App {
         }
     }
 
+    fn editor_visual_row_at(&self, body: Rect, visual_row: usize) -> Option<EditorVisualRow> {
+        let tab = self.active_tab()?;
+        if !self.word_wrap {
+            return tab.visible_line_at(visual_row).map(|line| EditorVisualRow {
+                line,
+                start_col: 0,
+                continuation: false,
+            });
+        }
+        let code_width = editor_code_width(tab, body.width as usize);
+        editor_visual_rows(tab, code_width, self.word_wrap)
+            .get(visual_row)
+            .copied()
+    }
+
+    fn editor_visual_row_at_or_last(
+        &self,
+        body: Rect,
+        visual_row: usize,
+    ) -> Option<EditorVisualRow> {
+        let tab = self.active_tab()?;
+        if !self.word_wrap {
+            return tab
+                .visible_line_at(visual_row)
+                .or_else(|| tab.visible_line_indices().last().copied())
+                .map(|line| EditorVisualRow {
+                    line,
+                    start_col: 0,
+                    continuation: false,
+                });
+        }
+        let code_width = editor_code_width(tab, body.width as usize);
+        let rows = editor_visual_rows(tab, code_width, self.word_wrap);
+        rows.get(visual_row)
+            .copied()
+            .or_else(|| rows.last().copied())
+    }
+
     fn editor_mouse_position(&self) -> Option<(usize, usize)> {
         let body = self.hit_regions.editor_body?;
         let tab = self.active_tab()?;
         let gutter_width = editor_gutter_width(tab.lines.len());
         let local_x = self.hit_regions.last_mouse_x.saturating_sub(body.x) as usize;
+        let visible_row =
+            tab.scroll + self.hit_regions.last_mouse_y.saturating_sub(body.y) as usize;
+        let row = self.editor_visual_row_at(body, visible_row)?;
         let col = if local_x < gutter_width {
-            0
+            row.start_col
+        } else if self.word_wrap {
+            row.start_col + local_x.saturating_sub(gutter_width)
         } else {
             local_x.saturating_sub(gutter_width) + tab.horizontal_scroll
         };
-        let visible_row =
-            tab.scroll + self.hit_regions.last_mouse_y.saturating_sub(body.y) as usize;
-        let line = tab.visible_line_at(visible_row)?;
+        let line = row.line;
         Some((line, col))
     }
 
@@ -9920,15 +10117,16 @@ impl App {
         let mouse_x = self.hit_regions.last_mouse_x.clamp(body.x, max_x);
         let mouse_y = self.hit_regions.last_mouse_y.clamp(body.y, max_y);
         let local_x = mouse_x.saturating_sub(body.x) as usize;
+        let visible_row = tab.scroll + mouse_y.saturating_sub(body.y) as usize;
+        let row = self.editor_visual_row_at_or_last(body, visible_row)?;
         let col = if local_x < gutter_width {
-            0
+            row.start_col
+        } else if self.word_wrap {
+            row.start_col + local_x.saturating_sub(gutter_width)
         } else {
             local_x.saturating_sub(gutter_width) + tab.horizontal_scroll
         };
-        let visible_row = tab.scroll + mouse_y.saturating_sub(body.y) as usize;
-        let line = tab
-            .visible_line_at(visible_row)
-            .or_else(|| tab.visible_line_indices().last().copied())?;
+        let line = row.line;
         Some((line, col))
     }
 
@@ -9984,7 +10182,11 @@ impl App {
         }
         let visible_row =
             tab.scroll + self.hit_regions.last_mouse_y.saturating_sub(body.y) as usize;
-        let line = tab.visible_line_at(visible_row)?;
+        let row = self.editor_visual_row_at(body, visible_row)?;
+        if row.continuation {
+            return None;
+        }
+        let line = row.line;
         tab.fold_end_for_line(line).map(|_| line)
     }
 
@@ -10802,6 +11004,7 @@ impl App {
             CommandAction::MoveLineDown => self.move_active_line_down(),
             CommandAction::ToggleLineComment => self.toggle_active_line_comment(),
             CommandAction::ToggleBlockComment => self.toggle_active_block_comment(),
+            CommandAction::ToggleWordWrap => self.toggle_word_wrap(),
             CommandAction::ToggleFold => self.toggle_active_fold(),
             CommandAction::FoldAll => self.fold_all_active_tab(),
             CommandAction::UnfoldAll => self.unfold_all_active_tab(),
@@ -17003,6 +17206,65 @@ mod tests {
     }
 
     #[test]
+    fn editor_word_wrap_uses_visual_rows_for_scroll_cursor_and_mouse() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-word-wrap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("long.rs");
+        fs::write(&path, "abcdefghijklmnopqrstuvwxyz0123456789\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.focus = FocusPanel::Editor;
+        app.editor_height = 2;
+        app.editor_width = 12;
+
+        app.active_tab_mut().unwrap().set_cursor(0, 20);
+        app.run_command(CommandAction::ToggleWordWrap).unwrap();
+        assert!(app.word_wrap);
+        assert_eq!(app.message.as_deref(), Some("word wrap enabled"));
+        assert_eq!(app.active_tab().unwrap().horizontal_scroll, 0);
+        assert_eq!(app.active_tab().unwrap().scroll, 1);
+
+        let rows = editor_visual_rows(app.active_tab().unwrap(), 7, true);
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.line, row.start_col, row.continuation))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 0, false),
+                (0, 7, true),
+                (0, 14, true),
+                (0, 21, true),
+                (0, 28, true),
+                (0, 35, true),
+            ]
+        );
+
+        app.scroll_editor_horizontal(100);
+        assert_eq!(app.active_tab().unwrap().horizontal_scroll, 0);
+
+        app.hit_regions.editor_body = Some(Rect::new(0, 0, 12, 2));
+        app.hit_regions.last_mouse_x = 9;
+        app.hit_regions.last_mouse_y = 1;
+        app.hover = HoverTarget::Editor;
+        app.set_editor_cursor_from_mouse(false);
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (0, 18));
+
+        app.scroll_editor(100);
+        assert_eq!(app.active_tab().unwrap().scroll, 4);
+
+        app.run_command(CommandAction::ToggleWordWrap).unwrap();
+        assert!(!app.word_wrap);
+        assert_eq!(app.message.as_deref(), Some("word wrap disabled"));
+        assert!(app.active_tab().unwrap().horizontal_scroll > 0);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn editor_code_folding_updates_visible_lines_scroll_and_cursor() {
         let path = temp_file("folding.rs");
         let _ = fs::remove_file(&path);
@@ -17093,6 +17355,12 @@ mod tests {
                 .items
                 .iter()
                 .any(|item| item.command == Some(CommandAction::UnfoldAll))
+        );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ToggleWordWrap))
         );
 
         app.kill_all_terminals();
@@ -18330,6 +18598,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::SelectAllOccurrences))
+        );
+        let commands = app.command_palette_items("word wrap");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ToggleWordWrap))
         );
         let commands = app.command_palette_items("trim whitespace");
         assert!(

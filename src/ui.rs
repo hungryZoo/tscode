@@ -8,7 +8,10 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{App, ClipboardAction, ExternalFileState, FocusPanel, HoverTarget, ProblemSeverity},
+    app::{
+        App, ClipboardAction, ExternalFileState, FocusPanel, HoverTarget, ProblemSeverity,
+        editor_visual_rows,
+    },
     fs_tree::VisibleNode,
     lsp::{LspDocumentHighlight, LspDocumentHighlightKind},
     shell::{TerminalSpan, TerminalStyle},
@@ -136,6 +139,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 format!("  Highlights {}", tab.document_highlights.len())
             };
+            let wrap = if app.word_wrap {
+                "  Wrap".to_owned()
+            } else {
+                String::new()
+            };
             let line_problem = app
                 .active_line_problem_summary()
                 .map(|problem| {
@@ -147,12 +155,13 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 })
                 .unwrap_or_default();
             format!(
-                "{}{}{}  Ln {}, Col {}{}{}{}{}{}{}",
+                "{}{}{}  Ln {}, Col {}{}{}{}{}{}{}{}",
                 path_label,
                 dirty,
                 read_only,
                 tab.cursor_line + 1,
                 tab.cursor_col + 1,
+                wrap,
                 disk,
                 selection,
                 search,
@@ -393,21 +402,35 @@ fn draw_editor_pane(
         return;
     };
 
-    let height = inner.height as usize;
-    let visible_lines = tab.visible_line_indices();
-    let max_scroll = visible_lines.len().saturating_sub(height.max(1));
-    tab.scroll = tab.scroll.min(max_scroll);
-    let start = tab.scroll;
-    let end = (start + height).min(visible_lines.len());
     let gutter_width = editor_gutter_width(tab.lines.len());
     let code_width = inner.width as usize;
     let code_width = code_width.saturating_sub(gutter_width);
-    let max_horizontal_scroll = max_horizontal_scroll(tab, code_width);
-    tab.horizontal_scroll = tab.horizontal_scroll.min(max_horizontal_scroll);
-    let raw_start = visible_lines.get(start).copied().unwrap_or(0);
-    let raw_end = visible_lines
-        .get(end.saturating_sub(1))
-        .map(|line| line.saturating_add(1))
+    let word_wrap = app.word_wrap;
+    let height = inner.height as usize;
+    let visual_rows = editor_visual_rows(tab, code_width, word_wrap);
+    let max_scroll = visual_rows.len().saturating_sub(height.max(1));
+    tab.scroll = tab.scroll.min(max_scroll);
+    let start = tab.scroll;
+    let end = (start + height).min(visual_rows.len());
+    if word_wrap {
+        tab.horizontal_scroll = 0;
+    } else {
+        let max_horizontal_scroll = max_horizontal_scroll(tab, code_width);
+        tab.horizontal_scroll = tab.horizontal_scroll.min(max_horizontal_scroll);
+    }
+    let raw_start = visual_rows
+        .iter()
+        .take(end)
+        .skip(start)
+        .map(|row| row.line)
+        .min()
+        .unwrap_or(0);
+    let raw_end = visual_rows
+        .iter()
+        .take(end)
+        .skip(start)
+        .map(|row| row.line.saturating_add(1))
+        .max()
         .unwrap_or(raw_start);
     let path = tab.path.clone();
     let lines = tab.lines.clone();
@@ -426,7 +449,8 @@ fn draw_editor_pane(
 
     let number_width = tab.lines.len().max(1).to_string().len().max(3);
     let mut rendered = Vec::new();
-    for line_index in visible_lines.iter().take(end).skip(start).copied() {
+    for visual_row in visual_rows.iter().take(end).skip(start).copied() {
+        let line_index = visual_row.line;
         let problem = problem_summaries.get(&line_index);
         let gutter_style = problem
             .map(|problem| problem_gutter_style(problem.severity))
@@ -440,13 +464,21 @@ fn draw_editor_pane(
         };
         let mut spans = vec![
             Span::styled(
-                format!("{:>width$} ", line_index + 1, width = number_width),
+                if visual_row.continuation {
+                    format!("{:>width$} ", "", width = number_width)
+                } else {
+                    format!("{:>width$} ", line_index + 1, width = number_width)
+                },
                 gutter_style,
             ),
             Span::styled(
-                problem
-                    .map(|problem| problem_marker(problem.severity))
-                    .unwrap_or(fold_marker),
+                if visual_row.continuation {
+                    ">"
+                } else {
+                    problem
+                        .map(|problem| problem_marker(problem.severity))
+                        .unwrap_or(fold_marker)
+                },
                 problem
                     .map(|problem| problem_gutter_style(problem.severity))
                     .unwrap_or_else(|| {
@@ -511,11 +543,12 @@ fn draw_editor_pane(
                 Style::default().fg(MUTED),
             ));
         }
-        spans.extend(crop_spans_by_chars(
-            code_spans,
-            tab.horizontal_scroll,
-            code_width,
-        ));
+        let crop_start = if word_wrap {
+            visual_row.start_col
+        } else {
+            tab.horizontal_scroll
+        };
+        spans.extend(crop_spans_by_chars(code_spans, crop_start, code_width));
         let line = if let Some(problem) = problem {
             Line::from(spans).style(problem_line_style(problem.severity))
         } else {

@@ -65,6 +65,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Reopen Closed Editor with `Ctrl-Shift-T`, the command palette, or the editor context menu restores the most recently closed editor tab, including dirty/Untitled buffers that were closed without saving and clean file view state.
 - Close All Editors, Close Other Editors, and Close Editors to the Right are available from the command palette and editor context menu; they close clean target tabs, preserve dirty tabs, repair split-pane state, and feed the closed-editor stack for Reopen Closed Editor.
 - Long editor lines now support horizontal scrolling with cursor tracking, mouse-click coordinate mapping, and horizontal wheel panning.
+- Toggle Word Wrap with `Alt-Z`, the command palette, or the editor context menu wraps long visual lines to the pane width without changing file contents, while wheel, cursor visibility, hover, and mouse clicks map back to the correct buffer columns.
 - Editor mouse drag selection now keeps the drag active after leaving the editor body, clamps the endpoint to the nearest code location, edge-scrolls the viewport, and feeds the same copy/cut/replace/run-selection paths as keyboard selection.
 - In-file search now highlights visible matches and shows a match count in the status bar.
 - `Ctrl-H` and the command palette can replace the current/next active-file match, while replace-all changes every match as one undoable edit.
