@@ -559,12 +559,24 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     app.hit_regions.terminal_area = Some(area);
+    if !app.terminal_maximized && area.height > 0 {
+        app.hit_regions.terminal_resize = Some(Rect::new(area.x, area.y, area.width, 1));
+    }
     let focused = app.focus == FocusPanel::Terminal;
     let title = terminal_panel_title(app);
+    let resizing = app.hover == HoverTarget::TerminalResize || app.terminal_resize_dragging;
+    let border = if resizing {
+        Style::default()
+            .fg(ACCENT)
+            .bg(HOVER_BG)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        border_style(focused)
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(border_style(focused));
+        .border_style(border);
     let inner = block.inner(area);
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), area);
 
@@ -1143,6 +1155,7 @@ fn hover_name(hover: &HoverTarget) -> String {
         HoverTarget::TerminalTab(index) => format!("terminal tab {index}"),
         HoverTarget::TerminalTabClose(index) => format!("terminal close {index}"),
         HoverTarget::TerminalNew => "terminal new".to_owned(),
+        HoverTarget::TerminalResize => "terminal resize".to_owned(),
         HoverTarget::QuickRow(index) => format!("quick row {index}"),
         HoverTarget::Terminal => "terminal".to_owned(),
         HoverTarget::TerminalInput => "terminal input".to_owned(),

@@ -46,6 +46,7 @@ pub enum HoverTarget {
     TerminalTab(usize),
     TerminalTabClose(usize),
     TerminalNew,
+    TerminalResize,
     QuickRow(usize),
     Terminal,
     TerminalInput,
@@ -59,6 +60,7 @@ pub struct HitRegions {
     pub terminal_area: Option<Rect>,
     pub terminal_body: Option<Rect>,
     pub terminal_input: Option<Rect>,
+    pub terminal_resize: Option<Rect>,
     pub explorer_rows: Vec<(Rect, usize)>,
     pub tabs: Vec<(Rect, usize)>,
     pub tab_closes: Vec<(Rect, usize)>,
@@ -84,6 +86,13 @@ impl HitRegions {
 
         if self.terminal_new.is_some_and(|rect| contains(rect, x, y)) {
             return HoverTarget::TerminalNew;
+        }
+
+        if self
+            .terminal_resize
+            .is_some_and(|rect| contains(rect, x, y))
+        {
+            return HoverTarget::TerminalResize;
         }
 
         for (rect, index) in &self.terminal_tab_closes {
@@ -1930,6 +1939,7 @@ pub struct App {
     pub terminal_height: usize,
     pub terminal_rows: u16,
     pub terminal_maximized: bool,
+    pub terminal_resize_dragging: bool,
     pub last_error: Option<String>,
     pub prompt: Option<PromptState>,
     pub message: Option<String>,
@@ -1998,6 +2008,7 @@ impl App {
             terminal_height: 0,
             terminal_rows: 10,
             terminal_maximized: false,
+            terminal_resize_dragging: false,
             last_error: None,
             prompt: None,
             message: Some("F1/Ctrl-Shift-P commands | Ctrl-P files | Editor: Ctrl-A/C/X/V selection | Terminal: Ctrl-Q quit".to_owned()),
@@ -2212,6 +2223,29 @@ impl App {
             return Ok(());
         }
 
+        if self.terminal_resize_dragging {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left)
+                | MouseEventKind::Down(MouseButton::Left) => {
+                    self.resize_terminal_from_mouse(mouse.row);
+                    self.focus = FocusPanel::Terminal;
+                    return Ok(());
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.resize_terminal_from_mouse(mouse.row);
+                    self.terminal_resize_dragging = false;
+                    self.message = Some(format!(
+                        "terminal height set to {} rows",
+                        self.terminal_rows
+                    ));
+                    return Ok(());
+                }
+                _ => {
+                    self.terminal_resize_dragging = false;
+                }
+            }
+        }
+
         if matches!(target, HoverTarget::Terminal | HoverTarget::TerminalInput)
             && self.forward_terminal_mouse_event(mouse.kind, mouse.modifiers)?
         {
@@ -2228,6 +2262,11 @@ impl App {
 
         match mouse.kind {
             MouseEventKind::Moved => {}
+            MouseEventKind::Down(MouseButton::Left) if target == HoverTarget::TerminalResize => {
+                self.terminal_resize_dragging = true;
+                self.resize_terminal_from_mouse(mouse.row);
+                self.focus = FocusPanel::Terminal;
+            }
             MouseEventKind::Down(MouseButton::Left)
                 if target == HoverTarget::Editor && mouse.modifiers.contains(KeyModifiers::ALT) =>
             {
@@ -2312,7 +2351,8 @@ impl App {
             }
             HoverTarget::TerminalTab(_)
             | HoverTarget::TerminalTabClose(_)
-            | HoverTarget::TerminalNew => {
+            | HoverTarget::TerminalNew
+            | HoverTarget::TerminalResize => {
                 self.focus = FocusPanel::Terminal;
             }
             HoverTarget::QuickRow(_) => {}
@@ -2342,6 +2382,7 @@ impl App {
                     self.last_error = Some(error.to_string());
                 }
             }
+            HoverTarget::TerminalResize => {}
             HoverTarget::QuickRow(index) => self.activate_quick_row(index),
             HoverTarget::Editor if self.toggle_editor_fold_from_mouse() => {}
             HoverTarget::Editor => self.set_editor_cursor_from_mouse(false),
@@ -3043,7 +3084,8 @@ impl App {
             | HoverTarget::TerminalInput
             | HoverTarget::TerminalTab(_)
             | HoverTarget::TerminalTabClose(_)
-            | HoverTarget::TerminalNew => self.scroll_terminal(amount),
+            | HoverTarget::TerminalNew
+            | HoverTarget::TerminalResize => self.scroll_terminal(amount),
             HoverTarget::None => match self.focus {
                 FocusPanel::Explorer => self.scroll_explorer(amount),
                 FocusPanel::Editor => self.scroll_editor(amount),
@@ -3104,6 +3146,25 @@ impl App {
                     .min(panel.items.len().saturating_sub(1)),
             );
         }
+    }
+
+    fn resize_terminal_from_mouse(&mut self, row: u16) {
+        if self.terminal_maximized {
+            return;
+        }
+
+        let Some(terminal_area) = self.hit_regions.terminal_area else {
+            return;
+        };
+        let Some(editor_area) = self.hit_regions.editor_area else {
+            return;
+        };
+
+        let total_height = terminal_area.height.saturating_add(editor_area.height);
+        let min_terminal_rows = 4;
+        let max_terminal_rows = total_height.saturating_sub(8).max(min_terminal_rows);
+        let proposed = terminal_area.bottom().saturating_sub(row);
+        self.terminal_rows = proposed.clamp(min_terminal_rows, max_terminal_rows);
     }
 }
 
@@ -12401,6 +12462,74 @@ index 1111111..2222222 100644
         app.close_active_terminal().unwrap();
         assert_eq!(app.terminals.len(), 1);
         assert_eq!(app.active_terminal, 0);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_panel_can_be_resized_by_dragging_top_border() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-terminal-resize-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.hit_regions.editor_area = Some(Rect::new(32, 1, 88, 28));
+        app.hit_regions.terminal_area = Some(Rect::new(32, 29, 88, 11));
+        app.hit_regions.terminal_resize = Some(Rect::new(32, 29, 88, 1));
+        app.terminal_rows = 11;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 60,
+            row: 29,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+        assert!(app.terminal_resize_dragging);
+        assert_eq!(app.focus, FocusPanel::Terminal);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 60,
+            row: 24,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+        assert_eq!(app.terminal_rows, 16);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 60,
+            row: 9,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+        assert!(!app.terminal_resize_dragging);
+        assert_eq!(app.terminal_rows, 31);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("terminal height set to 31 rows")
+        );
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 60,
+            row: 29,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 60,
+            row: 200,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+        assert_eq!(app.terminal_rows, 4);
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

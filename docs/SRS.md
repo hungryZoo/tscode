@@ -382,7 +382,7 @@ When terminal focus is active, `Ctrl-Shift-C` shall copy the active terminal tex
 
 ### R-318 Terminal Layout Controls
 
-The application shall support moving focus in and out of the terminal, maximizing/restoring the terminal panel, and increasing/decreasing the normal terminal panel height through shortcuts such as `F6`/``Ctrl-` `` and `F12`/`Ctrl-J` or command palette actions. The terminal focus and maximize shortcuts shall work even when the terminal panel is currently focused.
+The application shall support moving focus in and out of the terminal, maximizing/restoring the terminal panel, and increasing/decreasing the normal terminal panel height through shortcuts such as `F6`/``Ctrl-` `` and `F12`/`Ctrl-J`, command palette actions, or mouse dragging the terminal panel's highlighted top border. Mouse drag resizing shall clamp the terminal panel to a usable minimum height while leaving editor space visible. The terminal focus and maximize shortcuts shall work even when the terminal panel is currently focused.
 
 ### R-319 Multiple Terminal Sessions
 

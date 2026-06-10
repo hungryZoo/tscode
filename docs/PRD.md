@@ -96,7 +96,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can keep files open while terminal commands, Git operations, or external tools change those files on disk; clean tabs reload automatically, while dirty tabs show conflict status and prevent accidental overwrite saves.
 - As a developer, I can clear the integrated terminal viewport or restart the PTY shell without restarting the whole application.
 - As a developer, I can see which terminal session is active, where it is running, whether it is live, and whether scrollback or terminal child modes are active.
-- As a developer, I can focus the integrated terminal quickly, maximize it when command output needs more space, and resize its normal panel height.
+- As a developer, I can focus the integrated terminal quickly, maximize it when command output needs more space, and resize its normal panel height by dragging the panel border or using commands.
 - As a developer, I can create multiple integrated terminal sessions, switch between them, close them, and keep each shell's state independent.
 - As a developer, I can rename terminal sessions so long-running shells, tasks, and logs stay recognizable without restarting them.
 - As a developer, I can open a new integrated terminal in the selected explorer folder, or the selected file's parent folder, and keep that working directory when restarting the terminal.
@@ -136,6 +136,7 @@ Keyboard fallback:
 - Terminal `Ctrl-Shift-C` copies the active terminal text selection; terminal `Ctrl-Shift-V` pastes the internal clipboard to the PTY shell
 - Terminal `Ctrl-F` searches terminal scrollback; terminal `F3` and `Shift-F3` move to next and previous terminal search matches
 - Terminal right-click opens a context menu for copy, paste, search, clear, restart, terminal session switching/creation/closing, maximize, resize, and focus actions when the child app is not using terminal mouse reporting
+- Terminal top-border hover is visually highlighted and dragging it changes the normal terminal panel height without restarting the PTY session
 - Explorer `c`, `x`, `p`, `y`, and `o` perform copy, cut, paste, duplicate, and reveal-active-file actions
 - Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
 - Explorer `s`, the context menu, and the command palette change sorting between name, type, modified time, and size while preserving folders-first grouping

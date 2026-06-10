@@ -126,7 +126,7 @@ The editor column normally uses a vertical split:
 
 Each render pass records clickable and hoverable rectangles into `HitRegions`. Editor rendering derives its visible rows through `EditorTab::visible_line_indices`, displays `-` and `+` fold markers in the gutter for foldable and folded lines, and appends a compact folded-line summary to folded block headers. It also overlays active-file diagnostics from the cached Problems list: the gutter uses one marker cell for the highest-priority line diagnostic, and the line receives a severity-tinted background underneath syntax, search, cursor, and selection spans.
 
-When terminal maximized mode is active, the editor column is replaced by the integrated terminal so command output can use the main workspace area while the title, explorer, and status bars remain visible. The terminal panel renders a one-line terminal tab strip above the active PTY screen when height allows. The tab strip records hit regions for terminal activation, terminal close, and new-terminal actions.
+When terminal maximized mode is active, the editor column is replaced by the integrated terminal so command output can use the main workspace area while the title, explorer, and status bars remain visible. The terminal panel renders a one-line terminal tab strip above the active PTY screen when height allows. The tab strip records hit regions for terminal activation, terminal close, and new-terminal actions. In the normal split layout, the terminal top border is also recorded as a resize hit region; left-dragging that border updates `App::terminal_rows` with minimum and editor-preserving maximum clamps, focuses the terminal, and highlights the border while hovered or dragging.
 
 ## 5. Input Design
 

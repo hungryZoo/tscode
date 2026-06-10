@@ -65,6 +65,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Multiple integrated terminal sessions: `F7` creates a new PTY shell, `F8` switches to the next terminal, `F9` closes the active terminal, terminal tabs switch on click, tab close targets close on click or middle-click, and `+` creates a new terminal.
 - New Terminal Here opens a real PTY shell in the selected explorer folder, or the selected file's parent directory, and restarting that terminal preserves its working directory.
 - Rename Terminal changes the active terminal tab/header title without restarting the PTY shell or losing its cwd/session state.
+- The normal integrated terminal panel can now be resized by hovering the highlighted top border and dragging it with the mouse; the resize keeps a usable terminal height and leaves editor space visible.
 - Terminal focus and maximize shortcuts now work from inside terminal focus too, so `F6`/``Ctrl-` `` and `F12`/`Ctrl-J` can move in and out of the integrated terminal without trapping the user in the PTY.
 - Full-screen terminal apps now receive terminal-owned keys before tscode shortcuts when alternate-screen or mouse-reporting modes are active, so keys such as `Ctrl-F`, `F3`, `F7`-`F9`, `F12`, `Ctrl-J`, and `Shift-PageUp/Down` reach tools like pagers, editors, and pickers inside the PTY.
 - Terminal ANSI rendering preserves parsed foreground/background colors plus bold, dim, italic, underline, and inverse styles.
