@@ -42,6 +42,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can click folders to expand or collapse them.
 - As a developer, I can click files to open them in editor tabs.
 - As a developer, I can click editor tabs to switch files.
+- As a developer, I can open a file or the active tab to the side and compare or edit two editor panes without leaving the terminal.
 - As a developer, I can scroll the tree, code view, and terminal output with the mouse wheel.
 - As a developer, I can keep editing long source lines because the code view pans horizontally and keeps the cursor visible.
 - As a developer, I can see hover highlights for clickable rows, tabs, and panel controls.
@@ -163,6 +164,7 @@ Keyboard fallback:
 - Terminal child apps that request mouse input receive the requested xterm mouse events, including default, SGR, and UTF-8 coordinate encodings where supported by the parser
 - Explorer `Space`, `Shift`+click, and `Ctrl`/`Command`/`Meta`+click provide visible multi-select and range-select for file rows
 - Explorer drag/drop moves selected rows into the highlighted target folder, and `Alt`+drag copies selected rows instead of moving them
+- Explorer `Ctrl-Enter`, the explorer context menu, and the command palette open the selected file to the side while preserving the current editor pane
 - Explorer `c`, `x`, `p`, `y`, `v`, and `o` perform copy, cut, paste, duplicate, compare-selected-files, and reveal-active-file actions
 - Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, compare selected files, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
 - Explorer `s`, the context menu, and the command palette change sorting between name, type, modified time, and size while preserving folders-first grouping
@@ -192,6 +194,7 @@ Keyboard fallback:
 - `Ctrl-N` or the command palette creates an editable Untitled tab without touching disk until Save As
 - The command palette provides Save As for writing the active editor buffer to a new path and retargeting the tab
 - `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, and `Ctrl-W` provide editor save/search/replace/history/tab-close actions; `Ctrl-S` on an Untitled tab opens Save As, and dirty tab close opens Save and Close / Don't Save / Cancel choices
+- `Ctrl-\`, the command palette, and the editor context menu split the active editor into a side-by-side pane; Close Editor Split returns to a single editor pane
 - Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, signature-help, symbol highlights, definition/call-hierarchy/references/code-action/rename/suggest, format, fold/unfold, comments, send-to-terminal, path-copy, revert, and close-tab actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor
 - `Shift` with arrow keys and mouse drag select editor text; mouse drag can continue outside the visible editor edge to extend the range while scrolling

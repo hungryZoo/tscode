@@ -299,25 +299,79 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
 
     draw_tabs(frame, app, chunks[0]);
 
-    let focused = app.focus == FocusPanel::Editor;
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Editor  Ctrl-S save  Ctrl-F find  Ctrl-H replace  Alt-[ fold  Alt-] unfold ")
-        .border_style(border_style(focused));
-    let inner = block.inner(chunks[1]);
-    app.hit_regions.editor_body = Some(inner);
-    frame.render_widget(block.style(Style::default().bg(PANEL_BG)), chunks[1]);
-
-    app.editor_height = inner.height as usize;
-    app.editor_width = inner.width as usize;
-    let Some(active_index) = app.active_tab else {
+    let panes = app.editor_visible_panes();
+    if panes.is_empty() {
+        let focused = app.focus == FocusPanel::Editor;
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Editor ")
+            .border_style(border_style(focused));
+        let inner = block.inner(chunks[1]);
+        app.hit_regions.editor_body = Some(inner);
+        frame.render_widget(block.style(Style::default().bg(PANEL_BG)), chunks[1]);
         frame.render_widget(
             Paragraph::new("Click a file in Explorer to open it.")
                 .style(Style::default().fg(MUTED).bg(PANEL_BG)),
             inner,
         );
         return;
+    }
+
+    if panes.len() == 2 && chunks[1].width >= 54 {
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Length(1),
+                Constraint::Percentage(50),
+            ])
+            .split(chunks[1]);
+        let separator = (0..split[1].height)
+            .map(|_| Line::from("│"))
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(separator).style(Style::default().fg(BORDER).bg(PANEL_BG)),
+            split[1],
+        );
+        draw_editor_pane(frame, app, panes[0].1, split[0], panes[0].0);
+        draw_editor_pane(frame, app, panes[1].1, split[2], panes[1].0);
+    } else {
+        draw_editor_pane(frame, app, panes[0].1, chunks[1], panes[0].0);
+    }
+}
+
+fn draw_editor_pane(
+    frame: &mut Frame,
+    app: &mut App,
+    active_index: usize,
+    area: Rect,
+    pane: usize,
+) {
+    let active_pane = app.active_tab == Some(active_index)
+        && (!app.editor_split_active() || app.active_editor_pane == pane);
+    let focused = app.focus == FocusPanel::Editor && active_pane;
+    let title = if app.editor_split_active() {
+        format!(
+            " Editor {}  Ctrl-S save  Ctrl-F find  Ctrl-H replace  Ctrl-\\ split ",
+            pane + 1
+        )
+    } else {
+        " Editor  Ctrl-S save  Ctrl-F find  Ctrl-H replace  Alt-[ fold  Alt-] unfold ".to_owned()
     };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(border_style(focused));
+    let inner = block.inner(area);
+    app.hit_regions
+        .editor_panes
+        .push((inner, pane, active_index));
+    if active_pane {
+        app.hit_regions.editor_body = Some(inner);
+        app.editor_height = inner.height as usize;
+        app.editor_width = inner.width as usize;
+    }
+    frame.render_widget(block.style(Style::default().bg(PANEL_BG)), area);
 
     let problem_summaries = app
         .tabs
@@ -328,6 +382,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
         .search_needle
         .clone()
         .filter(|needle| !needle.is_empty());
+
     let Some(tab) = app.tabs.get_mut(active_index) else {
         return;
     };
@@ -338,7 +393,6 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     tab.scroll = tab.scroll.min(max_scroll);
     let start = tab.scroll;
     let end = (start + height).min(visible_lines.len());
-    let number_width = tab.lines.len().max(1).to_string().len().max(3);
     let gutter_width = editor_gutter_width(tab.lines.len());
     let code_width = inner.width as usize;
     let code_width = code_width.saturating_sub(gutter_width);
@@ -349,10 +403,22 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
         .get(end.saturating_sub(1))
         .map(|line| line.saturating_add(1))
         .unwrap_or(raw_start);
+    let path = tab.path.clone();
+    let lines = tab.lines.clone();
+
     let highlighted = app
         .syntax
-        .highlight_visible(&tab.path, &tab.lines, raw_start, raw_end);
+        .highlight_visible(&path, &lines, raw_start, raw_end);
 
+    let Some(tab) = app.tabs.get(active_index) else {
+        return;
+    };
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    };
+
+    let number_width = tab.lines.len().max(1).to_string().len().max(3);
     let mut rendered = Vec::new();
     for line_index in visible_lines.iter().take(end).skip(start).copied() {
         let problem = problem_summaries.get(&line_index);
@@ -583,6 +649,7 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
         }
 
         let active = app.active_tab == Some(index);
+        let split_peer = app.editor_split_active() && app.editor_split == Some(index) && !active;
         let hovered =
             app.hover == HoverTarget::Tab(index) || app.hover == HoverTarget::TabClose(index);
         let fg = if tab.external_state == ExternalFileState::Deleted {
@@ -597,6 +664,8 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
                 .fg(Color::White)
                 .bg(ACTIVE_BG)
                 .add_modifier(Modifier::BOLD)
+        } else if split_peer {
+            Style::default().fg(Color::White).bg(Color::Rgb(38, 50, 62))
         } else if hovered {
             Style::default().fg(Color::White).bg(HOVER_BG)
         } else {
@@ -1369,6 +1438,7 @@ fn hover_name(hover: &HoverTarget) -> String {
         HoverTarget::Explorer => "explorer".to_owned(),
         HoverTarget::ExplorerRow(index) => format!("explorer row {index}"),
         HoverTarget::Editor => "editor".to_owned(),
+        HoverTarget::EditorPane(index) => format!("editor pane {index}"),
         HoverTarget::Tab(index) => format!("tab {index}"),
         HoverTarget::TabClose(index) => format!("tab close {index}"),
         HoverTarget::TerminalTab(index) => format!("terminal tab {index}"),

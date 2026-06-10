@@ -59,6 +59,7 @@ pub enum HoverTarget {
     Explorer,
     ExplorerRow(usize),
     Editor,
+    EditorPane(usize),
     Tab(usize),
     TabClose(usize),
     TerminalTab(usize),
@@ -75,6 +76,7 @@ pub struct HitRegions {
     pub explorer_area: Option<Rect>,
     pub editor_area: Option<Rect>,
     pub editor_body: Option<Rect>,
+    pub editor_panes: Vec<(Rect, usize, usize)>,
     pub terminal_area: Option<Rect>,
     pub terminal_body: Option<Rect>,
     pub terminal_input: Option<Rect>,
@@ -144,6 +146,12 @@ impl HitRegions {
             }
         }
 
+        for (rect, pane, _) in &self.editor_panes {
+            if contains(*rect, x, y) {
+                return HoverTarget::EditorPane(*pane);
+            }
+        }
+
         for (rect, _) in &self.terminal_bodies {
             if contains(*rect, x, y) {
                 return HoverTarget::TerminalInput;
@@ -175,6 +183,10 @@ fn contains(rect: Rect, x: u16, y: u16) -> bool {
         && x < rect.x.saturating_add(rect.width)
         && y >= rect.y
         && y < rect.y.saturating_add(rect.height)
+}
+
+fn is_editor_target(target: &HoverTarget) -> bool {
+    matches!(target, HoverTarget::Editor | HoverTarget::EditorPane(_))
 }
 
 fn terminal_mouse_cell_in_body(mouse: MouseEvent, body: Rect) -> Option<(u16, u16)> {
@@ -1974,6 +1986,9 @@ pub enum CommandAction {
     RevertFile,
     FormatDocument,
     CloseActiveTab,
+    OpenActiveTabToSide,
+    OpenSelectedExplorerItemToSide,
+    CloseEditorSplit,
     SaveAndCloseTab(usize),
     DiscardAndCloseTab(usize),
     CancelCloseTab,
@@ -2245,6 +2260,8 @@ pub struct App {
     pub explorer: FsTree,
     pub tabs: Vec<EditorTab>,
     pub active_tab: Option<usize>,
+    pub editor_split: Option<usize>,
+    pub active_editor_pane: usize,
     pub focus: FocusPanel,
     pub hover: HoverTarget,
     pub hit_regions: HitRegions,
@@ -2324,6 +2341,8 @@ impl App {
             explorer,
             tabs: Vec::new(),
             active_tab: None,
+            editor_split: None,
+            active_editor_pane: 0,
             focus: FocusPanel::Explorer,
             hover: HoverTarget::None,
             hit_regions: HitRegions::default(),
@@ -2539,6 +2558,13 @@ impl App {
             self.request_quit();
             return Ok(());
         }
+        if self.focus != FocusPanel::Terminal
+            && key.modifiers == KeyModifiers::CONTROL
+            && key.code == KeyCode::Char('\\')
+        {
+            self.open_active_tab_to_side();
+            return Ok(());
+        }
 
         match key.code {
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::CONTROL) => self.next_tab(),
@@ -2653,9 +2679,9 @@ impl App {
                 self.focus = FocusPanel::Terminal;
             }
             MouseEventKind::Down(MouseButton::Left)
-                if target == HoverTarget::Editor && mouse.modifiers.contains(KeyModifiers::ALT) =>
+                if is_editor_target(&target) && mouse.modifiers.contains(KeyModifiers::ALT) =>
             {
-                self.focus = FocusPanel::Editor;
+                self.activate_editor_target(&target);
                 self.editor_selection_dragging = false;
                 self.toggle_editor_cursor_from_mouse();
             }
@@ -2685,7 +2711,8 @@ impl App {
                     self.start_explorer_drag_or_click(index, mouse.modifiers);
                 }
             }
-            MouseEventKind::Down(MouseButton::Left) if target == HoverTarget::Editor => {
+            MouseEventKind::Down(MouseButton::Left) if is_editor_target(&target) => {
+                self.activate_editor_target(&target);
                 self.start_editor_selection_from_mouse();
             }
             MouseEventKind::Down(MouseButton::Left) => self.activate_target(target)?,
@@ -2693,8 +2720,8 @@ impl App {
                 self.open_context_menu_for_target(target)?
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if target == HoverTarget::Editor {
-                    self.focus = FocusPanel::Editor;
+                if is_editor_target(&target) {
+                    self.activate_editor_target(&target);
                     self.set_editor_cursor_from_mouse(true);
                 }
             }
@@ -2948,7 +2975,8 @@ impl App {
                 self.focus = FocusPanel::Explorer;
                 self.open_quick_panel(QuickPanelKind::ExplorerContextMenu)?;
             }
-            HoverTarget::Editor => {
+            HoverTarget::Editor | HoverTarget::EditorPane(_) => {
+                self.activate_editor_target(&target);
                 self.focus = FocusPanel::Editor;
                 self.set_editor_cursor_from_mouse(false);
                 self.open_quick_panel(QuickPanelKind::EditorContextMenu)?;
@@ -2977,11 +3005,15 @@ impl App {
     }
 
     fn activate_target(&mut self, target: HoverTarget) -> Result<()> {
+        self.activate_editor_target(&target);
         match target {
             HoverTarget::Explorer | HoverTarget::ExplorerRow(_) => {
                 self.focus = FocusPanel::Explorer;
             }
-            HoverTarget::Tab(_) | HoverTarget::TabClose(_) | HoverTarget::Editor => {
+            HoverTarget::Tab(_)
+            | HoverTarget::TabClose(_)
+            | HoverTarget::Editor
+            | HoverTarget::EditorPane(_) => {
                 self.focus = FocusPanel::Editor;
             }
             HoverTarget::TerminalTab(_)
@@ -3021,8 +3053,12 @@ impl App {
             }
             HoverTarget::TerminalResize => {}
             HoverTarget::QuickRow(index) => self.activate_quick_row(index),
-            HoverTarget::Editor if self.toggle_editor_fold_from_mouse() => {}
-            HoverTarget::Editor => self.set_editor_cursor_from_mouse(false),
+            HoverTarget::Editor | HoverTarget::EditorPane(_)
+                if self.toggle_editor_fold_from_mouse() => {}
+            HoverTarget::Editor | HoverTarget::EditorPane(_) => {
+                self.activate_editor_target(&target);
+                self.set_editor_cursor_from_mouse(false);
+            }
             HoverTarget::Terminal | HoverTarget::TerminalInput => {
                 self.send_terminal_mouse_click();
             }
@@ -3038,6 +3074,9 @@ impl App {
             KeyCode::Down => self.move_explorer_selection(1),
             KeyCode::PageUp => self.move_explorer_selection(-(self.explorer_height as isize)),
             KeyCode::PageDown => self.move_explorer_selection(self.explorer_height as isize),
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_selected_to_side()?
+            }
             KeyCode::Enter => self.open_or_toggle_selected()?,
             KeyCode::Right => self.expand_or_descend_selected()?,
             KeyCode::Left => self.collapse_or_select_parent(),
@@ -3633,6 +3672,7 @@ impl App {
         if let Some(index) = self.tabs.iter().position(|tab| tab.path == path) {
             self.active_tab = Some(index);
             self.focus = FocusPanel::Editor;
+            self.normalize_editor_split();
             return;
         }
 
@@ -3643,11 +3683,70 @@ impl App {
                 self.tabs.push(tab);
                 self.active_tab = Some(self.tabs.len() - 1);
                 self.focus = FocusPanel::Editor;
+                self.normalize_editor_split();
                 if read_only {
                     self.message = Some(format!("opened read-only preview for {title}"));
                 }
             }
             Err(error) => self.last_error = Some(error.to_string()),
+        }
+    }
+
+    fn open_file_to_side(&mut self, path: &Path) {
+        let previous = self.active_tab;
+        self.open_file(path);
+        let Some(active) = self.active_tab else {
+            return;
+        };
+        self.editor_split = previous.or(Some(active));
+        self.active_editor_pane = 1;
+        self.focus = FocusPanel::Editor;
+        self.normalize_editor_split();
+        let title = self
+            .tabs
+            .get(active)
+            .map(|tab| tab.title.clone())
+            .unwrap_or_else(|| "file".to_owned());
+        self.message = Some(format!("opened {title} to side"));
+    }
+
+    fn open_selected_to_side(&mut self) -> Result<()> {
+        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+            self.message = Some("no explorer item selected".to_owned());
+            return Ok(());
+        };
+        if node.is_dir {
+            self.open_or_toggle_selected()?;
+        } else {
+            self.open_file_to_side(&node.path);
+        }
+        Ok(())
+    }
+
+    fn open_active_tab_to_side(&mut self) {
+        let Some(active) = self.active_tab else {
+            self.message = Some("open a file before splitting the editor".to_owned());
+            return;
+        };
+        self.editor_split = Some(active);
+        self.active_editor_pane = 1;
+        self.focus = FocusPanel::Editor;
+        self.normalize_editor_split();
+        let title = self
+            .tabs
+            .get(active)
+            .map(|tab| tab.title.clone())
+            .unwrap_or_else(|| "active tab".to_owned());
+        self.message = Some(format!("split editor: {title}"));
+    }
+
+    fn close_editor_split(&mut self) {
+        if self.editor_split.is_some() {
+            self.editor_split = None;
+            self.active_editor_pane = 0;
+            self.message = Some("editor split closed".to_owned());
+        } else {
+            self.message = Some("editor is already single-pane".to_owned());
         }
     }
 
@@ -3662,6 +3761,7 @@ impl App {
             self.active_tab = Some(self.tabs.len() - 1);
         }
         self.focus = FocusPanel::Editor;
+        self.normalize_editor_split();
         if let Some(tab) = self.active_tab_mut()
             && let Some(line) = first_diff_hunk_line(&tab.lines)
         {
@@ -3677,6 +3777,7 @@ impl App {
         self.tabs.push(EditorTab::untitled(id, &self.root));
         self.active_tab = Some(self.tabs.len() - 1);
         self.focus = FocusPanel::Editor;
+        self.normalize_editor_split();
         self.message = Some(format!("{title} ready; use Save As to write it to disk"));
     }
 
@@ -4028,6 +4129,88 @@ impl App {
         self.active_tab.and_then(|index| self.tabs.get_mut(index))
     }
 
+    pub fn editor_split_active(&self) -> bool {
+        self.active_tab.is_some()
+            && self
+                .editor_split
+                .is_some_and(|index| index < self.tabs.len())
+    }
+
+    pub fn editor_visible_panes(&self) -> Vec<(usize, usize)> {
+        let Some(active) = self.active_tab else {
+            return Vec::new();
+        };
+        let Some(other) = self.editor_split.filter(|index| *index < self.tabs.len()) else {
+            return vec![(0, active)];
+        };
+        if self.active_editor_pane == 0 {
+            vec![(0, active), (1, other)]
+        } else {
+            vec![(0, other), (1, active)]
+        }
+    }
+
+    fn normalize_editor_split(&mut self) {
+        if self.active_tab.is_none() || self.tabs.is_empty() {
+            self.editor_split = None;
+            self.active_editor_pane = 0;
+            return;
+        }
+        if self
+            .editor_split
+            .is_some_and(|index| index >= self.tabs.len())
+        {
+            self.editor_split = None;
+            self.active_editor_pane = 0;
+        }
+        self.active_editor_pane = self.active_editor_pane.min(1);
+    }
+
+    fn adjust_editor_split_after_tab_removed(&mut self, removed: usize) {
+        self.editor_split = self.editor_split.and_then(|index| {
+            if index == removed {
+                None
+            } else if index > removed {
+                Some(index - 1)
+            } else {
+                Some(index)
+            }
+        });
+        self.normalize_editor_split();
+    }
+
+    fn activate_editor_pane(&mut self, pane: usize) {
+        let Some((body, _, tab_index)) = self
+            .hit_regions
+            .editor_panes
+            .iter()
+            .find(|(_, candidate, _)| *candidate == pane)
+            .copied()
+        else {
+            return;
+        };
+        if tab_index >= self.tabs.len() {
+            return;
+        }
+        let previous = self.active_tab;
+        self.active_tab = Some(tab_index);
+        self.active_editor_pane = pane.min(1);
+        if previous.is_some_and(|index| index != tab_index) {
+            self.editor_split = previous;
+        }
+        self.hit_regions.editor_body = Some(body);
+        self.editor_height = body.height as usize;
+        self.editor_width = body.width as usize;
+        self.focus = FocusPanel::Editor;
+        self.normalize_editor_split();
+    }
+
+    fn activate_editor_target(&mut self, target: &HoverTarget) {
+        if let HoverTarget::EditorPane(pane) = target {
+            self.activate_editor_pane(*pane);
+        }
+    }
+
     fn ensure_active_tab_writable(&mut self, action: &str) -> bool {
         let Some(tab) = self.active_tab() else {
             self.message = Some(format!("{action} requires an active editor tab"));
@@ -4126,6 +4309,7 @@ impl App {
             return Ok(());
         }
 
+        self.activate_editor_target(&target);
         self.scroll_target(target, amount);
         Ok(())
     }
@@ -4133,9 +4317,10 @@ impl App {
     fn scroll_target(&mut self, target: HoverTarget, amount: isize) {
         match target {
             HoverTarget::Explorer | HoverTarget::ExplorerRow(_) => self.scroll_explorer(amount),
-            HoverTarget::Editor | HoverTarget::Tab(_) | HoverTarget::TabClose(_) => {
-                self.scroll_editor(amount)
-            }
+            HoverTarget::Editor
+            | HoverTarget::EditorPane(_)
+            | HoverTarget::Tab(_)
+            | HoverTarget::TabClose(_) => self.scroll_editor(amount),
             HoverTarget::QuickRow(_) => self.scroll_quick_panel(amount),
             HoverTarget::Terminal
             | HoverTarget::TerminalInput
@@ -4166,10 +4351,12 @@ impl App {
     }
 
     fn scroll_target_horizontal(&mut self, target: HoverTarget, amount: isize) {
+        self.activate_editor_target(&target);
         match target {
-            HoverTarget::Editor | HoverTarget::Tab(_) | HoverTarget::TabClose(_) => {
-                self.scroll_editor_horizontal(amount)
-            }
+            HoverTarget::Editor
+            | HoverTarget::EditorPane(_)
+            | HoverTarget::Tab(_)
+            | HoverTarget::TabClose(_) => self.scroll_editor_horizontal(amount),
             HoverTarget::None if self.focus == FocusPanel::Editor => {
                 self.scroll_editor_horizontal(amount)
             }
@@ -4790,6 +4977,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::CloseActiveTab,
         },
         CommandSpec {
+            label: "Open Active Editor to Side",
+            detail: "Show the active editor tab in a side-by-side editor pane",
+            shortcut: "Ctrl-\\",
+            action: CommandAction::OpenActiveTabToSide,
+        },
+        CommandSpec {
+            label: "Close Editor Split",
+            detail: "Return the editor to a single active pane",
+            shortcut: "",
+            action: CommandAction::CloseEditorSplit,
+        },
+        CommandSpec {
             label: "Close Saved Tabs",
             detail: "Close every clean tab and keep dirty tabs open",
             shortcut: "",
@@ -4800,6 +4999,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Create a file under the selected explorer location",
             shortcut: "n",
             action: CommandAction::NewFile,
+        },
+        CommandSpec {
+            label: "Open Selected Explorer Item to Side",
+            detail: "Open the selected file in a side-by-side editor pane",
+            shortcut: "Explorer Ctrl-Enter",
+            action: CommandAction::OpenSelectedExplorerItemToSide,
         },
         CommandSpec {
             label: "New Folder",
@@ -5475,6 +5680,12 @@ impl App {
                 action: CommandAction::OpenSelectedExplorerItem,
             },
             ContextMenuAction {
+                label: "Open to Side",
+                detail: format!("Open {relative} in the side editor pane"),
+                shortcut: "Ctrl-Enter",
+                action: CommandAction::OpenSelectedExplorerItemToSide,
+            },
+            ContextMenuAction {
                 label: "New File",
                 detail: format!("Create a file under {base}"),
                 shortcut: "n",
@@ -5638,6 +5849,18 @@ impl App {
                 detail: format!("Write {relative} to disk"),
                 shortcut: "Ctrl-S",
                 action: CommandAction::SaveFile,
+            },
+            ContextMenuAction {
+                label: "Open to Side",
+                detail: format!("Show {relative} in a side-by-side editor pane"),
+                shortcut: "Ctrl-\\",
+                action: CommandAction::OpenActiveTabToSide,
+            },
+            ContextMenuAction {
+                label: "Close Editor Split",
+                detail: "Return to a single active editor pane".to_owned(),
+                shortcut: "",
+                action: CommandAction::CloseEditorSplit,
             },
             ContextMenuAction {
                 label: "Copy",
@@ -7326,6 +7549,10 @@ impl App {
             .and_then(|index| self.tabs.get(index))
             .map(|tab| tab.path.clone());
         let active_index = self.active_tab;
+        let split_path = self
+            .editor_split
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| tab.path.clone());
 
         for path in &paths {
             if path.is_dir() {
@@ -7361,6 +7588,9 @@ impl App {
         } else {
             Some(0)
         };
+        self.editor_split =
+            split_path.and_then(|path| self.tabs.iter().position(|tab| tab.path == path));
+        self.normalize_editor_split();
         self.refresh_explorer()?;
         self.message = if paths.len() == 1 {
             paths
@@ -9064,9 +9294,9 @@ impl App {
     }
 
     fn set_editor_cursor_from_mouse(&mut self, selecting: bool) {
-        let HoverTarget::Editor = self.hover else {
+        if !is_editor_target(&self.hover) {
             return;
-        };
+        }
         if let Some((line, col)) = self.editor_mouse_position()
             && let Some(tab) = self.active_tab_mut()
         {
@@ -9200,14 +9430,12 @@ impl App {
     }
 
     fn update_editor_hover_for_target(&mut self, target: &HoverTarget) {
-        self.editor_hover = if matches!(target, HoverTarget::Editor)
-            && self.prompt.is_none()
-            && self.quick_panel.is_none()
-        {
-            self.editor_hover_at_mouse()
-        } else {
-            None
-        };
+        self.editor_hover =
+            if is_editor_target(target) && self.prompt.is_none() && self.quick_panel.is_none() {
+                self.editor_hover_at_mouse()
+            } else {
+                None
+            };
     }
 
     fn editor_hover_at_mouse(&self) -> Option<EditorHoverInfo> {
@@ -9643,6 +9871,9 @@ impl App {
             CommandAction::RevertFile => self.revert_active_tab()?,
             CommandAction::FormatDocument => self.format_active_document()?,
             CommandAction::CloseActiveTab => self.close_active_tab(),
+            CommandAction::OpenActiveTabToSide => self.open_active_tab_to_side(),
+            CommandAction::OpenSelectedExplorerItemToSide => self.open_selected_to_side()?,
+            CommandAction::CloseEditorSplit => self.close_editor_split(),
             CommandAction::SaveAndCloseTab(index) => self.save_and_close_tab(index)?,
             CommandAction::DiscardAndCloseTab(index) => self.discard_and_close_tab(index),
             CommandAction::CancelCloseTab => {
@@ -10171,9 +10402,16 @@ impl App {
 
     fn close_saved_tabs(&mut self) {
         let before = self.tabs.len();
+        let split_path = self
+            .editor_split
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| tab.path.clone());
         self.tabs.retain(|tab| tab.dirty);
         let closed = before.saturating_sub(self.tabs.len());
         self.active_tab = if self.tabs.is_empty() { None } else { Some(0) };
+        self.editor_split =
+            split_path.and_then(|path| self.tabs.iter().position(|tab| tab.path == path));
+        self.normalize_editor_split();
         self.message = if self.tabs.is_empty() {
             Some(format!("closed {closed} saved tab(s)"))
         } else {
@@ -10209,6 +10447,7 @@ impl App {
         } else {
             Some(index.saturating_sub(1).min(self.tabs.len() - 1))
         };
+        self.adjust_editor_split_after_tab_removed(index);
         self.message = Some(format!("{verb} {title}"));
     }
 
@@ -19900,6 +20139,112 @@ src/lib.rs:3:1: note: trailing note
         assert!(!source.exists());
         assert!(destination.exists());
         assert_eq!(app.active_tab().unwrap().path, destination);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_open_to_side_creates_real_editor_split() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-editor-split-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("left.rs"), "fn left() {}\n").unwrap();
+        fs::write(root.join("right.rs"), "fn right() {}\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let left = canonical_root.join("left.rs");
+        let right = canonical_root.join("right.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&left);
+        app.explorer.reveal(&right).unwrap();
+
+        let commands = app.command_palette_items("open side");
+        assert!(commands.iter().any(|item| {
+            item.command == Some(CommandAction::OpenSelectedExplorerItemToSide)
+                || item.command == Some(CommandAction::OpenActiveTabToSide)
+        }));
+        assert!(
+            app.explorer_context_menu_items("")
+                .iter()
+                .any(|item| item.label == "Open to Side"
+                    && item.command == Some(CommandAction::OpenSelectedExplorerItemToSide))
+        );
+
+        app.run_command(CommandAction::OpenSelectedExplorerItemToSide)
+            .unwrap();
+
+        assert_eq!(app.active_tab().unwrap().path, right);
+        assert!(app.editor_split_active());
+        assert_eq!(app.active_editor_pane, 1);
+        assert_eq!(
+            app.editor_visible_panes()
+                .into_iter()
+                .map(|(_, index)| app.tabs[index].path.clone())
+                .collect::<Vec<_>>(),
+            vec![left.clone(), right.clone()]
+        );
+
+        app.run_command(CommandAction::CloseEditorSplit).unwrap();
+        assert!(!app.editor_split_active());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_split_mouse_wheel_activates_and_scrolls_hovered_pane() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-editor-split-mouse-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let left_text = (0..30)
+            .map(|index| format!("left {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let right_text = (0..30)
+            .map(|index| format!("right {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(root.join("left.rs"), format!("{left_text}\n")).unwrap();
+        fs::write(root.join("right.rs"), format!("{right_text}\n")).unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let left = canonical_root.join("left.rs");
+        let right = canonical_root.join("right.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&left);
+        app.open_file_to_side(&right);
+
+        app.hit_regions.editor_area = Some(Rect::new(0, 0, 81, 8));
+        app.hit_regions.editor_panes = vec![
+            (Rect::new(0, 0, 40, 4), 0, 0),
+            (Rect::new(41, 0, 40, 4), 1, 1),
+        ];
+        app.hit_regions.editor_body = Some(Rect::new(41, 0, 40, 4));
+        app.editor_height = 4;
+        app.editor_width = 40;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 2,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        assert_eq!(app.active_tab().unwrap().path, left);
+        assert_eq!(app.active_editor_pane, 0);
+        assert!(app.editor_split_active());
+        assert_eq!(
+            app.editor_split.map(|index| app.tabs[index].path.clone()),
+            Some(right)
+        );
+        assert!(app.tabs[0].scroll > 0);
+        assert_eq!(app.tabs[1].scroll, 0);
+
+        app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
 }

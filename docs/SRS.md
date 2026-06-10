@@ -102,7 +102,7 @@ The explorer shall detect externally-created, externally-deleted, renamed, and m
 
 ### R-115 Explorer Context Menu
 
-Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, compare selected files, rename, delete, New Terminal Here, refresh, collapse folders, sort mode selection, toggle hidden files, and toggle generated folders. When a multi-selection is active, applicable copy, cut, duplicate, delete, and path-copy actions shall apply to the whole selected set, compare selected files shall be available for exactly two selected regular files, and rename shall remain a single-item action. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
+Right-clicking an explorer row shall select that row and open a mouse-selectable context menu. The menu shall expose actions for open/toggle, open to side, new file, new folder, copy path, copy relative path, copy, cut, paste, duplicate, compare selected files, rename, delete, New Terminal Here, refresh, collapse folders, sort mode selection, toggle hidden files, and toggle generated folders. When a multi-selection is active, applicable copy, cut, duplicate, delete, and path-copy actions shall apply to the whole selected set, compare selected files shall be available for exactly two selected regular files, and rename shall remain a single-item action. Activating a menu item shall call the same real filesystem, terminal, or explorer operation used by keyboard shortcuts and the command palette.
 
 ### R-116 Ignore-Aware Workspace Visibility
 
@@ -165,6 +165,10 @@ Closing a clean editor tab through `Ctrl-w`, the tab close target, middle-click,
 ### R-208E Binary and Large File Safety
 
 Opening a file that contains NUL bytes, is not valid UTF-8 text, or exceeds the configured editable-size limit shall create a read-only editor tab containing a bounded hex/ascii preview instead of a writable text buffer. Editing, Save, Save As, formatting, rename, replace, workspace search, and workspace replace shall not treat that preview as writable source text for the original file.
+
+### R-208F Editor Split
+
+The editor shall support a side-by-side split view when at least one editor tab is open. `Ctrl-\`, the command palette, and the editor context menu shall split the active editor tab into a side pane. Explorer `Ctrl-Enter`, the explorer context menu, and the command palette shall open the selected explorer file to the side while preserving the previously active editor tab in the other pane. Each rendered editor pane shall have its own hit region. Clicking, dragging, or wheeling over a split pane shall activate that pane before applying cursor, selection, fold, vertical-scroll, or horizontal-scroll behavior. Closing Editor Split shall return to a single-pane editor view without closing tabs or mutating file buffers. Closing tabs shall clear or retarget stale split-pane indices so the split state cannot point at a removed tab.
 
 ### R-209 Search
 
@@ -490,11 +494,11 @@ The application shall enable mouse capture while running.
 
 ### R-402 Click Focus
 
-Clicking explorer, editor, tab strip, or terminal shall move focus to that panel.
+Clicking explorer, editor, editor split pane, tab strip, or terminal shall move focus to that panel.
 
 ### R-403 Wheel Routing
 
-Mouse wheel events shall apply to the panel under the cursor when possible.
+Mouse wheel events shall apply to the panel or split pane under the cursor when possible.
 
 ### R-404 Hover Routing
 
@@ -545,6 +549,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Start `cargo run -- .` on macOS and confirm the TUI renders.
 - Click a directory and confirm it expands or collapses.
 - Click a file and confirm a tab opens.
+- Use Explorer `Ctrl-Enter` or Open to Side and confirm the selected file opens in a side-by-side editor pane while the previous tab remains visible; click or wheel each pane and confirm the hovered pane becomes active and scrolls independently.
 - Hover rows/tabs and confirm highlight changes.
 - Copy, paste, duplicate, and cut/move explorer items and confirm filesystem results.
 - Drag one or more selected explorer files onto another folder and confirm the files move, then repeat with `Alt` held and confirm the files are copied while originals remain.
