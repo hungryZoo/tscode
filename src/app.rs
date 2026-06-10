@@ -2764,8 +2764,9 @@ impl App {
             KeyCode::Down => self.move_explorer_selection(1),
             KeyCode::PageUp => self.move_explorer_selection(-(self.explorer_height as isize)),
             KeyCode::PageDown => self.move_explorer_selection(self.explorer_height as isize),
-            KeyCode::Enter | KeyCode::Right => self.open_or_toggle_selected()?,
-            KeyCode::Left => self.collapse_selected(),
+            KeyCode::Enter => self.open_or_toggle_selected()?,
+            KeyCode::Right => self.expand_or_descend_selected()?,
+            KeyCode::Left => self.collapse_or_select_parent(),
             KeyCode::Char('r') => self.refresh_explorer()?,
             KeyCode::Char('s') => self.cycle_explorer_sort_mode(),
             KeyCode::Char('/') => self.start_explorer_filter_prompt(),
@@ -3226,10 +3227,69 @@ impl App {
         Ok(())
     }
 
-    fn collapse_selected(&mut self) {
-        if let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() {
+    fn expand_or_descend_selected(&mut self) -> Result<()> {
+        let Some(node) = self.visible_nodes().get(self.explorer.selected).cloned() else {
+            return Ok(());
+        };
+
+        if !node.is_dir {
+            self.open_file(&node.path);
+            return Ok(());
+        }
+
+        if !node.expanded {
+            if let Err(error) = self.explorer.toggle(&node.path) {
+                self.last_error = Some(error.to_string());
+            }
+            self.ensure_explorer_selection_visible();
+            return Ok(());
+        }
+
+        let nodes = self.visible_nodes();
+        if let Some(child_index) = nodes
+            .iter()
+            .enumerate()
+            .skip(self.explorer.selected + 1)
+            .take_while(|(_, candidate)| candidate.depth > node.depth)
+            .find_map(|(index, candidate)| (candidate.depth == node.depth + 1).then_some(index))
+        {
+            self.explorer.selected = child_index;
+            self.set_explorer_anchor_to_current();
+            self.ensure_explorer_selection_visible();
+        }
+
+        Ok(())
+    }
+
+    fn collapse_or_select_parent(&mut self) {
+        let nodes = self.visible_nodes();
+        let Some(node) = nodes.get(self.explorer.selected).cloned() else {
+            return;
+        };
+
+        if node.is_dir && node.expanded {
             self.explorer.collapse(&node.path);
             self.prune_explorer_multi_selection();
+            self.ensure_explorer_selection_visible();
+            return;
+        }
+
+        if node.depth == 0 {
+            return;
+        }
+
+        if let Some(parent_index) = nodes[..self.explorer.selected]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, candidate)| {
+                (candidate.depth < node.depth && node.path.starts_with(&candidate.path))
+                    .then_some(index)
+            })
+        {
+            self.explorer.selected = parent_index;
+            self.set_explorer_anchor_to_current();
+            self.ensure_explorer_selection_visible();
         }
     }
 
@@ -13259,6 +13319,64 @@ mod tests {
         );
         assert!(panel.items.iter().any(|item| item.label == "Sort by Size"
             && item.command == Some(CommandAction::SortExplorerBySize)));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_left_and_right_keys_behave_like_a_file_tree() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-arrow-tree-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let file = src.join("main.rs");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        let canonical_src = src.canonicalize().unwrap();
+        let canonical_file = file.canonicalize().unwrap();
+        app.focus = FocusPanel::Explorer;
+        app.explorer.reveal(&canonical_src).unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::empty()))
+            .unwrap();
+        let nodes = app.visible_nodes();
+        let selected = nodes.get(app.explorer.selected).unwrap();
+        assert_eq!(selected.path, canonical_src);
+        assert!(selected.expanded);
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::empty()))
+            .unwrap();
+        assert_eq!(
+            app.visible_nodes().get(app.explorer.selected).unwrap().path,
+            canonical_file
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::empty()))
+            .unwrap();
+        assert_eq!(
+            app.visible_nodes().get(app.explorer.selected).unwrap().path,
+            canonical_src
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::empty()))
+            .unwrap();
+        let nodes = app.visible_nodes();
+        let selected = nodes.get(app.explorer.selected).unwrap();
+        assert_eq!(selected.path, canonical_src);
+        assert!(!selected.expanded);
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::empty()))
+            .unwrap();
+        assert_eq!(
+            app.visible_nodes().get(app.explorer.selected).unwrap().path,
+            canonical_root
+        );
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

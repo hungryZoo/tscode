@@ -798,9 +798,9 @@ fn key_to_bytes(key: KeyEvent, application_cursor: bool) -> Option<Vec<u8>> {
     }
 
     let bytes = match key.code {
-        KeyCode::Backspace => b"\x7f".to_vec(),
-        KeyCode::Enter => b"\r".to_vec(),
-        KeyCode::Tab => b"\t".to_vec(),
+        KeyCode::Backspace => backspace_key(key.modifiers),
+        KeyCode::Enter => with_alt(b"\r".to_vec(), alt),
+        KeyCode::Tab => with_alt(b"\t".to_vec(), alt),
         KeyCode::BackTab => b"\x1b[Z".to_vec(),
         KeyCode::Esc => b"\x1b".to_vec(),
         KeyCode::Left => cursor_key('D', key.modifiers, application_cursor),
@@ -815,11 +815,11 @@ fn key_to_bytes(key: KeyEvent, application_cursor: bool) -> Option<Vec<u8>> {
         KeyCode::Insert => csi_tilde(2, key.modifiers),
         KeyCode::F(number) => function_key(number, key.modifiers)?,
         KeyCode::Null => b"\0".to_vec(),
-        KeyCode::Char(c) => c.to_string().into_bytes(),
+        KeyCode::Char(c) => with_alt(c.to_string().into_bytes(), alt),
         _ => return None,
     };
 
-    Some(with_alt(bytes, alt && matches!(key.code, KeyCode::Char(_))))
+    Some(bytes)
 }
 
 fn ctrl_byte(c: char) -> Option<u8> {
@@ -834,10 +834,32 @@ fn ctrl_byte(c: char) -> Option<u8> {
             ']' => Some(0x1d),
             '^' => Some(0x1e),
             '_' => Some(0x1f),
+            '/' | '-' => Some(0x1f),
             '?' => Some(0x7f),
+            '2' => Some(0x00),
+            '3' => Some(0x1b),
+            '4' => Some(0x1c),
+            '5' => Some(0x1d),
+            '6' => Some(0x1e),
+            '7' => Some(0x1f),
+            '8' => Some(0x7f),
             _ => None,
         }
     }
+}
+
+fn backspace_key(modifiers: KeyModifiers) -> Vec<u8> {
+    let mut bytes = if modifiers.contains(KeyModifiers::CONTROL) {
+        // Shells using readline/zle bind Ctrl-W to backward-kill-word, which is
+        // the closest widely-supported legacy terminal behavior for Ctrl-Backspace.
+        vec![0x17]
+    } else {
+        b"\x7f".to_vec()
+    };
+    if modifiers.contains(KeyModifiers::ALT) {
+        bytes.insert(0, 0x1b);
+    }
+    bytes
 }
 
 fn with_alt(mut bytes: Vec<u8>, alt: bool) -> Vec<u8> {
@@ -1048,6 +1070,66 @@ mod tests {
         assert_eq!(
             key_to_bytes(key(KeyCode::BackTab, KeyModifiers::SHIFT), false),
             Some(b"\x1b[Z".to_vec())
+        );
+    }
+
+    #[test]
+    fn terminal_key_encoding_supports_shell_editing_shortcuts() {
+        assert_eq!(
+            key_to_bytes(key(KeyCode::Backspace, KeyModifiers::empty()), false),
+            Some(b"\x7f".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(key(KeyCode::Backspace, KeyModifiers::ALT), false),
+            Some(b"\x1b\x7f".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(key(KeyCode::Backspace, KeyModifiers::CONTROL), false),
+            Some(vec![0x17])
+        );
+        assert_eq!(
+            key_to_bytes(
+                key(
+                    KeyCode::Backspace,
+                    KeyModifiers::CONTROL | KeyModifiers::ALT
+                ),
+                false,
+            ),
+            Some(b"\x1b\x17".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(key(KeyCode::Enter, KeyModifiers::ALT), false),
+            Some(b"\x1b\r".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(key(KeyCode::Tab, KeyModifiers::ALT), false),
+            Some(b"\x1b\t".to_vec())
+        );
+    }
+
+    #[test]
+    fn terminal_key_encoding_supports_control_punctuation() {
+        assert_eq!(
+            key_to_bytes(key(KeyCode::Char('/'), KeyModifiers::CONTROL), false),
+            Some(vec![0x1f])
+        );
+        assert_eq!(
+            key_to_bytes(key(KeyCode::Char('6'), KeyModifiers::CONTROL), false),
+            Some(vec![0x1e])
+        );
+        assert_eq!(
+            key_to_bytes(key(KeyCode::Char('8'), KeyModifiers::CONTROL), false),
+            Some(vec![0x7f])
+        );
+        assert_eq!(
+            key_to_bytes(
+                key(
+                    KeyCode::Char('3'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT
+                ),
+                false
+            ),
+            Some(b"\x1b\x1b".to_vec())
         );
     }
 

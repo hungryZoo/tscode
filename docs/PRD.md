@@ -49,6 +49,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can type into a real shell session, use `Ctrl-c`, and keep session state between commands.
 - As a developer, I can use full-screen terminal applications such as pagers and editors without tscode stealing their normal terminal keys.
 - As a developer, I can see ANSI-colored command output such as compiler errors, `git status`, and `ls --color` without losing terminal styling.
+- As a developer, I can use shell editing shortcuts such as `Alt-Backspace`, `Ctrl-Backspace`, `Ctrl-/`, and `Ctrl-6` in the integrated terminal and have them reach readline/zsh/fish-style shells as terminal bytes.
 - As a developer, I can click common compiler, test, traceback, and stack-frame file references printed by the shell and jump to that source location in the editor.
 - As a developer, I can drag across visible terminal output, see the selected cells highlighted, copy that text, and paste it back into the active shell with terminal-safe shortcuts.
 - As a developer, I can search the integrated terminal's visible output and scrollback, see matches highlighted, and jump between matches without losing the PTY session.
@@ -61,6 +62,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can filter the explorer tree, hide or show dot-prefixed entries, hide or show generated folders, and see basic file metadata while browsing.
 - As a developer, I can sort the explorer by name, type, modified time, or size without losing my current selection.
 - As a developer, explorer filtering finds nested files inside collapsed folders and expands the matching path enough for me to click it.
+- As a developer, I can use `Right` and `Left` in the explorer like a normal file tree: expand, move into children, collapse, and move back to the parent without accidentally toggling the wrong folder.
 - As a developer, I can see Git working tree status badges in the explorer when the workspace is inside a Git repository.
 - As a developer, I can open a Source Control panel, inspect changed Git files and diff hunks, open changed files as read-only Git diff tabs, stage or unstage selected paths or all changes, filter that list, and jump directly from a hunk to the changed source line.
 - As a developer, I can undo and redo edits, paste text, repeat search matches, close clean tabs immediately, and choose whether to save, discard, or cancel when closing a dirty tab.

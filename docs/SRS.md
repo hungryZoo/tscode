@@ -38,6 +38,10 @@ The explorer shall allow the user to change sorting to name, type, modified time
 
 Clicking or pressing `Enter` on a directory shall toggle expanded state.
 
+### R-103A Explorer Tree Arrow Semantics
+
+When explorer focus is active, pressing `Right` on a collapsed directory shall expand it without moving selection, pressing `Right` on an expanded directory shall move selection to its first visible direct child when one exists, and pressing `Right` on a file shall open it in the editor. Pressing `Left` on an expanded directory shall collapse it without moving selection; pressing `Left` on a collapsed directory or file shall move selection to the nearest visible ancestor directory when one exists.
+
 ### R-104 File Open
 
 Clicking or pressing `Enter` on a file shall open it in the editor.
@@ -398,7 +402,7 @@ The terminal renderer shall preserve visible ANSI foreground colors, background 
 
 ### R-312 Terminal Modified Keys
 
-When terminal focus is active, modified navigation keys, function keys, Shift-Tab, null, and application-cursor arrows shall be encoded as xterm-compatible sequences where crossterm reports enough information.
+When terminal focus is active, modified navigation keys, function keys, Shift-Tab, null, and application-cursor arrows shall be encoded as xterm-compatible sequences where crossterm reports enough information. Shell editing keys and control punctuation shall be forwarded as legacy terminal bytes where widely supported: `Alt-Backspace` as `ESC DEL`, `Ctrl-Backspace` as `Ctrl-W`, `Alt-Enter` as `ESC CR`, `Alt-Tab` as `ESC TAB`, and control punctuation/digit combinations such as `Ctrl-/`, `Ctrl-6`, and `Ctrl-8` as their traditional C0 control bytes.
 
 ### R-313 Terminal Bracketed Paste
 
@@ -522,6 +526,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Hover rows/tabs and confirm highlight changes.
 - Copy, paste, duplicate, and cut/move explorer items and confirm filesystem results.
 - Open a file, reveal it in the explorer, and confirm its row is selected.
+- In the explorer, use `Right` on a folder to expand it, press `Right` again to move into its first child, then use `Left` to return to the folder, collapse it, and move to its parent.
 - Edit text, use `Ctrl-z`/`Ctrl-y`, save with `Ctrl-s`, and confirm file contents on disk.
 - Use Save As from the command palette to write the active buffer to a nested new path, confirm parent folders are created, confirm the active tab retargets to the new file, confirm the original source file is unchanged, and confirm a dirty open target is refused.
 - Create an Untitled tab with `Ctrl-n`, type text, confirm no `Untitled-*` placeholder exists on disk, confirm Save File opens Save As, confirm Save As writes the real target and retargets the tab, and confirm Save All skips any remaining dirty Untitled tab.
@@ -550,6 +555,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use the command palette to clear and restart the integrated terminal.
 - Use the mouse wheel over explorer/editor/terminal and confirm scroll changes.
 - Type `pwd` in the terminal panel and confirm the output points at the workspace.
+- In terminal focus, confirm shell editing shortcuts such as `Alt-Backspace`, `Ctrl-Backspace`, `Ctrl-/`, and `Ctrl-6` are forwarded to the PTY instead of being swallowed by the app.
 - Print colored terminal output and confirm ANSI colors/styles are rendered.
 - Print `src/app.rs:10:1`, click it in the terminal panel, and confirm the editor opens that file at line 10, column 1.
 - Build release artifacts through the release workflow.
