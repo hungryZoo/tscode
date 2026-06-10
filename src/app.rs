@@ -323,6 +323,7 @@ pub struct EditorTab {
     pub extra_selections: Vec<EditorSelection>,
     pub extra_cursors: Vec<(usize, usize)>,
     pub folded_lines: BTreeSet<usize>,
+    pub bookmarks: BTreeSet<usize>,
     pub document_highlights: Vec<lsp::LspDocumentHighlight>,
     pub dirty: bool,
     pub external_state: ExternalFileState,
@@ -378,6 +379,7 @@ impl EditorTab {
             extra_selections: Vec::new(),
             extra_cursors: Vec::new(),
             folded_lines: BTreeSet::new(),
+            bookmarks: BTreeSet::new(),
             document_highlights: Vec::new(),
             dirty: false,
             external_state: ExternalFileState::Clean,
@@ -404,6 +406,7 @@ impl EditorTab {
             extra_selections: Vec::new(),
             extra_cursors: Vec::new(),
             folded_lines: BTreeSet::new(),
+            bookmarks: BTreeSet::new(),
             document_highlights: Vec::new(),
             dirty: false,
             external_state: ExternalFileState::Clean,
@@ -429,6 +432,7 @@ impl EditorTab {
             extra_selections: Vec::new(),
             extra_cursors: Vec::new(),
             folded_lines: BTreeSet::new(),
+            bookmarks: BTreeSet::new(),
             document_highlights: Vec::new(),
             dirty: false,
             external_state: ExternalFileState::Clean,
@@ -461,6 +465,7 @@ impl EditorTab {
         self.extra_selections.clear();
         self.extra_cursors.clear();
         self.folded_lines.clear();
+        self.prune_bookmarks();
         self.document_highlights.clear();
         self.dirty = false;
         self.external_state = ExternalFileState::Clean;
@@ -503,6 +508,7 @@ impl EditorTab {
         self.extra_selections.clear();
         self.extra_cursors.clear();
         self.folded_lines.clear();
+        self.prune_bookmarks();
         self.document_highlights.clear();
         self.dirty = true;
         true
@@ -613,12 +619,14 @@ impl EditorTab {
 
     fn newline_raw(&mut self) {
         let cursor_col = self.cursor_col;
+        let insert_at = self.cursor_line + 1;
         let line = self.current_line_mut();
         let byte = byte_index_for_char(line, cursor_col);
         let rest = line.split_off(byte);
         self.cursor_line += 1;
         self.cursor_col = 0;
         self.lines.insert(self.cursor_line, rest);
+        self.shift_bookmarks_for_insert(insert_at, 1);
     }
 
     fn newline_auto_indent_raw(&mut self) {
@@ -639,6 +647,7 @@ impl EditorTab {
             .and_then(auto_pair_close)
             .is_some_and(|close| after.trim_start().starts_with(close));
 
+        let insert_at = self.cursor_line + 1;
         self.lines[self.cursor_line] = before;
         self.cursor_line += 1;
         self.cursor_col = inner_indent.chars().count();
@@ -646,9 +655,11 @@ impl EditorTab {
             self.lines.insert(self.cursor_line, inner_indent);
             self.lines
                 .insert(self.cursor_line + 1, format!("{base_indent}{after}"));
+            self.shift_bookmarks_for_insert(insert_at, 2);
         } else {
             self.lines
                 .insert(self.cursor_line, format!("{inner_indent}{after}"));
+            self.shift_bookmarks_for_insert(insert_at, 1);
         }
     }
 
@@ -769,6 +780,7 @@ impl EditorTab {
         for (offset, duplicate) in duplicates.iter().cloned().enumerate() {
             self.lines.insert(insert_at + offset, duplicate);
         }
+        self.shift_bookmarks_for_insert(insert_at, duplicates.len());
         if had_selection {
             let duplicated_start = insert_at;
             let duplicated_end = insert_at + duplicates.len() - 1;
@@ -786,10 +798,12 @@ impl EditorTab {
         if start == 0 && end + 1 >= self.lines.len() {
             self.lines.clear();
             self.lines.push(String::new());
+            self.bookmarks.clear();
             self.cursor_line = 0;
             self.cursor_col = 0;
         } else {
             self.lines.drain(start..=end);
+            self.shift_bookmarks_for_delete(start, end);
             self.cursor_line = start.min(self.lines.len().saturating_sub(1));
             self.cursor_col = 0;
         }
@@ -806,6 +820,7 @@ impl EditorTab {
         self.push_undo();
         let previous = self.lines.remove(start - 1);
         self.lines.insert(end, previous);
+        self.shift_bookmarks_for_move_up(start, end);
         if had_selection {
             self.select_line_range(start - 1, end - 1);
         } else {
@@ -824,6 +839,7 @@ impl EditorTab {
         self.push_undo();
         let next = self.lines.remove(end + 1);
         self.lines.insert(start, next);
+        self.shift_bookmarks_for_move_down(start, end);
         if had_selection {
             self.select_line_range(start + 1, end + 1);
         } else {
@@ -1286,6 +1302,106 @@ impl EditorTab {
         count
     }
 
+    pub fn has_bookmark(&self, line_index: usize) -> bool {
+        self.bookmarks.contains(&line_index)
+    }
+
+    pub fn toggle_bookmark_at_line(&mut self, line_index: usize) -> Option<bool> {
+        if self.lines.is_empty() {
+            return None;
+        }
+        let line_index = line_index.min(self.lines.len().saturating_sub(1));
+        if !self.bookmarks.insert(line_index) {
+            self.bookmarks.remove(&line_index);
+            Some(false)
+        } else {
+            Some(true)
+        }
+    }
+
+    fn clear_bookmarks(&mut self) -> usize {
+        let count = self.bookmarks.len();
+        self.bookmarks.clear();
+        count
+    }
+
+    fn prune_bookmarks(&mut self) {
+        let line_count = self.lines.len();
+        self.bookmarks.retain(|line| *line < line_count);
+    }
+
+    fn shift_bookmarks_for_insert(&mut self, at: usize, count: usize) {
+        if count == 0 || self.bookmarks.is_empty() {
+            return;
+        }
+        self.bookmarks = self
+            .bookmarks
+            .iter()
+            .map(|line| if *line >= at { *line + count } else { *line })
+            .collect();
+        self.prune_bookmarks();
+    }
+
+    fn shift_bookmarks_for_delete(&mut self, start: usize, end: usize) {
+        if start > end || self.bookmarks.is_empty() {
+            return;
+        }
+        let count = end - start + 1;
+        self.bookmarks = self
+            .bookmarks
+            .iter()
+            .filter_map(|line| {
+                if *line < start {
+                    Some(*line)
+                } else if *line > end {
+                    Some(line.saturating_sub(count))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.prune_bookmarks();
+    }
+
+    fn shift_bookmarks_for_move_up(&mut self, start: usize, end: usize) {
+        if start == 0 || self.bookmarks.is_empty() {
+            return;
+        }
+        self.bookmarks = self
+            .bookmarks
+            .iter()
+            .map(|line| {
+                if *line == start - 1 {
+                    end
+                } else if (start..=end).contains(line) {
+                    line.saturating_sub(1)
+                } else {
+                    *line
+                }
+            })
+            .collect();
+    }
+
+    fn shift_bookmarks_for_move_down(&mut self, start: usize, end: usize) {
+        if end + 1 >= self.lines.len() || self.bookmarks.is_empty() {
+            return;
+        }
+        self.bookmarks = self
+            .bookmarks
+            .iter()
+            .map(|line| {
+                if *line == end + 1 {
+                    start
+                } else if (start..=end).contains(line) {
+                    *line + 1
+                } else {
+                    *line
+                }
+            })
+            .collect();
+        self.prune_bookmarks();
+    }
+
     pub fn visible_line_indices(&self) -> Vec<usize> {
         let mut indices = Vec::with_capacity(self.lines.len());
         let mut line_index = 0;
@@ -1685,6 +1801,9 @@ impl EditorTab {
         if self.lines.is_empty() {
             self.lines.push(String::new());
         }
+        if start_line != end_line {
+            self.shift_bookmarks_for_delete(start_line + 1, end_line);
+        }
         self.cursor_line = start_line.min(self.lines.len().saturating_sub(1));
         self.cursor_col = start_col;
         self.clamp_cursor_col();
@@ -1818,6 +1937,7 @@ impl EditorTab {
         self.extra_cursors = snapshot.extra_cursors;
         self.folded_lines.clear();
         self.document_highlights.clear();
+        self.prune_bookmarks();
         self.clamp_cursor_col();
         self.clamp_selections();
     }
@@ -1831,6 +1951,8 @@ impl EditorTab {
         self.extra_selections = other.extra_selections.clone();
         self.extra_cursors = other.extra_cursors.clone();
         self.folded_lines = other.folded_lines.clone();
+        self.bookmarks = other.bookmarks.clone();
+        self.prune_bookmarks();
         self.clamp_cursor_col();
         self.clamp_selections();
     }
@@ -1937,6 +2059,7 @@ pub enum QuickPanelKind {
     References,
     LspReferences,
     Problems,
+    Bookmarks,
     SourceControl,
     Branches,
     Tasks,
@@ -2056,6 +2179,11 @@ pub enum CommandAction {
     RunWorkspaceCheck,
     RunLspDiagnostics,
     ShowProblems,
+    ShowBookmarks,
+    ToggleBookmark,
+    NextBookmark,
+    PreviousBookmark,
+    ClearBookmarks,
     ShowSourceControl,
     ShowGitBranches,
     CheckoutGitBranch,
@@ -3450,6 +3578,9 @@ impl App {
                 KeyCode::Down => self.move_active_line_down(),
                 KeyCode::Char('[') => self.toggle_active_fold(),
                 KeyCode::Char(']') => self.unfold_all_active_tab(),
+                KeyCode::Char('b') | KeyCode::Char('B') => self.toggle_bookmark_at_cursor(),
+                KeyCode::Char('n') | KeyCode::Char('N') => self.jump_to_relative_bookmark(true),
+                KeyCode::Char('p') | KeyCode::Char('P') => self.jump_to_relative_bookmark(false),
                 KeyCode::Char('a') | KeyCode::Char('A')
                     if key.modifiers.contains(KeyModifiers::SHIFT) =>
                 {
@@ -5072,7 +5203,7 @@ fn editor_code_width(tab: &EditorTab, editor_width: usize) -> usize {
 }
 
 fn editor_gutter_width(line_count: usize) -> usize {
-    line_count.max(1).to_string().len().max(3) + 2
+    line_count.max(1).to_string().len().max(3) + 3
 }
 
 pub fn editor_visual_rows(
@@ -5503,6 +5634,36 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Show the last collected workspace or language-server diagnostics",
             shortcut: "",
             action: CommandAction::ShowProblems,
+        },
+        CommandSpec {
+            label: "Show Bookmarks",
+            detail: "List all editor bookmarks across open tabs and jump to one",
+            shortcut: "",
+            action: CommandAction::ShowBookmarks,
+        },
+        CommandSpec {
+            label: "Toggle Bookmark",
+            detail: "Add or remove a bookmark on the active editor line",
+            shortcut: "Alt-B",
+            action: CommandAction::ToggleBookmark,
+        },
+        CommandSpec {
+            label: "Next Bookmark",
+            detail: "Jump to the next editor bookmark across open tabs",
+            shortcut: "Alt-N",
+            action: CommandAction::NextBookmark,
+        },
+        CommandSpec {
+            label: "Previous Bookmark",
+            detail: "Jump to the previous editor bookmark across open tabs",
+            shortcut: "Alt-P",
+            action: CommandAction::PreviousBookmark,
+        },
+        CommandSpec {
+            label: "Clear Bookmarks",
+            detail: "Remove every bookmark from the active editor tab",
+            shortcut: "",
+            action: CommandAction::ClearBookmarks,
         },
         CommandSpec {
             label: "Source Control",
@@ -6204,6 +6365,7 @@ impl App {
             QuickPanelKind::References => self.reference_items(&query)?,
             QuickPanelKind::LspReferences => filter_existing_quick_items(existing_items, &query),
             QuickPanelKind::Problems => self.problem_items(&query),
+            QuickPanelKind::Bookmarks => self.bookmark_items(&query),
             QuickPanelKind::SourceControl => self.source_control_items(&query)?,
             QuickPanelKind::Branches => self.branch_items(&query)?,
             QuickPanelKind::Tasks => self.task_items(&query),
@@ -6613,6 +6775,36 @@ impl App {
                 detail: "Jump to a line or line:column in the active file".to_owned(),
                 shortcut: "Ctrl-L",
                 action: CommandAction::GotoLine,
+            },
+            ContextMenuAction {
+                label: "Toggle Bookmark",
+                detail: "Add or remove a bookmark on the current editor line".to_owned(),
+                shortcut: "Alt-B",
+                action: CommandAction::ToggleBookmark,
+            },
+            ContextMenuAction {
+                label: "Show Bookmarks",
+                detail: "List editor bookmarks across open tabs".to_owned(),
+                shortcut: "",
+                action: CommandAction::ShowBookmarks,
+            },
+            ContextMenuAction {
+                label: "Next Bookmark",
+                detail: "Jump to the next editor bookmark".to_owned(),
+                shortcut: "Alt-N",
+                action: CommandAction::NextBookmark,
+            },
+            ContextMenuAction {
+                label: "Previous Bookmark",
+                detail: "Jump to the previous editor bookmark".to_owned(),
+                shortcut: "Alt-P",
+                action: CommandAction::PreviousBookmark,
+            },
+            ContextMenuAction {
+                label: "Clear Bookmarks",
+                detail: "Remove every bookmark from this editor tab".to_owned(),
+                shortcut: "",
+                action: CommandAction::ClearBookmarks,
             },
             ContextMenuAction {
                 label: "Show Hover",
@@ -7401,6 +7593,188 @@ impl App {
         let tab = self.active_tab()?;
         self.problem_summaries_for_path(&tab.path)
             .remove(&tab.cursor_line)
+    }
+
+    fn show_bookmarks(&mut self) -> Result<()> {
+        self.open_quick_panel(QuickPanelKind::Bookmarks)?;
+        if self
+            .quick_panel
+            .as_ref()
+            .is_some_and(|panel| panel.items.is_empty())
+        {
+            self.message = Some("no editor bookmarks yet".to_owned());
+        }
+        Ok(())
+    }
+
+    fn toggle_bookmark_at_cursor(&mut self) {
+        let Some(index) = self.active_tab else {
+            self.message = Some("no active editor tab".to_owned());
+            return;
+        };
+        let line = self.tabs[index].cursor_line;
+        let title = self.tabs[index].title.clone();
+        match self.tabs[index].toggle_bookmark_at_line(line) {
+            Some(true) => {
+                self.focus = FocusPanel::Editor;
+                self.message = Some(format!("bookmarked {title}:{}", line + 1));
+            }
+            Some(false) => {
+                self.focus = FocusPanel::Editor;
+                self.message = Some(format!("removed bookmark {title}:{}", line + 1));
+            }
+            None => {
+                self.message = Some("no line to bookmark".to_owned());
+            }
+        }
+    }
+
+    fn clear_active_bookmarks(&mut self) {
+        let Some(tab) = self.active_tab_mut() else {
+            self.message = Some("no active editor tab".to_owned());
+            return;
+        };
+        let title = tab.title.clone();
+        let count = tab.clear_bookmarks();
+        self.focus = FocusPanel::Editor;
+        self.message = Some(format!("cleared {count} bookmark(s) in {title}"));
+    }
+
+    fn bookmark_locations(&self) -> Vec<(usize, usize)> {
+        let mut locations = self
+            .tabs
+            .iter()
+            .enumerate()
+            .flat_map(|(tab_index, tab)| {
+                tab.bookmarks
+                    .iter()
+                    .copied()
+                    .map(move |line| (tab_index, line))
+            })
+            .collect::<Vec<_>>();
+        locations.sort();
+        locations
+    }
+
+    fn jump_to_relative_bookmark(&mut self, forward: bool) {
+        let locations = self.bookmark_locations();
+        if locations.is_empty() {
+            self.message = Some("no editor bookmarks yet".to_owned());
+            return;
+        }
+
+        let current_tab = self.active_tab.unwrap_or(0);
+        let current_line = self
+            .tabs
+            .get(current_tab)
+            .map(|tab| tab.cursor_line)
+            .unwrap_or(0);
+        let current = (current_tab, current_line);
+        let target = if forward {
+            locations
+                .iter()
+                .copied()
+                .find(|location| *location > current)
+                .unwrap_or(locations[0])
+        } else {
+            locations
+                .iter()
+                .copied()
+                .rev()
+                .find(|location| *location < current)
+                .unwrap_or_else(|| *locations.last().unwrap())
+        };
+        self.jump_to_bookmark_location(target.0, target.1);
+    }
+
+    fn jump_to_bookmark_item(&mut self, item: QuickItem) {
+        let Some(line) = item.line else {
+            self.message = Some("bookmark item has no line".to_owned());
+            return;
+        };
+        if let Some(index) = self.tabs.iter().position(|tab| tab.path == item.path) {
+            self.jump_to_bookmark_location(index, line);
+        } else if item.path.is_file() {
+            self.open_quick_item(item, None);
+        } else {
+            self.message = Some("bookmark tab is no longer open".to_owned());
+        }
+    }
+
+    fn jump_to_bookmark_location(&mut self, tab_index: usize, line: usize) {
+        if tab_index >= self.tabs.len() {
+            self.message = Some("bookmark tab is no longer open".to_owned());
+            return;
+        }
+        let path = self.tabs[tab_index].path.clone();
+        let line = line.min(self.tabs[tab_index].lines.len().saturating_sub(1));
+        self.push_navigation_location_for_jump(&path, Some(line), Some(0));
+        self.active_tab = Some(tab_index);
+        self.tabs[tab_index].set_cursor(line, 0);
+        self.ensure_editor_cursor_visible();
+        self.focus = FocusPanel::Editor;
+        let label = if self.tabs[tab_index].untitled {
+            self.tabs[tab_index].title.clone()
+        } else {
+            relative_path(&self.root, &self.tabs[tab_index].path)
+        };
+        self.message = Some(format!("jumped to bookmark {label}:{}", line + 1));
+    }
+
+    fn bookmark_items(&self, query: &str) -> Vec<QuickItem> {
+        let query = query.trim();
+        let mut scored = Vec::new();
+        for (tab_index, tab) in self.tabs.iter().enumerate() {
+            let detail = if tab.untitled {
+                tab.title.clone()
+            } else {
+                relative_path(&self.root, &tab.path)
+            };
+            for line in &tab.bookmarks {
+                let preview = tab
+                    .lines
+                    .get(*line)
+                    .map(|line| line.trim().to_owned())
+                    .filter(|line| !line.is_empty());
+                let label = format!("{}:{}", tab.title, line + 1);
+                let haystack = format!(
+                    "{label} {detail} {}",
+                    preview.as_deref().unwrap_or_default()
+                );
+                let score = if query.is_empty() {
+                    Some(tab_index.saturating_mul(10_000).saturating_add(*line))
+                } else {
+                    fuzzy_score(&haystack, query)
+                };
+                if let Some(score) = score {
+                    scored.push((
+                        score,
+                        tab_index,
+                        *line,
+                        QuickItem {
+                            label,
+                            detail: detail.clone(),
+                            path: tab.path.clone(),
+                            line: Some(*line),
+                            col: Some(0),
+                            preview,
+                            command: None,
+                        },
+                    ));
+                }
+            }
+        }
+        scored.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+                .then(a.3.label.cmp(&b.3.label))
+        });
+        scored
+            .into_iter()
+            .take(MAX_QUICK_ITEMS)
+            .map(|(_, _, _, item)| item)
+            .collect()
     }
 
     fn source_control_items(&self, query: &str) -> Result<Vec<QuickItem>> {
@@ -10349,6 +10723,12 @@ impl App {
             return;
         }
 
+        if self.toggle_editor_bookmark_from_mouse() {
+            self.editor_selection_dragging = false;
+            self.editor_gutter_dragging = None;
+            return;
+        }
+
         if self.start_editor_gutter_selection_from_mouse() {
             return;
         }
@@ -10536,6 +10916,9 @@ impl App {
         if local_x >= gutter_width.saturating_sub(1) {
             return None;
         }
+        if local_x == 0 {
+            return None;
+        }
         let visible_row =
             tab.scroll + self.hit_regions.last_mouse_y.saturating_sub(body.y) as usize;
         self.editor_visual_row_at(body, visible_row)
@@ -10662,6 +11045,41 @@ impl App {
         }
     }
 
+    fn editor_mouse_bookmark_line(&self) -> Option<usize> {
+        let body = self.hit_regions.editor_body?;
+        let tab = self.active_tab()?;
+        let local_x = self.hit_regions.last_mouse_x.saturating_sub(body.x) as usize;
+        if local_x != 0 {
+            return None;
+        }
+        let visible_row =
+            tab.scroll + self.hit_regions.last_mouse_y.saturating_sub(body.y) as usize;
+        let row = self.editor_visual_row_at(body, visible_row)?;
+        (!row.continuation).then_some(row.line)
+    }
+
+    fn toggle_editor_bookmark_from_mouse(&mut self) -> bool {
+        let Some(line) = self.editor_mouse_bookmark_line() else {
+            return false;
+        };
+        let Some(tab) = self.active_tab_mut() else {
+            return false;
+        };
+        match tab.toggle_bookmark_at_line(line) {
+            Some(true) => {
+                self.focus = FocusPanel::Editor;
+                self.message = Some(format!("bookmarked line {}", line + 1));
+                true
+            }
+            Some(false) => {
+                self.focus = FocusPanel::Editor;
+                self.message = Some(format!("removed bookmark line {}", line + 1));
+                true
+            }
+            None => false,
+        }
+    }
+
     fn move_quick_selection(&mut self, delta: isize) {
         let Some(panel) = &mut self.quick_panel else {
             return;
@@ -10754,6 +11172,12 @@ impl App {
                 QuickPanelKind::SignatureHelp => "closed signature help".to_owned(),
                 _ => unreachable!(),
             });
+            return;
+        }
+
+        if kind == QuickPanelKind::Bookmarks {
+            self.quick_panel = None;
+            self.jump_to_bookmark_item(item);
             return;
         }
 
@@ -11342,6 +11766,11 @@ impl App {
             CommandAction::RunWorkspaceCheck => self.run_workspace_check()?,
             CommandAction::RunLspDiagnostics => self.run_lsp_diagnostics()?,
             CommandAction::ShowProblems => self.open_quick_panel(QuickPanelKind::Problems)?,
+            CommandAction::ShowBookmarks => self.show_bookmarks()?,
+            CommandAction::ToggleBookmark => self.toggle_bookmark_at_cursor(),
+            CommandAction::NextBookmark => self.jump_to_relative_bookmark(true),
+            CommandAction::PreviousBookmark => self.jump_to_relative_bookmark(false),
+            CommandAction::ClearBookmarks => self.clear_active_bookmarks(),
             CommandAction::ShowSourceControl => {
                 self.refresh_git_status();
                 if git_top_level(&self.root).is_none() {
@@ -17846,10 +18275,10 @@ mod tests {
             tab.set_cursor(0, 20);
         }
         app.ensure_editor_cursor_visible();
-        assert_eq!(app.active_tab().unwrap().horizontal_scroll, 14);
+        assert_eq!(app.active_tab().unwrap().horizontal_scroll, 15);
 
         app.scroll_editor_horizontal(100);
-        assert_eq!(app.active_tab().unwrap().horizontal_scroll, 29);
+        assert_eq!(app.active_tab().unwrap().horizontal_scroll, 30);
 
         app.hit_regions.editor_body = Some(Rect::new(0, 0, 12, 5));
         app.hit_regions.last_mouse_x = 8;
@@ -17885,20 +18314,20 @@ mod tests {
         assert!(app.word_wrap);
         assert_eq!(app.message.as_deref(), Some("word wrap enabled"));
         assert_eq!(app.active_tab().unwrap().horizontal_scroll, 0);
-        assert_eq!(app.active_tab().unwrap().scroll, 1);
+        assert_eq!(app.active_tab().unwrap().scroll, 2);
 
-        let rows = editor_visual_rows(app.active_tab().unwrap(), 7, true);
+        let rows = editor_visual_rows(app.active_tab().unwrap(), 6, true);
         assert_eq!(
             rows.iter()
                 .map(|row| (row.line, row.start_col, row.continuation))
                 .collect::<Vec<_>>(),
             vec![
                 (0, 0, false),
-                (0, 7, true),
-                (0, 14, true),
-                (0, 21, true),
-                (0, 28, true),
-                (0, 35, true),
+                (0, 6, true),
+                (0, 12, true),
+                (0, 18, true),
+                (0, 24, true),
+                (0, 30, true),
             ]
         );
 
@@ -17906,7 +18335,7 @@ mod tests {
         assert_eq!(app.active_tab().unwrap().horizontal_scroll, 0);
 
         app.hit_regions.editor_body = Some(Rect::new(0, 0, 12, 2));
-        app.hit_regions.last_mouse_x = 9;
+        app.hit_regions.last_mouse_x = 6;
         app.hit_regions.last_mouse_y = 1;
         app.hover = HoverTarget::Editor;
         app.set_editor_cursor_from_mouse(false);
@@ -17987,7 +18416,7 @@ mod tests {
         app.hit_regions.editor_body = Some(Rect::new(0, 0, 40, 5));
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: 4,
+            column: 5,
             row: 0,
             modifiers: KeyModifiers::NONE,
         })
@@ -18028,6 +18457,147 @@ mod tests {
     }
 
     #[test]
+    fn editor_bookmarks_toggle_list_and_jump_across_open_tabs() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-bookmarks-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let alpha = root.join("alpha.rs");
+        let beta = root.join("beta.rs");
+        fs::write(&alpha, "fn alpha() {}\nlet a = 1;\n").unwrap();
+        fs::write(&beta, "fn beta() {}\nlet b = 2;\nlet c = 3;\n").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let alpha = root.join("alpha.rs");
+        let beta = root.join("beta.rs");
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&alpha);
+        app.focus = FocusPanel::Editor;
+        app.active_tab_mut().unwrap().set_cursor(1, 0);
+        app.run_command(CommandAction::ToggleBookmark).unwrap();
+        assert!(app.active_tab().unwrap().has_bookmark(1));
+
+        app.open_file(&beta);
+        app.active_tab_mut().unwrap().set_cursor(2, 0);
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT))
+            .unwrap();
+        assert!(app.active_tab().unwrap().has_bookmark(2));
+
+        app.run_command(CommandAction::PreviousBookmark).unwrap();
+        assert_eq!(app.active_tab().unwrap().path, alpha);
+        assert_eq!(app.active_tab().unwrap().cursor_line, 1);
+
+        app.run_command(CommandAction::NextBookmark).unwrap();
+        assert_eq!(app.active_tab().unwrap().path, beta);
+        assert_eq!(app.active_tab().unwrap().cursor_line, 2);
+
+        app.run_command(CommandAction::ShowBookmarks).unwrap();
+        assert_eq!(
+            app.quick_panel.as_ref().map(|panel| &panel.kind),
+            Some(&QuickPanelKind::Bookmarks)
+        );
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert!(panel.items.iter().any(|item| item.label == "alpha.rs:2"));
+        assert!(panel.items.iter().any(|item| item.label == "beta.rs:3"));
+
+        select_quick_item(&mut app, "alpha.rs:2");
+        app.activate_selected_quick_item();
+        assert_eq!(app.active_tab().unwrap().path, alpha);
+        assert_eq!(app.active_tab().unwrap().cursor_line, 1);
+
+        let commands = app.command_palette_items("bookmark");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ToggleBookmark))
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ShowBookmarks))
+        );
+
+        app.open_quick_panel(QuickPanelKind::EditorContextMenu)
+            .unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::NextBookmark))
+        );
+
+        app.run_command(CommandAction::ClearBookmarks).unwrap();
+        assert!(app.active_tab().unwrap().bookmarks.is_empty());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_bookmark_gutter_click_and_line_edits_keep_real_positions() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-bookmark-gutter-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.focus = FocusPanel::Editor;
+        app.editor_height = 4;
+        app.editor_width = 40;
+        app.hit_regions.editor_area = Some(Rect::new(0, 0, 40, 4));
+        app.hit_regions.editor_body = Some(Rect::new(0, 0, 40, 4));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+        assert!(app.active_tab().unwrap().has_bookmark(1));
+        assert_eq!(app.editor_gutter_dragging, None);
+        assert_eq!(app.message.as_deref(), Some("bookmarked line 2"));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+        assert!(!app.active_tab().unwrap().has_bookmark(1));
+        assert_eq!(app.message.as_deref(), Some("removed bookmark line 2"));
+
+        let tab = app.active_tab_mut().unwrap();
+        assert_eq!(tab.toggle_bookmark_at_line(2), Some(true));
+        tab.set_cursor(0, 0);
+        tab.newline();
+        assert!(tab.has_bookmark(3));
+        assert!(!tab.has_bookmark(2));
+
+        tab.set_cursor(1, 0);
+        tab.delete_line();
+        assert!(tab.has_bookmark(2));
+
+        tab.set_cursor(0, 0);
+        tab.delete_line();
+        assert!(tab.has_bookmark(1));
+
+        tab.set_cursor(1, 0);
+        tab.delete_line();
+        assert!(tab.bookmarks.is_empty());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn editor_alt_click_toggles_mouse_cursors_and_typing_uses_all() {
         let root = std::env::temp_dir().join(format!(
             "tscode-test-alt-click-cursors-{}",
@@ -18048,7 +18618,7 @@ mod tests {
 
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: 5,
+            column: 6,
             row: 1,
             modifiers: KeyModifiers::ALT,
         })
@@ -18070,7 +18640,7 @@ mod tests {
 
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: 6,
+            column: 7,
             row: 1,
             modifiers: KeyModifiers::ALT,
         })
@@ -18103,7 +18673,7 @@ mod tests {
 
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: 5,
+            column: 6,
             row: 0,
             modifiers: KeyModifiers::NONE,
         })
@@ -18111,14 +18681,14 @@ mod tests {
         assert!(app.editor_selection_dragging);
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Drag(MouseButton::Left),
-            column: 9,
+            column: 10,
             row: 1,
             modifiers: KeyModifiers::NONE,
         })
         .unwrap();
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
-            column: 9,
+            column: 10,
             row: 1,
             modifiers: KeyModifiers::NONE,
         })

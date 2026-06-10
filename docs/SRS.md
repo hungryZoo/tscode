@@ -164,7 +164,7 @@ The command palette shall include a Save As action for the active editor tab. Th
 
 ### R-208C Editor Context Menu
 
-Right-clicking the editor body or an editor tab shall focus the editor and open a mouse-selectable context menu. Right-clicking the editor body shall update the editor cursor to the clicked buffer location before opening the menu. The menu shall expose actions for save, copy, cut, paste, select all, find, replace, go to line, language-server hover, signature help, symbol highlights, go to definition, call hierarchy, find references, code action, rename symbol, trigger suggest, format document, fold/unfold, toggle line comment, run selection/current line in terminal, run saved active file in terminal, copy absolute file path, copy relative file path, revert file, close active tab, close other editors, close editors to the right, close all editors, and reopen closed editor. Activating a menu item shall call the same editor, workspace, terminal, or clipboard command used by keyboard shortcuts and the command palette.
+Right-clicking the editor body or an editor tab shall focus the editor and open a mouse-selectable context menu. Right-clicking the editor body shall update the editor cursor to the clicked buffer location before opening the menu. The menu shall expose actions for save, copy, cut, paste, select all, find, replace, go to line, toggle/list/next/previous/clear bookmarks, language-server hover, signature help, symbol highlights, go to definition, call hierarchy, find references, code action, rename symbol, trigger suggest, format document, fold/unfold, toggle line comment, run selection/current line in terminal, run saved active file in terminal, copy absolute file path, copy relative file path, revert file, close active tab, close other editors, close editors to the right, close all editors, and reopen closed editor. Activating a menu item shall call the same editor, workspace, terminal, or clipboard command used by keyboard shortcuts and the command palette.
 
 ### R-208D Dirty Tab Close Confirmation
 
@@ -349,6 +349,10 @@ The editor shall detect foldable delimiter and indentation blocks in the active 
 ### R-236B1 Matching Bracket Navigation
 
 `Ctrl-shift-\`, the command palette, and the editor context menu shall include a Go to Matching Bracket action. When the editor cursor is on a bracket or immediately after one, the action shall scan the active in-memory buffer and jump between matching `()`, `[]`, and `{}` pairs, including nested pairs of the same type. The action shall record the previous editor location in navigation history when the destination differs, keep the editor focused, update scroll so the target bracket is visible, and unfold any folded block that contains the target. If no supported bracket is at the cursor or no matching bracket exists, the app shall report a clear status message without changing the buffer.
+
+### R-236B2 Editor Bookmarks
+
+The editor shall support per-open-tab line bookmarks. Clicking the leftmost editor gutter marker cell, pressing `Alt-b`, using the command palette Toggle Bookmark action, or using the editor context menu shall add or remove a bookmark on the active logical line without modifying the buffer contents or dirty state. Bookmarked lines shall render a visible gutter marker and the active status bar shall show the current file's bookmark count. `Alt-n`, `Alt-p`, command palette Next Bookmark and Previous Bookmark, and matching editor context-menu actions shall move through bookmarks across open tabs with wraparound and shall update editor navigation history when jumping. Show Bookmarks shall open a filterable quick panel listing open-tab bookmarks with file, line, and source preview; selecting a bookmark shall focus that tab and line. Clear Bookmarks shall remove all bookmarks from the active editor tab. Line insertion, deletion, duplication, and movement shall keep bookmark line positions consistent where possible and prune bookmarks whose lines are removed.
 
 ### R-236C Symbol Hover
 
@@ -601,6 +605,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use `F1` to open the command palette and execute an editor command.
 - Use `Ctrl-l` or the command palette to jump to a line.
 - Use `Ctrl-shift-\`, the command palette, or the editor context menu to jump between matching brackets, including a nested pair, then confirm `Alt-left` returns to the previous cursor location.
+- Click the editor gutter bookmark marker cell, press `Alt-b`, and use Show Bookmarks to confirm the bookmark appears, can be selected, and survives line insertion/deletion by moving to the expected logical line.
 - Use `Shift-alt-a`, the command palette, or the editor context menu to toggle a block comment on a selection and on the current line, then undo and confirm the original text and selection are restored.
 - Select all text, cut it, paste it back, save, and confirm file contents on disk.
 - With no editor selection, press `Ctrl-c` and confirm the current line plus newline is copied; press `Ctrl-x` and confirm the current line is removed, then paste it back and confirm the buffer is restored.

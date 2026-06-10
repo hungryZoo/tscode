@@ -79,6 +79,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
 - As a developer, I can toggle word wrap for long code lines so narrow SSH terminals can show the full line without horizontal panning, while mouse clicks still move the cursor to the correct buffer column.
 - As a developer, I can fold and unfold code blocks from the editor gutter, keyboard, command palette, or editor context menu so large files are easier to scan over SSH.
+- As a developer, I can mark important lines with editor bookmarks from the mouse gutter, keyboard, command palette, or editor context menu, then list, navigate, and clear those bookmarks across open tabs.
 - As a developer, I can jump between matching `()`, `[]`, and `{}` brackets from the keyboard, command palette, or editor context menu and return through editor navigation history.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
 - As a developer, I can right-click inside the editor and run common editing, navigation, formatting, path-copy, terminal-send, revert, and tab actions from a mouse-selectable context menu.
@@ -196,6 +197,7 @@ Keyboard fallback:
 - The command palette and editor context menu provide Run LSP Diagnostics for active-buffer language-server diagnostics
 - Mouse hover over an editor identifier shows lightweight symbol definition/reference information
 - Editor gutter fold markers, `Alt-[`, `Alt-]`, the command palette, and the editor context menu provide code fold/unfold actions
+- The editor gutter's leftmost marker cell, `Alt-B`, the command palette, and the editor context menu toggle line bookmarks; `Alt-N`/`Alt-P`, Show Bookmarks, Next Bookmark, Previous Bookmark, and Clear Bookmarks navigate or manage open-tab bookmarks
 - `Ctrl-Shift-\`, the command palette, and the editor context menu provide matching-bracket navigation for `()`, `[]`, and `{}` pairs
 - The command palette provides Run Workspace Check, Run LSP Diagnostics, and Show Problems actions for project diagnostics
 - The command palette provides Source Control actions for Git changed-file diff tabs, diff hunks, local branch checkout/create, stage all, unstage all, commit staged, commit all, and discard all with a typed confirmation
@@ -206,7 +208,7 @@ Keyboard fallback:
 - The command palette provides Save As for writing the active editor buffer to a new path and retargeting the tab
 - `Ctrl-S`, `Ctrl-F`, `Ctrl-H`, `F3`, `Shift-F3`, `Ctrl-Z`, `Ctrl-Y`, `Ctrl-W`, and `Ctrl-Shift-T` provide editor save/search/replace/history/tab-close/reopen-closed-editor actions; `Ctrl-S` on an Untitled tab opens Save As, and dirty tab close opens Save and Close / Don't Save / Cancel choices
 - `Ctrl-\`, the command palette, and the editor context menu split the active editor into a side-by-side pane; Close Editor Split returns to a single editor pane
-- Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, signature-help, symbol highlights, definition/call-hierarchy/references/code-action/rename/suggest, format, fold/unfold, comments, send-to-terminal, path-copy, revert, close-tab, and reopen-closed-editor actions
+- Editor right-click opens a context menu for save, copy/cut/paste/select-all, find/replace/go-to-line, bookmarks, signature-help, symbol highlights, definition/call-hierarchy/references/code-action/rename/suggest, format, fold/unfold, comments, send-to-terminal, path-copy, revert, close-tab, and reopen-closed-editor actions
 - `Ctrl-Left`, `Ctrl-Right`, `Ctrl-Shift-Left`, and `Ctrl-Shift-Right` provide word movement and word selection in the editor
 - `Shift` with arrow keys and mouse drag select editor text; mouse drag can continue outside the visible editor edge to extend the range while scrolling
 - `Enter` preserves indentation and adds one extra indent level after opening braces/brackets/parentheses

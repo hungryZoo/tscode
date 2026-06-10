@@ -143,6 +143,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 format!("  Highlights {}", tab.document_highlights.len())
             };
+            let bookmarks = if tab.bookmarks.is_empty() {
+                String::new()
+            } else {
+                format!("  Bookmarks {}", tab.bookmarks.len())
+            };
             let wrap = if app.word_wrap {
                 "  Wrap".to_owned()
             } else {
@@ -159,7 +164,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 })
                 .unwrap_or_default();
             format!(
-                "{}{}{}  Ln {}, Col {}{}{}{}{}{}{}{}",
+                "{}{}{}  Ln {}, Col {}{}{}{}{}{}{}{}{}",
                 path_label,
                 dirty,
                 read_only,
@@ -171,6 +176,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 search,
                 problems,
                 highlights,
+                bookmarks,
                 line_problem
             )
         })
@@ -521,6 +527,18 @@ fn draw_editor_pane(
             " "
         };
         let mut spans = vec![
+            Span::styled(
+                if !visual_row.continuation && tab.has_bookmark(line_index) {
+                    "B"
+                } else {
+                    " "
+                },
+                if !visual_row.continuation && tab.has_bookmark(line_index) {
+                    Style::default().fg(ACCENT)
+                } else {
+                    Style::default().fg(MUTED)
+                },
+            ),
             Span::styled(
                 if visual_row.continuation {
                     format!("{:>width$} ", "", width = number_width)
@@ -1105,6 +1123,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         crate::app::QuickPanelKind::References => " Find References  Ctrl-R ",
         crate::app::QuickPanelKind::LspReferences => " LSP References  Ctrl-R ",
         crate::app::QuickPanelKind::Problems => " Problems ",
+        crate::app::QuickPanelKind::Bookmarks => " Bookmarks ",
         crate::app::QuickPanelKind::SourceControl => " Source Control ",
         crate::app::QuickPanelKind::Branches => " Git Branches ",
         crate::app::QuickPanelKind::Tasks => " Run Task  Ctrl-Shift-B ",
@@ -1187,6 +1206,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             crate::app::QuickPanelKind::Problems => {
                 "No problems collected. Run Workspace Check or Run LSP Diagnostics from the command palette."
             }
+            crate::app::QuickPanelKind::Bookmarks => "No editor bookmarks yet.",
             crate::app::QuickPanelKind::SourceControl => {
                 "No Git changes found, or this workspace is not inside a Git repository."
             }
@@ -1600,7 +1620,7 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
 }
 
 fn editor_gutter_width(line_count: usize) -> usize {
-    line_count.max(1).to_string().len().max(3) + 2
+    line_count.max(1).to_string().len().max(3) + 3
 }
 
 fn max_horizontal_scroll(tab: &crate::app::EditorTab, code_width: usize) -> usize {
