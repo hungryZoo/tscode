@@ -98,6 +98,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can see which terminal session is active, where it is running, whether it is live, and whether scrollback or terminal child modes are active.
 - As a developer, I can focus the integrated terminal quickly, maximize it when command output needs more space, and resize its normal panel height by dragging the panel border or using commands.
 - As a developer, I can create multiple integrated terminal sessions, switch between them, close them, and keep each shell's state independent.
+- As a developer, I can split the active integrated terminal into side-by-side PTY panes, click either pane to focus that shell, and close one pane without killing the other shell.
 - As a developer, I can rename terminal sessions so long-running shells, tasks, and logs stay recognizable without restarting them.
 - As a developer, I can open a new integrated terminal in the selected explorer folder, or the selected file's parent folder, and keep that working directory when restarting the terminal.
 - As a developer, I can `cd` inside the integrated terminal and see the terminal tab/header working directory update instead of staying stuck on the launch directory.
@@ -135,7 +136,7 @@ Keyboard fallback:
 - `Enter` opens files, edits newlines, or submits shell input depending on focus
 - Terminal `Ctrl-Shift-C` copies the active terminal text selection; terminal `Ctrl-Shift-V` pastes the internal clipboard to the PTY shell
 - Terminal `Ctrl-F` searches terminal scrollback; terminal `F3` and `Shift-F3` move to next and previous terminal search matches
-- Terminal right-click opens a context menu for copy, paste, search, clear, restart, terminal session switching/creation/closing, maximize, resize, and focus actions when the child app is not using terminal mouse reporting
+- Terminal right-click opens a context menu for copy, paste, search, clear, restart, terminal session switching/creation/splitting/closing, maximize, resize, and focus actions when the child app is not using terminal mouse reporting
 - Terminal top-border hover is visually highlighted and dragging it changes the normal terminal panel height without restarting the PTY session
 - Explorer `c`, `x`, `p`, `y`, and `o` perform copy, cut, paste, duplicate, and reveal-active-file actions
 - Explorer right-click opens a context menu for open/toggle, create, copy/cut/paste/duplicate, rename, delete, path copy, terminal-here, refresh, collapse, and visibility actions
@@ -175,6 +176,7 @@ Keyboard fallback:
 - `Shift-PageUp` and `Shift-PageDown` scroll terminal scrollback when terminal focus is active
 - `F6` or ``Ctrl-` `` moves focus in or out of the integrated terminal and `F12` or `Ctrl-J` toggles the maximized terminal layout from any panel
 - `F7`, `F8`, and `F9` create a new terminal, switch to the next terminal, and close the active terminal
+- `Ctrl-Shift-5` splits the active terminal into a side-by-side PTY pane when the child terminal app is not owning terminal keyboard shortcuts
 
 ## 8. Release Requirements
 

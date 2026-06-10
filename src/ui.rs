@@ -602,30 +602,78 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
         inner
     };
 
-    app.hit_regions.terminal_body = Some(body);
-    app.hit_regions.terminal_input = Some(body);
-    app.terminal_height = body.height as usize;
-    app.active_terminal_mut()
-        .shell
-        .resize(body.height, body.width);
+    let panes = app.visible_terminal_indices();
+    if panes.len() > 1 && body.width >= 40 {
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Length(1),
+                Constraint::Percentage(50),
+            ])
+            .split(body);
+        let separator = (0..split[1].height)
+            .map(|_| Line::from("│"))
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(separator).style(Style::default().fg(BORDER).bg(PANEL_BG)),
+            split[1],
+        );
+        draw_terminal_pane(frame, app, panes[0], split[0], focused);
+        draw_terminal_pane(frame, app, panes[1], split[2], focused);
+    } else {
+        draw_terminal_pane(frame, app, app.active_terminal, body, focused);
+    }
+}
 
-    let terminal_rows = app.active_terminal().shell.styled_rows();
+fn draw_terminal_pane(
+    frame: &mut Frame,
+    app: &mut App,
+    terminal_index: usize,
+    body: Rect,
+    focused: bool,
+) {
+    if terminal_index >= app.terminals.len() || body.width == 0 || body.height == 0 {
+        return;
+    }
+
+    app.hit_regions.terminal_bodies.push((body, terminal_index));
+    if terminal_index == app.active_terminal {
+        app.hit_regions.terminal_body = Some(body);
+        app.hit_regions.terminal_input = Some(body);
+        app.terminal_height = body.height as usize;
+    }
+
+    let terminal_rows = {
+        let terminal = &mut app.terminals[terminal_index];
+        terminal.shell.resize(body.height, body.width);
+        terminal.shell.styled_rows()
+    };
     let lines = terminal_rows
         .into_iter()
         .enumerate()
         .map(|(row_index, row)| {
-            let selection = app.terminal_selection_columns_for_row(row_index as u16);
-            let search_ranges = app.terminal_search_ranges_for_row(row_index as u16);
+            let selection =
+                app.terminal_selection_columns_for_terminal_row(terminal_index, row_index as u16);
+            let search_ranges =
+                app.terminal_search_ranges_for_terminal_row(terminal_index, row_index as u16);
             Line::from(terminal_row_spans(row, selection, &search_ranges))
         })
         .collect::<Vec<_>>();
 
+    let active = terminal_index == app.active_terminal;
+    let pane_bg = if active && app.terminal_split_active() {
+        Color::Rgb(15, 23, 32)
+    } else {
+        PANEL_BG
+    };
     frame.render_widget(
-        Paragraph::new(lines).style(Style::default().fg(TEXT).bg(PANEL_BG)),
+        Paragraph::new(lines).style(Style::default().fg(TEXT).bg(pane_bg)),
         body,
     );
 
     if focused
+        && active
         && !app.active_terminal().shell.hide_cursor()
         && app.active_terminal().shell.scrollback() == 0
     {
@@ -673,9 +721,14 @@ fn terminal_panel_title(app: &App) -> String {
         .active_terminal_search_summary()
         .map(|(selected, count)| format!("  find:{selected}/{count}"))
         .unwrap_or_default();
+    let split = if app.terminal_split_active() {
+        "  split"
+    } else {
+        ""
+    };
     format!(
-        " Terminal  {}  cwd:{}  {}{}{}{}  F6 focus  F7 new  F8 next  F9 close  F12 max ",
-        terminal.title, cwd, state, scroll, modes, search
+        " Terminal  {}  cwd:{}  {}{}{}{}{}  F6 focus  F7 new  F8 next  F9 close  F12 max ",
+        terminal.title, cwd, state, scroll, modes, search, split
     )
 }
 

@@ -388,6 +388,10 @@ The application shall support moving focus in and out of the terminal, maximizin
 
 The integrated terminal shall support multiple PTY shell sessions. The user shall be able to create a new terminal, switch the active terminal, close a terminal, and preserve each terminal's independent shell state while it remains open.
 
+### R-319A Split Terminal Panes
+
+The command palette, terminal context menu, and `Ctrl-shift-5` shortcut shall include a Split Terminal action when the child terminal app is not owning app shortcuts. Split Terminal shall create a new PTY shell session using the active terminal session's current working directory, render the previous and new sessions as side-by-side terminal panes, focus the new pane, and keep both shells independent. Clicking, dragging, scrolling, selecting text, searching, pasting, and opening file references inside a split pane shall apply to the pane under the mouse or the active pane. Closing one visible pane shall leave the other shell session alive and clear stale split-pane state.
+
 ### R-320 Terminal Tab Mouse Controls
 
 The terminal panel shall render terminal session tabs with mouse hover highlighting. Clicking a terminal tab shall activate that session, clicking a close target shall close that session, and clicking the new-terminal target shall create a new PTY session.
@@ -498,6 +502,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Run Workspace Check in a broken Cargo, Go, or Python project and confirm the Problems panel opens with clickable diagnostics.
 - Modify a tracked Git file, open Source Control, and confirm changed-file and hunk rows appear and the hunk row opens the file at the changed line.
 - Use `Ctrl-shift-b` or the command palette in a project with task metadata and confirm detected tasks appear, filtering works, and selecting one starts a new PTY terminal running that command.
+- Use Split Terminal or `Ctrl-shift-5`, confirm a second side-by-side PTY pane appears in the same working directory, click each pane and confirm input goes to the clicked shell, then close one pane and confirm the other shell remains usable.
 - Print repeated text in the terminal, use terminal `Ctrl-f`, confirm matches are highlighted and counted, and use `F3`/`Shift-F3` to move between matches in scrollback.
 - Use the command palette to clear and restart the integrated terminal.
 - Use the mouse wheel over explorer/editor/terminal and confirm scroll changes.

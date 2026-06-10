@@ -61,6 +61,7 @@ pub struct HitRegions {
     pub terminal_body: Option<Rect>,
     pub terminal_input: Option<Rect>,
     pub terminal_resize: Option<Rect>,
+    pub terminal_bodies: Vec<(Rect, usize)>,
     pub explorer_rows: Vec<(Rect, usize)>,
     pub tabs: Vec<(Rect, usize)>,
     pub tab_closes: Vec<(Rect, usize)>,
@@ -125,6 +126,12 @@ impl HitRegions {
             }
         }
 
+        for (rect, _) in &self.terminal_bodies {
+            if contains(*rect, x, y) {
+                return HoverTarget::TerminalInput;
+            }
+        }
+
         if self.terminal_input.is_some_and(|rect| contains(rect, x, y)) {
             return HoverTarget::TerminalInput;
         }
@@ -150,6 +157,21 @@ fn contains(rect: Rect, x: u16, y: u16) -> bool {
         && x < rect.x.saturating_add(rect.width)
         && y >= rect.y
         && y < rect.y.saturating_add(rect.height)
+}
+
+fn terminal_mouse_cell_in_body(mouse: MouseEvent, body: Rect) -> Option<(u16, u16)> {
+    if body.width == 0 || body.height == 0 {
+        return None;
+    }
+    let row = mouse
+        .row
+        .saturating_sub(body.y)
+        .min(body.height.saturating_sub(1));
+    let col = mouse
+        .column
+        .saturating_sub(body.x)
+        .min(body.width.saturating_sub(1));
+    Some((row, col))
 }
 
 #[derive(Debug, Clone)]
@@ -1762,6 +1784,7 @@ pub enum CommandAction {
     RenameTerminal,
     NewTerminal,
     NewTerminalHere,
+    SplitTerminal,
     CloseTerminal,
     NextTerminal,
     PreviousTerminal,
@@ -1929,6 +1952,7 @@ pub struct App {
     pub hit_regions: HitRegions,
     pub terminals: Vec<TerminalSession>,
     pub active_terminal: usize,
+    pub split_terminal: Option<usize>,
     next_terminal_id: usize,
     next_untitled_id: usize,
     pub syntax: SyntaxHighlighter,
@@ -1998,6 +2022,7 @@ impl App {
             hit_regions: HitRegions::default(),
             terminals: vec![terminal],
             active_terminal: 0,
+            split_terminal: None,
             next_terminal_id: 2,
             next_untitled_id: 1,
             syntax: SyntaxHighlighter::new(),
@@ -2104,6 +2129,13 @@ impl App {
 
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
+                KeyCode::Char('5')
+                    if key.modifiers.contains(KeyModifiers::SHIFT)
+                        && !terminal_child_owns_keyboard =>
+                {
+                    self.split_terminal()?;
+                    return Ok(());
+                }
                 KeyCode::Char('`') => {
                     self.toggle_terminal_focus();
                     return Ok(());
@@ -2327,6 +2359,7 @@ impl App {
                 self.open_quick_panel(QuickPanelKind::EditorContextMenu)?;
             }
             HoverTarget::Terminal | HoverTarget::TerminalInput => {
+                self.activate_terminal_under_mouse();
                 self.focus = FocusPanel::Terminal;
                 self.open_quick_panel(QuickPanelKind::TerminalContextMenu)?;
             }
@@ -2915,9 +2948,7 @@ impl App {
             };
             changed = true;
         }
-        self.active_terminal = self
-            .active_terminal
-            .min(self.terminals.len().saturating_sub(1));
+        self.normalize_terminal_split();
         changed
     }
 
@@ -3060,6 +3091,77 @@ impl App {
 
     pub fn active_terminal_mut(&mut self) -> &mut TerminalSession {
         &mut self.terminals[self.active_terminal]
+    }
+
+    pub fn visible_terminal_indices(&self) -> Vec<usize> {
+        let mut indices = Vec::new();
+        if let Some(split) = self.split_terminal
+            && split < self.terminals.len()
+            && split != self.active_terminal
+        {
+            indices.push(split);
+        }
+        if self.active_terminal < self.terminals.len() {
+            indices.push(self.active_terminal);
+        }
+        if indices.is_empty() && !self.terminals.is_empty() {
+            indices.push(0);
+        }
+        indices
+    }
+
+    pub fn terminal_split_active(&self) -> bool {
+        self.visible_terminal_indices().len() > 1
+    }
+
+    fn normalize_terminal_split(&mut self) {
+        self.active_terminal = self
+            .active_terminal
+            .min(self.terminals.len().saturating_sub(1));
+        self.split_terminal = self
+            .split_terminal
+            .filter(|index| *index < self.terminals.len() && *index != self.active_terminal);
+    }
+
+    fn set_active_terminal(&mut self, index: usize) {
+        if index >= self.terminals.len() {
+            return;
+        }
+        let previous = self.active_terminal;
+        if self.split_terminal == Some(index) && previous != index {
+            self.split_terminal = Some(previous);
+        }
+        self.active_terminal = index;
+        self.normalize_terminal_split();
+    }
+
+    fn active_terminal_body(&self) -> Option<Rect> {
+        self.hit_regions
+            .terminal_bodies
+            .iter()
+            .find_map(|(rect, index)| (*index == self.active_terminal).then_some(*rect))
+            .or(self.hit_regions.terminal_body)
+    }
+
+    fn terminal_body_under_mouse(&self) -> Option<(Rect, usize)> {
+        let x = self.hit_regions.last_mouse_x;
+        let y = self.hit_regions.last_mouse_y;
+        self.hit_regions
+            .terminal_bodies
+            .iter()
+            .find_map(|(rect, index)| contains(*rect, x, y).then_some((*rect, *index)))
+            .or_else(|| {
+                self.hit_regions
+                    .terminal_body
+                    .filter(|rect| contains(*rect, x, y))
+                    .map(|rect| (rect, self.active_terminal))
+            })
+    }
+
+    fn activate_terminal_under_mouse(&mut self) -> Option<Rect> {
+        let (body, index) = self.terminal_body_under_mouse()?;
+        self.set_active_terminal(index);
+        Some(body)
     }
 
     fn handle_scroll(&mut self, target: HoverTarget, amount: isize, up: bool) -> Result<()> {
@@ -3882,6 +3984,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::NewTerminalHere,
         },
         CommandSpec {
+            label: "Split Terminal",
+            detail: "Create a side-by-side PTY terminal pane from the active terminal cwd",
+            shortcut: "Ctrl-Shift-5",
+            action: CommandAction::SplitTerminal,
+        },
+        CommandSpec {
             label: "Close Terminal",
             detail: "Close the active integrated terminal session",
             shortcut: "F9",
@@ -4491,6 +4599,12 @@ impl App {
                 detail: "Create a new workspace-root PTY terminal session".to_owned(),
                 shortcut: "F7",
                 action: CommandAction::NewTerminal,
+            },
+            ContextMenuAction {
+                label: "Split Terminal",
+                detail: "Create a side-by-side PTY pane from the active terminal cwd".to_owned(),
+                shortcut: "Ctrl-Shift-5",
+                action: CommandAction::SplitTerminal,
             },
             ContextMenuAction {
                 label: "Close Terminal",
@@ -6491,7 +6605,7 @@ impl App {
         let title = format!("task: {}", truncate_chars(&item.label, 28));
         let terminal = TerminalSession::with_title(id, title.clone(), cwd)?;
         self.terminals.push(terminal);
-        self.active_terminal = self.terminals.len() - 1;
+        self.set_active_terminal(self.terminals.len() - 1);
         self.focus = FocusPanel::Terminal;
         self.terminal_selection = None;
 
@@ -7009,6 +7123,7 @@ impl App {
             CommandAction::RenameTerminal => self.start_terminal_rename_prompt(),
             CommandAction::NewTerminal => self.new_terminal()?,
             CommandAction::NewTerminalHere => self.new_terminal_here()?,
+            CommandAction::SplitTerminal => self.split_terminal()?,
             CommandAction::CloseTerminal => self.close_active_terminal()?,
             CommandAction::NextTerminal => self.next_terminal(),
             CommandAction::PreviousTerminal => self.previous_terminal(),
@@ -7021,7 +7136,7 @@ impl App {
     }
 
     fn send_terminal_mouse_click(&mut self) {
-        let Some(body) = self.hit_regions.terminal_body else {
+        let Some(body) = self.activate_terminal_under_mouse() else {
             return;
         };
         let row = self.hit_regions.last_mouse_y.saturating_sub(body.y);
@@ -7036,7 +7151,7 @@ impl App {
     }
 
     fn send_terminal_mouse_wheel(&mut self, up: bool) -> Result<bool> {
-        let Some(body) = self.hit_regions.terminal_body else {
+        let Some(body) = self.activate_terminal_under_mouse() else {
             return Ok(false);
         };
         let row = self.hit_regions.last_mouse_y.saturating_sub(body.y);
@@ -7051,7 +7166,7 @@ impl App {
         kind: MouseEventKind,
         modifiers: KeyModifiers,
     ) -> Result<bool> {
-        let Some(body) = self.hit_regions.terminal_body else {
+        let Some(body) = self.activate_terminal_under_mouse() else {
             return Ok(false);
         };
         let row = self.hit_regions.last_mouse_y.saturating_sub(body.y);
@@ -7062,7 +7177,10 @@ impl App {
     }
 
     fn start_terminal_selection_from_mouse(&mut self, mouse: MouseEvent) -> bool {
-        let Some(cell) = self.terminal_mouse_cell(mouse) else {
+        let Some(body) = self.activate_terminal_under_mouse() else {
+            return false;
+        };
+        let Some(cell) = terminal_mouse_cell_in_body(mouse, body) else {
             return false;
         };
         self.focus = FocusPanel::Terminal;
@@ -7110,19 +7228,8 @@ impl App {
     }
 
     fn terminal_mouse_cell(&self, mouse: MouseEvent) -> Option<(u16, u16)> {
-        let body = self.hit_regions.terminal_body?;
-        if body.width == 0 || body.height == 0 {
-            return None;
-        }
-        let row = mouse
-            .row
-            .saturating_sub(body.y)
-            .min(body.height.saturating_sub(1));
-        let col = mouse
-            .column
-            .saturating_sub(body.x)
-            .min(body.width.saturating_sub(1));
-        Some((row, col))
+        let body = self.active_terminal_body()?;
+        terminal_mouse_cell_in_body(mouse, body)
     }
 
     pub fn terminal_selection_for_active(&self) -> Option<&TerminalSelection> {
@@ -7130,9 +7237,17 @@ impl App {
         (selection.terminal_id == self.active_terminal().id).then_some(selection)
     }
 
-    pub fn terminal_selection_columns_for_row(&self, row: u16) -> Option<(usize, usize)> {
-        let selection = self.terminal_selection_for_active()?;
-        let (_, cols) = self.active_terminal().shell.size();
+    pub fn terminal_selection_columns_for_terminal_row(
+        &self,
+        terminal_index: usize,
+        row: u16,
+    ) -> Option<(usize, usize)> {
+        let selection = self.terminal_selection.as_ref()?;
+        let terminal = self.terminals.get(terminal_index)?;
+        if selection.terminal_id != terminal.id {
+            return None;
+        }
+        let (_, cols) = terminal.shell.size();
         terminal_selection_columns(selection.anchor, selection.head, row, cols)
     }
 
@@ -7288,9 +7403,16 @@ impl App {
             .then_some((search.selected + 1, search.matches.len()))
     }
 
-    pub fn terminal_search_ranges_for_row(&mut self, row: u16) -> Vec<(usize, usize, bool)> {
-        let active_id = self.active_terminal().id;
-        let visible_top = self.active_terminal_mut().shell.visible_top_row();
+    pub fn terminal_search_ranges_for_terminal_row(
+        &mut self,
+        terminal_index: usize,
+        row: u16,
+    ) -> Vec<(usize, usize, bool)> {
+        if terminal_index >= self.terminals.len() {
+            return Vec::new();
+        }
+        let active_id = self.terminals[terminal_index].id;
+        let visible_top = self.terminals[terminal_index].shell.visible_top_row();
         let Some(search) = self.terminal_search.as_ref() else {
             return Vec::new();
         };
@@ -7530,7 +7652,7 @@ impl App {
         let terminal = TerminalSession::new(id, self.root.clone())?;
         let title = terminal.title.clone();
         self.terminals.push(terminal);
-        self.active_terminal = self.terminals.len() - 1;
+        self.set_active_terminal(self.terminals.len() - 1);
         self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("new terminal: {title}"));
@@ -7547,10 +7669,26 @@ impl App {
         let terminal = TerminalSession::here(id, cwd.clone())?;
         let title = terminal.title.clone();
         self.terminals.push(terminal);
-        self.active_terminal = self.terminals.len() - 1;
+        self.set_active_terminal(self.terminals.len() - 1);
         self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("new terminal in {}: {title}", cwd.display()));
+        Ok(())
+    }
+
+    fn split_terminal(&mut self) -> Result<()> {
+        let partner = self.active_terminal;
+        let cwd = self.active_terminal().cwd.clone();
+        let id = self.next_terminal_id;
+        self.next_terminal_id += 1;
+        let terminal = TerminalSession::here(id, cwd.clone())?;
+        let title = terminal.title.clone();
+        self.terminals.push(terminal);
+        self.split_terminal = Some(partner);
+        self.set_active_terminal(self.terminals.len() - 1);
+        self.terminal_selection = None;
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(format!("split terminal in {}: {title}", cwd.display()));
         Ok(())
     }
 
@@ -7558,7 +7696,7 @@ impl App {
         if index >= self.terminals.len() {
             return;
         }
-        self.active_terminal = index;
+        self.set_active_terminal(index);
         self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("terminal: {}", self.active_terminal().title));
@@ -7587,6 +7725,16 @@ impl App {
             self.active_terminal
                 .min(self.terminals.len().saturating_sub(1))
         };
+        self.split_terminal = self.split_terminal.and_then(|split| {
+            if split == index {
+                None
+            } else if split > index {
+                Some(split - 1)
+            } else {
+                Some(split)
+            }
+        });
+        self.normalize_terminal_split();
         self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("closed terminal: {title}"));
@@ -7597,7 +7745,7 @@ impl App {
         if self.terminals.is_empty() {
             return;
         }
-        self.active_terminal = (self.active_terminal + 1) % self.terminals.len();
+        self.set_active_terminal((self.active_terminal + 1) % self.terminals.len());
         self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("terminal: {}", self.active_terminal().title));
@@ -7607,8 +7755,9 @@ impl App {
         if self.terminals.is_empty() {
             return;
         }
-        self.active_terminal =
-            (self.active_terminal + self.terminals.len() - 1) % self.terminals.len();
+        self.set_active_terminal(
+            (self.active_terminal + self.terminals.len() - 1) % self.terminals.len(),
+        );
         self.terminal_selection = None;
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("terminal: {}", self.active_terminal().title));
@@ -10380,6 +10529,8 @@ mod tests {
         );
         assert!(panel.items.iter().any(|item| item.label == "Clear Terminal"
             && item.command == Some(CommandAction::ClearTerminal)));
+        assert!(panel.items.iter().any(|item| item.label == "Split Terminal"
+            && item.command == Some(CommandAction::SplitTerminal)));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
@@ -11703,6 +11854,12 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::NewTerminalHere))
         );
+        let commands = app.command_palette_items("split terminal");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::SplitTerminal))
+        );
         let commands = app.command_palette_items("rename terminal");
         assert!(
             commands
@@ -11921,8 +12078,9 @@ mod tests {
         assert!(active_row >= top);
         assert!(active_row < top + height as usize);
         let local_row = (active_row - top) as u16;
+        let active_terminal = app.active_terminal;
         assert!(
-            app.terminal_search_ranges_for_row(local_row)
+            app.terminal_search_ranges_for_terminal_row(active_terminal, local_row)
                 .iter()
                 .any(|(_, _, active)| *active)
         );
@@ -12496,6 +12654,62 @@ index 1111111..2222222 100644
         app.close_active_terminal().unwrap();
         assert_eq!(app.terminals.len(), 1);
         assert_eq!(app.active_terminal, 0);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn split_terminal_creates_side_by_side_pty_panes_and_mouse_focuses_each_pane() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-terminal-split-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        let first_id = app.active_terminal().id;
+        let first_cwd = app.active_terminal().cwd.clone();
+
+        app.split_terminal().unwrap();
+
+        assert_eq!(app.terminals.len(), 2);
+        assert_eq!(app.split_terminal, Some(0));
+        assert_eq!(app.active_terminal, 1);
+        assert_eq!(app.active_terminal().cwd, first_cwd);
+        assert_eq!(app.visible_terminal_indices(), vec![0, 1]);
+        assert!(app.terminal_split_active());
+        assert_eq!(app.focus, FocusPanel::Terminal);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("split terminal"))
+        );
+
+        app.hit_regions.terminal_area = Some(Rect::new(0, 0, 81, 12));
+        app.hit_regions
+            .terminal_bodies
+            .push((Rect::new(0, 1, 40, 11), 0));
+        app.hit_regions
+            .terminal_bodies
+            .push((Rect::new(41, 1, 40, 11), 1));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row: 2,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        assert_eq!(app.active_terminal, 0);
+        assert_eq!(app.active_terminal().id, first_id);
+        assert_eq!(app.split_terminal, Some(1));
+        assert_eq!(app.visible_terminal_indices(), vec![1, 0]);
+
+        app.close_terminal(1).unwrap();
+        assert_eq!(app.terminals.len(), 1);
+        assert_eq!(app.split_terminal, None);
+        assert!(!app.terminal_split_active());
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
