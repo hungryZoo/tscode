@@ -93,6 +93,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Terminal shell-editing shortcuts now forward more real terminal bytes, including `Alt-Backspace`, `Ctrl-Backspace`, `Alt-Enter`, `Alt-Tab`, and control punctuation/digits such as `Ctrl-/`, `Ctrl-6`, and `Ctrl-8`.
 - Terminal clicks on visible existing `path:line:column` references open the file in the editor when the shell is not using terminal mouse mode.
 - Terminal apps that request mouse events now receive xterm-compatible mouse down, release, drag, move, and wheel events through the PTY, including SGR, default, and UTF-8 coordinate encodings.
+- Release CI now builds `aarch64-unknown-linux-gnu` with the Ubuntu `gcc-aarch64-linux-gnu` linker instead of the older cross Docker image path, avoiding a proc-macro resolution failure seen in the prerelease pipeline.
 - Installer latest-version resolution now compares semantic prerelease tags so `pre.10` sorts after `pre.9` even when the GitHub API returns prereleases out of lexical order.
 - Keyboard fallback for focus cycling, navigation, scrolling, command entry, and exit.
 

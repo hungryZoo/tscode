@@ -40,9 +40,10 @@ jobs:
           - os: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
-            cross: true
             packages: true
             rpm_arch: aarch64
+            apt_packages: gcc-aarch64-linux-gnu
+            linker: aarch64-linux-gnu-gcc
           - os: ubuntu-24.04
             target: armv7-unknown-linux-gnueabihf
             archive: tar.gz
@@ -90,13 +91,27 @@ jobs:
         if: matrix.cross == true
         uses: taiki-e/install-action@cross
 
+      - name: Install Linux cross linker
+        if: matrix.apt_packages != null && matrix.apt_packages != ''
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt_packages }}
+
       - name: Build
         shell: bash
         run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          linker="${{ matrix.linker }}"
+          if [[ -n "$linker" ]]; then
+            target_env=$(printf '%s' "$target" | tr '[:lower:]-' '[:upper:]_')
+            export "CARGO_TARGET_${target_env}_LINKER=$linker"
+          fi
           if [[ "${{ matrix.cross }}" == "true" ]]; then
-            cross build --release --locked --target "${{ matrix.target }}"
+            cross build --release --locked --target "$target"
           else
-            cargo build --release --locked --target "${{ matrix.target }}"
+            cargo build --release --locked --target "$target"
           fi
 
       - name: Package archive
