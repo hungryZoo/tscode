@@ -199,15 +199,22 @@ jobs:
         run: cp install.sh dist/install.sh
 
       - name: Publish GitHub prerelease
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: tscode ${{ env.RELEASE_TAG }}
-          prerelease: true
-          body_path: .github/RELEASE_NOTES.md
-          files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*.deb
-            dist/*.rpm
-            dist/install.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm dist/install.sh)
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --title "tscode $RELEASE_TAG" \
+              --notes-file .github/RELEASE_NOTES.md \
+              --prerelease
+            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${files[@]}" \
+              --verify-tag \
+              --title "tscode $RELEASE_TAG" \
+              --notes-file .github/RELEASE_NOTES.md \
+              --prerelease
+          fi
