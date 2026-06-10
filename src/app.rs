@@ -2018,6 +2018,9 @@ pub enum CommandAction {
     FormatDocument,
     CloseActiveTab,
     ReopenClosedEditor,
+    CloseAllTabs,
+    CloseOtherTabs,
+    CloseTabsToRight,
     OpenActiveTabToSide,
     OpenSelectedExplorerItemToSide,
     CloseEditorSplit,
@@ -5191,6 +5194,24 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::ReopenClosedEditor,
         },
         CommandSpec {
+            label: "Close All Editors",
+            detail: "Close every clean editor tab and keep dirty tabs open",
+            shortcut: "",
+            action: CommandAction::CloseAllTabs,
+        },
+        CommandSpec {
+            label: "Close Other Editors",
+            detail: "Close every clean editor except the active tab, keeping dirty tabs open",
+            shortcut: "",
+            action: CommandAction::CloseOtherTabs,
+        },
+        CommandSpec {
+            label: "Close Editors to the Right",
+            detail: "Close clean editor tabs to the right of the active tab",
+            shortcut: "",
+            action: CommandAction::CloseTabsToRight,
+        },
+        CommandSpec {
             label: "Open Active Editor to Side",
             detail: "Show the active editor tab in a side-by-side editor pane",
             shortcut: "Ctrl-\\",
@@ -5203,8 +5224,8 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::CloseEditorSplit,
         },
         CommandSpec {
-            label: "Close Saved Tabs",
-            detail: "Close every clean tab and keep dirty tabs open",
+            label: "Close Saved Editors",
+            detail: "Close every clean editor tab and keep dirty tabs open",
             shortcut: "",
             action: CommandAction::CloseSavedTabs,
         },
@@ -6312,6 +6333,24 @@ impl App {
                 detail: "Close the active tab, asking how to handle unsaved edits".to_owned(),
                 shortcut: "Ctrl-W",
                 action: CommandAction::CloseActiveTab,
+            },
+            ContextMenuAction {
+                label: "Close Other Editors",
+                detail: "Close clean editor tabs except the active tab".to_owned(),
+                shortcut: "",
+                action: CommandAction::CloseOtherTabs,
+            },
+            ContextMenuAction {
+                label: "Close Editors to the Right",
+                detail: "Close clean editor tabs to the right of the active tab".to_owned(),
+                shortcut: "",
+                action: CommandAction::CloseTabsToRight,
+            },
+            ContextMenuAction {
+                label: "Close All Editors",
+                detail: "Close every clean editor tab and keep dirty tabs open".to_owned(),
+                shortcut: "",
+                action: CommandAction::CloseAllTabs,
             },
             ContextMenuAction {
                 label: "Reopen Closed Editor",
@@ -10693,6 +10732,9 @@ impl App {
             CommandAction::FormatDocument => self.format_active_document()?,
             CommandAction::CloseActiveTab => self.close_active_tab(),
             CommandAction::ReopenClosedEditor => self.reopen_closed_editor(),
+            CommandAction::CloseAllTabs => self.close_all_tabs(),
+            CommandAction::CloseOtherTabs => self.close_other_tabs(),
+            CommandAction::CloseTabsToRight => self.close_tabs_to_right(),
             CommandAction::OpenActiveTabToSide => self.open_active_tab_to_side(),
             CommandAction::OpenSelectedExplorerItemToSide => self.open_selected_to_side()?,
             CommandAction::CloseEditorSplit => self.close_editor_split(),
@@ -11272,34 +11314,136 @@ impl App {
         }
     }
 
-    fn close_saved_tabs(&mut self) {
-        let before = self.tabs.len();
-        let split_path = self
+    fn tab_identity(tab: &EditorTab) -> (PathBuf, bool) {
+        (tab.path.clone(), tab.untitled)
+    }
+
+    fn find_tab_identity(&self, identity: &(PathBuf, bool)) -> Option<usize> {
+        self.tabs
+            .iter()
+            .position(|tab| tab.path == identity.0 && tab.untitled == identity.1)
+    }
+
+    fn close_clean_tabs_at_indices(&mut self, mut indices: Vec<usize>) -> (usize, usize) {
+        indices.sort_unstable();
+        indices.dedup();
+
+        let active_identity = self
+            .active_tab
+            .and_then(|index| self.tabs.get(index))
+            .map(Self::tab_identity);
+        let split_identity = self
             .editor_split
             .and_then(|index| self.tabs.get(index))
-            .map(|tab| tab.path.clone());
-        let mut index = 0;
-        while index < self.tabs.len() {
+            .map(Self::tab_identity);
+
+        let mut removed_tabs = Vec::new();
+        let mut dirty_kept = 0;
+        for index in indices.into_iter().rev() {
+            if index >= self.tabs.len() {
+                continue;
+            }
             if self.tabs[index].dirty {
-                index += 1;
+                dirty_kept += 1;
             } else {
-                let tab = self.tabs.remove(index);
-                self.push_closed_tab(tab);
+                removed_tabs.push(self.tabs.remove(index));
             }
         }
-        let closed = before.saturating_sub(self.tabs.len());
-        self.active_tab = if self.tabs.is_empty() { None } else { Some(0) };
-        self.editor_split =
-            split_path.and_then(|path| self.tabs.iter().position(|tab| tab.path == path));
+
+        let closed = removed_tabs.len();
+        for tab in removed_tabs.into_iter().rev() {
+            self.push_closed_tab(tab);
+        }
+
+        self.active_tab = active_identity
+            .and_then(|identity| self.find_tab_identity(&identity))
+            .or_else(|| (!self.tabs.is_empty()).then_some(0));
+        self.editor_split = split_identity.and_then(|identity| self.find_tab_identity(&identity));
         self.normalize_editor_split();
-        self.message = if self.tabs.is_empty() {
-            Some(format!("closed {closed} saved tab(s)"))
-        } else {
+        if self.active_tab.is_some() {
+            self.ensure_editor_cursor_visible();
+        }
+        self.focus = FocusPanel::Editor;
+
+        (closed, dirty_kept)
+    }
+
+    fn set_batch_close_message(
+        &mut self,
+        closed: usize,
+        dirty_kept: usize,
+        closed_label: &str,
+        empty_message: &str,
+    ) {
+        self.message = if closed == 0 && dirty_kept == 0 {
+            Some(empty_message.to_owned())
+        } else if dirty_kept > 0 {
             Some(format!(
-                "closed {closed} saved tab(s); {} dirty tab(s) remain",
-                self.tabs.len()
+                "closed {closed} {closed_label}; kept {dirty_kept} dirty tab(s) open"
             ))
+        } else {
+            Some(format!("closed {closed} {closed_label}"))
         };
+    }
+
+    fn close_all_tabs(&mut self) {
+        let indices = (0..self.tabs.len()).collect();
+        let (closed, dirty_kept) = self.close_clean_tabs_at_indices(indices);
+        self.set_batch_close_message(
+            closed,
+            dirty_kept,
+            "clean editor tab(s)",
+            "no editor tabs to close",
+        );
+    }
+
+    fn close_other_tabs(&mut self) {
+        let Some(active) = self.active_tab.and_then(|index| self.tabs.get(index)) else {
+            self.message = Some("no active editor tab".to_owned());
+            return;
+        };
+        let active_identity = Self::tab_identity(active);
+        let indices = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, tab)| {
+                (Self::tab_identity(tab) != active_identity).then_some(index)
+            })
+            .collect();
+        let (closed, dirty_kept) = self.close_clean_tabs_at_indices(indices);
+        self.set_batch_close_message(
+            closed,
+            dirty_kept,
+            "other clean editor tab(s)",
+            "no other editor tabs to close",
+        );
+    }
+
+    fn close_tabs_to_right(&mut self) {
+        let Some(active) = self.active_tab else {
+            self.message = Some("no active editor tab".to_owned());
+            return;
+        };
+        let indices = (active + 1..self.tabs.len()).collect();
+        let (closed, dirty_kept) = self.close_clean_tabs_at_indices(indices);
+        self.set_batch_close_message(
+            closed,
+            dirty_kept,
+            "clean editor tab(s) to the right",
+            "no editor tabs to the right",
+        );
+    }
+
+    fn close_saved_tabs(&mut self) {
+        let indices = (0..self.tabs.len()).collect();
+        let (closed, dirty_kept) = self.close_clean_tabs_at_indices(indices);
+        self.set_batch_close_message(
+            closed,
+            dirty_kept,
+            "saved editor tab(s)",
+            "no saved editor tabs to close",
+        );
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -17642,6 +17786,159 @@ mod tests {
     }
 
     #[test]
+    fn close_other_editors_closes_clean_targets_and_keeps_dirty_tabs() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-close-other-editors-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let files = ["a.rs", "b.rs", "c.rs", "d.rs"].map(|name| {
+            let path = root.join(name);
+            fs::write(
+                &path,
+                format!("fn {}() {{}}\n", name.trim_end_matches(".rs")),
+            )
+            .unwrap();
+            path
+        });
+
+        let mut app = App::new(root.clone()).unwrap();
+        for file in &files {
+            app.open_file(file);
+        }
+        app.active_tab = Some(1);
+        app.editor_split = Some(3);
+        app.tabs[2].insert_text("// dirty\n");
+
+        app.run_command(CommandAction::CloseOtherTabs).unwrap();
+
+        let titles = app
+            .tabs
+            .iter()
+            .map(|tab| tab.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(titles, vec!["b.rs", "c.rs"]);
+        assert_eq!(app.active_tab().unwrap().title, "b.rs");
+        assert!(app.tabs[1].dirty);
+        assert_eq!(app.editor_split, None);
+        let closed_titles = app
+            .closed_tabs
+            .iter()
+            .map(|tab| tab.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(closed_titles, vec!["a.rs", "d.rs"]);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("closed 2 other clean editor tab(s); kept 1 dirty tab(s) open")
+        );
+
+        app.run_command(CommandAction::ReopenClosedEditor).unwrap();
+        assert_eq!(app.active_tab().unwrap().title, "d.rs");
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn close_tabs_to_right_keeps_dirty_right_tabs_and_reopens_rightmost_clean_tab() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-close-right-editors-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let files = ["a.rs", "b.rs", "c.rs", "d.rs"].map(|name| {
+            let path = root.join(name);
+            fs::write(
+                &path,
+                format!("fn {}() {{}}\n", name.trim_end_matches(".rs")),
+            )
+            .unwrap();
+            path
+        });
+
+        let mut app = App::new(root.clone()).unwrap();
+        for file in &files {
+            app.open_file(file);
+        }
+        app.active_tab = Some(1);
+        app.editor_split = Some(3);
+        app.tabs[2].insert_text("// dirty\n");
+
+        app.run_command(CommandAction::CloseTabsToRight).unwrap();
+
+        let titles = app
+            .tabs
+            .iter()
+            .map(|tab| tab.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(titles, vec!["a.rs", "b.rs", "c.rs"]);
+        assert_eq!(app.active_tab().unwrap().title, "b.rs");
+        assert!(app.tabs[2].dirty);
+        assert_eq!(app.editor_split, None);
+        assert_eq!(app.closed_tabs.last().unwrap().title, "d.rs");
+        assert_eq!(
+            app.message.as_deref(),
+            Some("closed 1 clean editor tab(s) to the right; kept 1 dirty tab(s) open")
+        );
+
+        app.run_command(CommandAction::ReopenClosedEditor).unwrap();
+        assert_eq!(app.active_tab().unwrap().title, "d.rs");
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn close_all_editors_closes_clean_tabs_and_keeps_dirty_tabs() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-close-all-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let files = ["a.rs", "b.rs", "c.rs"].map(|name| {
+            let path = root.join(name);
+            fs::write(
+                &path,
+                format!("fn {}() {{}}\n", name.trim_end_matches(".rs")),
+            )
+            .unwrap();
+            path
+        });
+
+        let mut app = App::new(root.clone()).unwrap();
+        for file in &files {
+            app.open_file(file);
+        }
+        app.active_tab = Some(0);
+        app.editor_split = Some(2);
+        app.tabs[1].insert_text("// dirty\n");
+
+        app.run_command(CommandAction::CloseAllTabs).unwrap();
+
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active_tab().unwrap().title, "b.rs");
+        assert!(app.active_tab().unwrap().dirty);
+        assert_eq!(app.editor_split, None);
+        let closed_titles = app
+            .closed_tabs
+            .iter()
+            .map(|tab| tab.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(closed_titles, vec!["a.rs", "c.rs"]);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("closed 2 clean editor tab(s); kept 1 dirty tab(s) open")
+        );
+
+        app.run_command(CommandAction::ReopenClosedEditor).unwrap();
+        assert_eq!(app.active_tab().unwrap().title, "c.rs");
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn format_document_runs_rustfmt_and_marks_buffer_dirty() {
         if Command::new("rustfmt").arg("--version").output().is_err() {
             return;
@@ -17989,6 +18286,24 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::ReopenClosedEditor))
+        );
+        let commands = app.command_palette_items("close other editors");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::CloseOtherTabs))
+        );
+        let commands = app.command_palette_items("close editors right");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::CloseTabsToRight))
+        );
+        let commands = app.command_palette_items("close all editors");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::CloseAllTabs))
         );
 
         let commands = app.command_palette_items("go line");
