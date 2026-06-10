@@ -298,6 +298,10 @@ The command palette and editor context menu shall include Show Incoming Calls an
 
 The editor shall detect foldable delimiter and indentation blocks in the active buffer. Clicking a fold marker in the editor gutter, pressing `Alt-[`, using the command palette, or using the editor context menu shall fold or unfold the block at that line. `Alt-]`, the command palette, and the editor context menu shall unfold all folded blocks. Folded blocks shall hide their interior lines from the rendered editor viewport, vertical scroll calculations, and editor mouse-coordinate mapping while preserving the underlying file contents, dirty state, undo/redo history, and line numbers. If the editor cursor moves into a folded block through search, navigation, or editing, the block containing the cursor shall unfold so the cursor remains visible.
 
+### R-236B1 Matching Bracket Navigation
+
+`Ctrl-shift-\`, the command palette, and the editor context menu shall include a Go to Matching Bracket action. When the editor cursor is on a bracket or immediately after one, the action shall scan the active in-memory buffer and jump between matching `()`, `[]`, and `{}` pairs, including nested pairs of the same type. The action shall record the previous editor location in navigation history when the destination differs, keep the editor focused, update scroll so the target bracket is visible, and unfold any folded block that contains the target. If no supported bracket is at the cursor or no matching bracket exists, the app shall report a clear status message without changing the buffer.
+
 ### R-236C Symbol Hover
 
 Moving the mouse over an identifier in the editor body shall compute a lightweight symbol hover without changing the editor cursor. The hover shall use the same visible workspace text-file provider as go-to-definition and find-references, include dirty open buffers from memory, ignore generated/hidden paths according to the current visibility settings, and display the hovered symbol, definition count, reference count, and first matching definition location/preview when available. Moving the mouse away from the editor body shall clear the symbol hover.
@@ -525,6 +529,7 @@ The GitHub Actions workflow shall build and upload release artifacts when a vers
 - Use the command palette replace-all action and confirm all active-file matches change as one undoable edit.
 - Use `F1` to open the command palette and execute an editor command.
 - Use `Ctrl-l` or the command palette to jump to a line.
+- Use `Ctrl-shift-\`, the command palette, or the editor context menu to jump between matching brackets, including a nested pair, then confirm `Alt-left` returns to the previous cursor location.
 - Select all text, cut it, paste it back, save, and confirm file contents on disk.
 - Drag in the editor, including past the bottom/right visible edge, confirm the selection extends while the viewport scrolls, then copy or cut the selected text and confirm the clipboard/file contents match the selected range.
 - Type brackets/quotes and press `Enter` inside a brace pair, then confirm auto-pairing, skip-over, paired deletion, and auto-indent behavior.

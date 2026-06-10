@@ -968,6 +968,98 @@ impl EditorTab {
         self.lines[self.cursor_line].chars().nth(self.cursor_col)
     }
 
+    fn char_at_position(&self, position: (usize, usize)) -> Option<char> {
+        self.lines.get(position.0)?.chars().nth(position.1)
+    }
+
+    fn bracket_candidate_at_cursor(&self) -> Option<((usize, usize), char)> {
+        let cursor = self.cursor_position();
+        if let Some(ch) = self.char_at_cursor()
+            && bracket_pair(ch).is_some()
+        {
+            return Some((cursor, ch));
+        }
+        if self.cursor_col > 0
+            && let Some(ch) = self.char_before_cursor()
+            && bracket_pair(ch).is_some()
+        {
+            return Some(((self.cursor_line, self.cursor_col - 1), ch));
+        }
+        None
+    }
+
+    fn matching_bracket_position(&self) -> Option<BracketMatch> {
+        let (source, source_ch) = self.bracket_candidate_at_cursor()?;
+        let (open, close, forward) = bracket_pair(source_ch)?;
+        let target = if forward {
+            self.find_matching_bracket_forward(source, open, close)
+        } else {
+            self.find_matching_bracket_backward(source, open, close)
+        }?;
+        let target_ch = self.char_at_position(target)?;
+
+        Some(BracketMatch {
+            source,
+            target,
+            source_ch,
+            target_ch,
+        })
+    }
+
+    fn find_matching_bracket_forward(
+        &self,
+        source: (usize, usize),
+        open: char,
+        close: char,
+    ) -> Option<(usize, usize)> {
+        let mut depth = 0usize;
+        for line_index in source.0..self.lines.len() {
+            for (col, ch) in self.lines[line_index].chars().enumerate() {
+                if line_index == source.0 && col < source.1 {
+                    continue;
+                }
+                if ch == open {
+                    depth = depth.saturating_add(1);
+                } else if ch == close && depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((line_index, col));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn find_matching_bracket_backward(
+        &self,
+        source: (usize, usize),
+        open: char,
+        close: char,
+    ) -> Option<(usize, usize)> {
+        let mut depth = 0usize;
+        for line_index in (0..=source.0).rev() {
+            let chars = self.lines[line_index]
+                .chars()
+                .enumerate()
+                .collect::<Vec<_>>();
+            for (col, ch) in chars.into_iter().rev() {
+                if line_index == source.0 && col > source.1 {
+                    continue;
+                }
+                if ch == close {
+                    depth = depth.saturating_add(1);
+                } else if ch == open && depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((line_index, col));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn clamp_cursor_col(&mut self) {
         let line_len = self.lines[self.cursor_line].chars().count();
         self.cursor_col = self.cursor_col.min(line_len);
@@ -1760,6 +1852,14 @@ pub struct LineProblemSummary {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BracketMatch {
+    source: (usize, usize),
+    target: (usize, usize),
+    source_ch: char,
+    target_ch: char,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorLocation {
     pub path: PathBuf,
@@ -1779,6 +1879,7 @@ pub enum CommandAction {
     GoToDefinition,
     GoToTypeDefinition,
     GoToImplementation,
+    GoToMatchingBracket,
     ShowIncomingCalls,
     ShowOutgoingCalls,
     HighlightSymbol,
@@ -2704,6 +2805,11 @@ impl App {
                         self.last_error = Some(error.to_string());
                     }
                 }
+                KeyCode::Char('\\') | KeyCode::Char('|')
+                    if key.modifiers.contains(KeyModifiers::SHIFT) =>
+                {
+                    self.go_to_matching_bracket();
+                }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     if let Err(error) = self.find_references_under_cursor() {
                         self.last_error = Some(error.to_string());
@@ -3250,6 +3356,36 @@ impl App {
         }
 
         self.message = Some("no next editor location".to_owned());
+    }
+
+    fn go_to_matching_bracket(&mut self) {
+        let Some((path, bracket_match)) = self.active_tab().and_then(|tab| {
+            tab.matching_bracket_position()
+                .map(|bracket_match| (tab.path.clone(), bracket_match))
+        }) else {
+            self.message = Some("no matching bracket at cursor".to_owned());
+            return;
+        };
+
+        self.push_navigation_location_for_jump(
+            &path,
+            Some(bracket_match.target.0),
+            Some(bracket_match.target.1),
+        );
+        if let Some(tab) = self.active_tab_mut() {
+            tab.set_cursor(bracket_match.target.0, bracket_match.target.1);
+        }
+        self.ensure_editor_cursor_visible();
+        self.focus = FocusPanel::Editor;
+        self.message = Some(format!(
+            "matched {} at {}:{} to {} at {}:{}",
+            bracket_match.source_ch,
+            bracket_match.source.0 + 1,
+            bracket_match.source.1 + 1,
+            bracket_match.target_ch,
+            bracket_match.target.0 + 1,
+            bracket_match.target.1 + 1
+        ));
     }
 
     pub fn drain_terminal(&mut self) -> bool {
@@ -3968,6 +4104,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             detail: "Jump to language-server implementations for the symbol under the editor cursor",
             shortcut: "",
             action: CommandAction::GoToImplementation,
+        },
+        CommandSpec {
+            label: "Go to Matching Bracket",
+            detail: "Jump between matching (), [], and {} brackets in the active editor buffer",
+            shortcut: "Ctrl-Shift-\\",
+            action: CommandAction::GoToMatchingBracket,
         },
         CommandSpec {
             label: "Show Incoming Calls",
@@ -5006,6 +5148,12 @@ impl App {
                 detail: format!("Jump to LSP implementations for {symbol}"),
                 shortcut: "",
                 action: CommandAction::GoToImplementation,
+            },
+            ContextMenuAction {
+                label: "Go to Matching Bracket",
+                detail: "Jump between matching (), [], and {} brackets in this buffer".to_owned(),
+                shortcut: "Ctrl-Shift-\\",
+                action: CommandAction::GoToMatchingBracket,
             },
             ContextMenuAction {
                 label: "Show Incoming Calls",
@@ -8764,6 +8912,7 @@ impl App {
             CommandAction::GoToDefinition => self.go_to_definition_under_cursor()?,
             CommandAction::GoToTypeDefinition => self.go_to_type_definition_under_cursor()?,
             CommandAction::GoToImplementation => self.go_to_implementation_under_cursor()?,
+            CommandAction::GoToMatchingBracket => self.go_to_matching_bracket(),
             CommandAction::ShowIncomingCalls => self.show_lsp_call_hierarchy_under_cursor(
                 "incoming call",
                 QuickPanelKind::IncomingCalls,
@@ -11750,6 +11899,18 @@ fn auto_pair_close(open: char) -> Option<char> {
     }
 }
 
+fn bracket_pair(ch: char) -> Option<(char, char, bool)> {
+    match ch {
+        '(' => Some(('(', ')', true)),
+        ')' => Some(('(', ')', false)),
+        '[' => Some(('[', ']', true)),
+        ']' => Some(('[', ']', false)),
+        '{' => Some(('{', '}', true)),
+        '}' => Some(('{', '}', false)),
+        _ => None,
+    }
+}
+
 fn is_auto_indent_open(c: char) -> bool {
     matches!(c, '(' | '[' | '{')
 }
@@ -13136,6 +13297,12 @@ mod tests {
                 .items
                 .iter()
                 .any(|item| { item.command == Some(CommandAction::GoToImplementation) })
+        );
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.command == Some(CommandAction::GoToMatchingBracket))
         );
         assert!(
             panel
@@ -14678,6 +14845,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::GoToImplementation))
+        );
+        let commands = app.command_palette_items("matching bracket");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::GoToMatchingBracket))
         );
         let commands = app.command_palette_items("find references");
         assert!(
@@ -16707,6 +16880,79 @@ src/lib.rs:3:1: note: trailing note
         assert_eq!(
             app.message.as_deref(),
             Some("jumped to definition: make_client")
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn go_to_matching_bracket_jumps_pairs_and_tracks_navigation_history() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-matching-bracket-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(
+            &path,
+            "fn main() {\n    let total = ((1 + 2) * 3);\n    let values = [alpha(1), beta(2)];\n}\n",
+        )
+        .unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let path = canonical_root.join("main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&path);
+        app.focus = FocusPanel::Editor;
+
+        app.active_tab_mut().unwrap().set_cursor(0, 10);
+        app.run_command(CommandAction::GoToMatchingBracket).unwrap();
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (3, 0));
+        assert_eq!(
+            app.navigation_back,
+            vec![EditorLocation {
+                path: path.clone(),
+                line: 0,
+                col: 10,
+            }]
+        );
+
+        app.run_command(CommandAction::GoBack).unwrap();
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (0, 10));
+
+        let nested_line = app.active_tab().unwrap().lines[1].clone();
+        let outer_open = nested_line.find('(').unwrap();
+        let outer_close = nested_line.rfind(')').unwrap();
+        app.active_tab_mut().unwrap().set_cursor(1, outer_open);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('\\'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ))
+        .unwrap();
+        assert_eq!(
+            app.active_tab().unwrap().cursor_position(),
+            (1, outer_close)
+        );
+
+        let square_line = app.active_tab().unwrap().lines[2].clone();
+        let square_open = square_line.find('[').unwrap();
+        let square_close = square_line.find(']').unwrap();
+        app.active_tab_mut()
+            .unwrap()
+            .set_cursor(2, square_close + 1);
+        app.run_command(CommandAction::GoToMatchingBracket).unwrap();
+        assert_eq!(
+            app.active_tab().unwrap().cursor_position(),
+            (2, square_open)
+        );
+
+        app.active_tab_mut().unwrap().set_cursor(0, 0);
+        app.run_command(CommandAction::GoToMatchingBracket).unwrap();
+        assert_eq!(
+            app.message.as_deref(),
+            Some("no matching bracket at cursor")
         );
 
         app.kill_all_terminals();

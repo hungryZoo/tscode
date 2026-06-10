@@ -67,6 +67,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can save the active editor buffer as a new relative or absolute path, have missing parent folders created, and keep editing the newly saved file.
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
 - As a developer, I can fold and unfold code blocks from the editor gutter, keyboard, command palette, or editor context menu so large files are easier to scan over SSH.
+- As a developer, I can jump between matching `()`, `[]`, and `{}` brackets from the keyboard, command palette, or editor context menu and return through editor navigation history.
 - As a developer, I can use a command palette to discover and execute available editor, explorer, workspace, focus, and terminal actions.
 - As a developer, I can right-click inside the editor and run common editing, navigation, formatting, path-copy, terminal-send, revert, and tab actions from a mouse-selectable context menu.
 - As a developer, I can right-click the integrated terminal and run terminal copy/paste/search/session-management actions from a mouse-selectable context menu when the shell application is not owning mouse input.
@@ -171,6 +172,7 @@ Keyboard fallback:
 - The command palette and editor context menu provide Run LSP Diagnostics for active-buffer language-server diagnostics
 - Mouse hover over an editor identifier shows lightweight symbol definition/reference information
 - Editor gutter fold markers, `Alt-[`, `Alt-]`, the command palette, and the editor context menu provide code fold/unfold actions
+- `Ctrl-Shift-\`, the command palette, and the editor context menu provide matching-bracket navigation for `()`, `[]`, and `{}` pairs
 - The command palette provides Run Workspace Check, Run LSP Diagnostics, and Show Problems actions for project diagnostics
 - The command palette provides Source Control actions for Git changed-file diff tabs, diff hunks, stage all, and unstage all
 - `Ctrl-Shift-B` or the command palette opens Run Task for detected workspace tasks
