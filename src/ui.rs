@@ -888,6 +888,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         crate::app::QuickPanelKind::DocumentSymbols => " Go to Symbol in File  Ctrl-Shift-O ",
         crate::app::QuickPanelKind::WorkspaceSymbols => " Go to Symbol in Workspace  Ctrl-T ",
         crate::app::QuickPanelKind::LspHover => " LSP Hover ",
+        crate::app::QuickPanelKind::SignatureHelp => " Signature Help  Ctrl-Shift-Space ",
         crate::app::QuickPanelKind::Definitions => " Go to Definition  Ctrl-] ",
         crate::app::QuickPanelKind::TypeDefinitions => " Go to Type Definition ",
         crate::app::QuickPanelKind::Implementations => " Go to Implementation ",
@@ -945,6 +946,9 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             crate::app::QuickPanelKind::LspHover => {
                 "No language-server hover content matches the current query."
+            }
+            crate::app::QuickPanelKind::SignatureHelp => {
+                "No language-server signature help matches the current query."
             }
             crate::app::QuickPanelKind::Definitions => "No definition found for the current query.",
             crate::app::QuickPanelKind::TypeDefinitions => {

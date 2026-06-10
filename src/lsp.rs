@@ -38,6 +38,27 @@ pub struct LspHover {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspSignatureHelp {
+    pub signatures: Vec<LspSignature>,
+    pub active_signature: Option<usize>,
+    pub active_parameter: Option<usize>,
+    pub server: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspSignature {
+    pub label: String,
+    pub documentation: Option<String>,
+    pub parameters: Vec<LspParameter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspParameter {
+    pub label: String,
+    pub documentation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspLocation {
     pub path: PathBuf,
     pub line: usize,
@@ -153,6 +174,13 @@ pub fn hover(position: &DocumentPosition) -> Result<Option<LspHover>> {
     request_hover_with_config(position, &config)
 }
 
+pub fn signature_help(position: &DocumentPosition) -> Result<Option<LspSignatureHelp>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(None);
+    };
+    request_signature_help_with_config(position, &config)
+}
+
 pub fn definitions(position: &DocumentPosition) -> Result<Vec<LspLocation>> {
     let Some(config) = language_server_for_path(&position.path) else {
         return Ok(Vec::new());
@@ -264,6 +292,26 @@ fn request_hover_with_config(
         contents,
         server: config.name.clone(),
     }))
+}
+
+fn request_signature_help_with_config(
+    position: &DocumentPosition,
+    config: &LanguageServerConfig,
+) -> Result<Option<LspSignatureHelp>> {
+    let mut params = text_document_position_params(position);
+    if let Some(object) = params.as_object_mut() {
+        object.insert(
+            "context".to_owned(),
+            json!({
+                "triggerKind": 1
+            }),
+        );
+    }
+    let Some(response) = run_lsp_request(position, config, "textDocument/signatureHelp", params)?
+    else {
+        return Ok(None);
+    };
+    Ok(parse_signature_help(response.result.as_ref(), &config.name))
 }
 
 fn request_definitions_with_config(
@@ -1191,6 +1239,118 @@ fn marked_text(value: &Value) -> String {
     }
 }
 
+fn parse_signature_help(result: Option<&Value>, server: &str) -> Option<LspSignatureHelp> {
+    let result = result?;
+    if result.is_null() {
+        return None;
+    }
+    let signatures = result
+        .get("signatures")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(parse_signature)
+        .collect::<Vec<_>>();
+    if signatures.is_empty() {
+        return None;
+    }
+
+    Some(LspSignatureHelp {
+        signatures,
+        active_signature: result
+            .get("activeSignature")
+            .and_then(Value::as_u64)
+            .map(|index| index as usize),
+        active_parameter: result
+            .get("activeParameter")
+            .and_then(Value::as_u64)
+            .map(|index| index as usize),
+        server: server.to_owned(),
+    })
+}
+
+fn parse_signature(value: &Value) -> Option<LspSignature> {
+    let label = value.get("label")?.as_str()?.trim();
+    if label.is_empty() {
+        return None;
+    }
+    let documentation = value
+        .get("documentation")
+        .map(marked_text)
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty());
+    let parameters = value
+        .get("parameters")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| parse_signature_parameter(item, label))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Some(LspSignature {
+        label: label.to_owned(),
+        documentation,
+        parameters,
+    })
+}
+
+fn parse_signature_parameter(value: &Value, signature_label: &str) -> Option<LspParameter> {
+    let label_value = value.get("label")?;
+    let label = if let Some(label) = label_value.as_str() {
+        label.trim().to_owned()
+    } else if let Some(offsets) = label_value.as_array() {
+        if offsets.len() != 2 {
+            return None;
+        }
+        let start = offsets[0].as_u64()? as usize;
+        let end = offsets[1].as_u64()? as usize;
+        signature_label_utf16_slice(signature_label, start, end)?
+    } else {
+        return None;
+    };
+    if label.is_empty() {
+        return None;
+    }
+    let documentation = value
+        .get("documentation")
+        .map(marked_text)
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty());
+    Some(LspParameter {
+        label,
+        documentation,
+    })
+}
+
+fn signature_label_utf16_slice(label: &str, start: usize, end: usize) -> Option<String> {
+    if start > end {
+        return None;
+    }
+    let mut utf16 = 0usize;
+    let mut start_byte = None;
+    let mut end_byte = None;
+    for (byte_index, ch) in label.char_indices() {
+        if utf16 == start {
+            start_byte = Some(byte_index);
+        }
+        if utf16 == end {
+            end_byte = Some(byte_index);
+            break;
+        }
+        utf16 += ch.len_utf16();
+    }
+    if start_byte.is_none() && utf16 == start {
+        start_byte = Some(label.len());
+    }
+    if end_byte.is_none() && utf16 == end {
+        end_byte = Some(label.len());
+    }
+    let start_byte = start_byte?;
+    let end_byte = end_byte?;
+    (start_byte <= end_byte).then(|| label[start_byte..end_byte].to_owned())
+}
+
 fn parse_locations(
     result: Option<&Value>,
     position: &DocumentPosition,
@@ -1834,6 +1994,51 @@ mod tests {
         assert_eq!(
             hover_contents(Some(&value)).unwrap(),
             "plain\n\nfn main()\n\n**docs**"
+        );
+    }
+
+    #[test]
+    fn parses_signature_help_with_active_parameter_and_offset_labels() {
+        let value = json!({
+            "signatures": [
+                {
+                    "label": "call(name: String, count: usize)",
+                    "documentation": { "kind": "markdown", "value": "Builds a call." },
+                    "parameters": [
+                        {
+                            "label": [5, 17],
+                            "documentation": "display name"
+                        },
+                        {
+                            "label": "count: usize",
+                            "documentation": { "value": "number of calls" }
+                        }
+                    ]
+                }
+            ],
+            "activeSignature": 0,
+            "activeParameter": 1
+        });
+
+        let help = parse_signature_help(Some(&value), "mock-signatures").unwrap();
+        assert_eq!(help.server, "mock-signatures");
+        assert_eq!(help.active_signature, Some(0));
+        assert_eq!(help.active_parameter, Some(1));
+        assert_eq!(help.signatures.len(), 1);
+        assert_eq!(help.signatures[0].label, "call(name: String, count: usize)");
+        assert_eq!(
+            help.signatures[0].documentation.as_deref(),
+            Some("Builds a call.")
+        );
+        assert_eq!(help.signatures[0].parameters[0].label, "name: String");
+        assert_eq!(
+            help.signatures[0].parameters[0].documentation.as_deref(),
+            Some("display name")
+        );
+        assert_eq!(help.signatures[0].parameters[1].label, "count: usize");
+        assert_eq!(
+            help.signatures[0].parameters[1].documentation.as_deref(),
+            Some("number of calls")
         );
     }
 
@@ -3016,6 +3221,110 @@ read_msg >/dev/null
             Some("impl Api {")
         );
         assert_eq!(implementation_locations[0].server, "mock-type-impl-lsp");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_signature_help_from_mock_stdio_language_server() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!("tscode-lsp-signature-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "fn main() {\n    call(\"name\", 2);\n}\n").unwrap();
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "signatures": [
+                    {
+                        "label": "call(name: &str, count: usize)",
+                        "documentation": "Calls a named target.",
+                        "parameters": [
+                            { "label": "name: &str" },
+                            {
+                                "label": "count: usize",
+                                "documentation": "number of times"
+                            }
+                        ]
+                    }
+                ],
+                "activeSignature": 0,
+                "activeParameter": 1
+            }
+        })
+        .to_string();
+        let server = root.join("mock-signature-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"signatureHelpProvider":{{"triggerCharacters":["(",","]}}}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+body=$(read_msg)
+case "$body" in
+  *textDocument/signatureHelp*) send_msg '{}' ;;
+  *) send_msg '{{"jsonrpc":"2.0","id":2,"result":null}}' ;;
+esac
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":3,"result":null}}'
+read_msg >/dev/null
+"#,
+                response
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-signature-lsp".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: file.clone(),
+            text: fs::read_to_string(&file).unwrap(),
+            line: 1,
+            col: 17,
+        };
+
+        let help = request_signature_help_with_config(&position, &config)
+            .unwrap()
+            .expect("signature help");
+        assert_eq!(help.server, "mock-signature-lsp");
+        assert_eq!(help.active_signature, Some(0));
+        assert_eq!(help.active_parameter, Some(1));
+        assert_eq!(help.signatures.len(), 1);
+        assert_eq!(help.signatures[0].label, "call(name: &str, count: usize)");
+        assert_eq!(
+            help.signatures[0].parameters[1].documentation.as_deref(),
+            Some("number of times")
+        );
 
         let _ = fs::remove_dir_all(root);
     }

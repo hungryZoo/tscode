@@ -1639,6 +1639,7 @@ pub enum QuickPanelKind {
     DocumentSymbols,
     WorkspaceSymbols,
     LspHover,
+    SignatureHelp,
     Definitions,
     TypeDefinitions,
     Implementations,
@@ -1725,6 +1726,7 @@ pub enum CommandAction {
     DocumentSymbols,
     WorkspaceSymbols,
     ShowHover,
+    SignatureHelp,
     GoToDefinition,
     GoToTypeDefinition,
     GoToImplementation,
@@ -2220,7 +2222,11 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Char(' ') | KeyCode::Null if self.focus == FocusPanel::Editor => {
-                    self.trigger_suggest()?;
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        self.show_lsp_signature_help_under_cursor()?;
+                    } else {
+                        self.trigger_suggest()?;
+                    }
                     return Ok(());
                 }
                 KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -3798,6 +3804,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::ShowHover,
         },
         CommandSpec {
+            label: "Signature Help",
+            detail: "Ask an installed language server for call signature information at the editor cursor",
+            shortcut: "Ctrl-Shift-Space",
+            action: CommandAction::SignatureHelp,
+        },
+        CommandSpec {
             label: "Go to Definition",
             detail: "Jump from the symbol under the editor cursor using LSP first, then workspace scan",
             shortcut: "Ctrl-]",
@@ -4422,6 +4434,7 @@ impl App {
             QuickPanelKind::DocumentSymbols => self.document_symbol_items(&query),
             QuickPanelKind::WorkspaceSymbols => self.workspace_symbol_items(&query)?,
             QuickPanelKind::LspHover => filter_existing_quick_items(existing_items, &query),
+            QuickPanelKind::SignatureHelp => filter_existing_quick_items(existing_items, &query),
             QuickPanelKind::Definitions => self.definition_items(&query)?,
             QuickPanelKind::TypeDefinitions | QuickPanelKind::Implementations => {
                 filter_existing_quick_items(existing_items, &query)
@@ -4788,6 +4801,12 @@ impl App {
                 detail: format!("Show language-server hover for {symbol}"),
                 shortcut: "",
                 action: CommandAction::ShowHover,
+            },
+            ContextMenuAction {
+                label: "Signature Help",
+                detail: format!("Show call signature help for {symbol}"),
+                shortcut: "Ctrl-Shift-Space",
+                action: CommandAction::SignatureHelp,
             },
             ContextMenuAction {
                 label: "Go to Definition",
@@ -7677,6 +7696,39 @@ impl App {
         Ok(())
     }
 
+    fn show_lsp_signature_help_under_cursor(&mut self) -> Result<()> {
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            self.message = Some("no language server configured for the active file".to_owned());
+            return Ok(());
+        };
+        let Some(help) = lsp::signature_help(&position)? else {
+            let server = lsp::server_name_for_path(&position.path)
+                .unwrap_or_else(|| "language server".to_owned());
+            self.message = Some(format!("no LSP signature help returned by {server}"));
+            return Ok(());
+        };
+
+        let items = lsp_signature_help_items(&help, position.path, position.line, position.col);
+        if items.is_empty() {
+            self.message = Some(format!("no LSP signature help returned by {}", help.server));
+            return Ok(());
+        }
+        let count = items.len();
+        let selected = help
+            .active_signature
+            .unwrap_or(0)
+            .min(count.saturating_sub(1));
+        self.quick_panel = Some(QuickPanel {
+            kind: QuickPanelKind::SignatureHelp,
+            query: String::new(),
+            items,
+            selected,
+            scroll: 0,
+        });
+        self.message = Some(format!("LSP signature help from {}", help.server));
+        Ok(())
+    }
+
     fn find_references_under_cursor(&mut self) -> Result<()> {
         let Some(symbol) = self.active_identifier_under_cursor() else {
             self.message = Some("no symbol under cursor".to_owned());
@@ -8042,10 +8094,17 @@ impl App {
             return;
         }
 
-        if kind == QuickPanelKind::LspHover {
+        if matches!(
+            kind,
+            QuickPanelKind::LspHover | QuickPanelKind::SignatureHelp
+        ) {
             self.quick_panel = None;
             self.focus = FocusPanel::Editor;
-            self.message = Some("closed LSP hover".to_owned());
+            self.message = Some(match kind {
+                QuickPanelKind::LspHover => "closed LSP hover".to_owned(),
+                QuickPanelKind::SignatureHelp => "closed signature help".to_owned(),
+                _ => unreachable!(),
+            });
             return;
         }
 
@@ -8192,6 +8251,7 @@ impl App {
                 self.open_quick_panel(QuickPanelKind::WorkspaceSymbols)?
             }
             CommandAction::ShowHover => self.show_lsp_hover_under_cursor()?,
+            CommandAction::SignatureHelp => self.show_lsp_signature_help_under_cursor()?,
             CommandAction::GoToDefinition => self.go_to_definition_under_cursor()?,
             CommandAction::GoToTypeDefinition => self.go_to_type_definition_under_cursor()?,
             CommandAction::GoToImplementation => self.go_to_implementation_under_cursor()?,
@@ -9850,6 +9910,81 @@ fn lsp_document_symbol_to_quick_item(symbol: lsp::LspDocumentSymbol) -> QuickIte
         preview: symbol.preview,
         command: None,
     }
+}
+
+fn lsp_signature_help_items(
+    help: &lsp::LspSignatureHelp,
+    path: PathBuf,
+    line: usize,
+    col: usize,
+) -> Vec<QuickItem> {
+    let total = help.signatures.len();
+    let active_signature = help
+        .active_signature
+        .unwrap_or(0)
+        .min(total.saturating_sub(1));
+    help.signatures
+        .iter()
+        .enumerate()
+        .map(|(index, signature)| {
+            let active_parameter = (index == active_signature)
+                .then_some(help.active_parameter)
+                .flatten()
+                .filter(|parameter| *parameter < signature.parameters.len());
+            let mut detail_parts = vec![
+                format!("LSP {}", help.server),
+                format!("signature {}/{}", index + 1, total),
+            ];
+            if index == active_signature {
+                detail_parts.push("active".to_owned());
+            }
+            if let Some(parameter) = active_parameter {
+                detail_parts.push(format!(
+                    "parameter {}/{}: {}",
+                    parameter + 1,
+                    signature.parameters.len(),
+                    signature.parameters[parameter].label
+                ));
+            }
+            QuickItem {
+                label: signature.label.clone(),
+                detail: detail_parts.join("  "),
+                path: path.clone(),
+                line: Some(line),
+                col: Some(col),
+                preview: signature_help_preview(signature, active_parameter),
+                command: None,
+            }
+        })
+        .take(MAX_QUICK_ITEMS)
+        .collect()
+}
+
+fn signature_help_preview(
+    signature: &lsp::LspSignature,
+    active_parameter: Option<usize>,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(documentation) = signature
+        .documentation
+        .as_deref()
+        .filter(|documentation| !documentation.trim().is_empty())
+    {
+        parts.push(documentation.trim().to_owned());
+    }
+    if let Some(parameter) = active_parameter.and_then(|index| signature.parameters.get(index)) {
+        let mut parameter_text = format!("parameter: {}", parameter.label);
+        if let Some(documentation) = parameter
+            .documentation
+            .as_deref()
+            .filter(|documentation| !documentation.trim().is_empty())
+        {
+            parameter_text.push_str(" - ");
+            parameter_text.push_str(documentation.trim());
+        }
+        parts.push(parameter_text);
+    }
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
 
 fn code_action_detail(action: &lsp::LspCodeAction) -> String {
@@ -12127,6 +12262,12 @@ mod tests {
             panel
                 .items
                 .iter()
+                .any(|item| item.command == Some(CommandAction::SignatureHelp))
+        );
+        assert!(
+            panel
+                .items
+                .iter()
                 .any(|item| { item.command == Some(CommandAction::GoToTypeDefinition) })
         );
         assert!(
@@ -13586,6 +13727,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::CodeAction))
+        );
+        let commands = app.command_palette_items("signature help");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::SignatureHelp))
         );
         let commands = app.command_palette_items("rename symbol");
         assert!(
