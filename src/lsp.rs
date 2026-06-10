@@ -191,6 +191,13 @@ pub fn execute_code_action_command(
     request_execute_command_with_config(position, command, &config)
 }
 
+pub fn formatting(position: &DocumentPosition) -> Result<Option<LspWorkspaceEdit>> {
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(None);
+    };
+    request_formatting_with_config(position, &config)
+}
+
 pub fn rename(position: &DocumentPosition, new_name: &str) -> Result<Option<LspWorkspaceEdit>> {
     let Some(config) = language_server_for_path(&position.path) else {
         return Ok(None);
@@ -414,6 +421,26 @@ fn request_execute_command_with_config(
         edits,
         server: config.name.clone(),
     }))
+}
+
+fn request_formatting_with_config(
+    position: &DocumentPosition,
+    config: &LanguageServerConfig,
+) -> Result<Option<LspWorkspaceEdit>> {
+    let Some(response) = run_lsp_request(
+        position,
+        config,
+        "textDocument/formatting",
+        formatting_params(position),
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(parse_formatting_edits(
+        response.result.as_ref(),
+        position,
+        &config.name,
+    ))
 }
 
 fn request_rename_with_config(
@@ -867,6 +894,21 @@ fn code_action_params(position: &DocumentPosition, diagnostics: &[LspDiagnostic]
     })
 }
 
+fn formatting_params(position: &DocumentPosition) -> Value {
+    json!({
+        "textDocument": {
+            "uri": path_to_file_uri(&position.path)
+        },
+        "options": {
+            "tabSize": 4,
+            "insertSpaces": true,
+            "trimTrailingWhitespace": true,
+            "insertFinalNewline": true,
+            "trimFinalNewlines": true
+        }
+    })
+}
+
 fn diagnostic_to_lsp_value(
     diagnostic: &LspDiagnostic,
     position: &DocumentPosition,
@@ -1300,6 +1342,19 @@ fn parse_workspace_edit(result: Option<&Value>, server: &str) -> Option<LspWorks
         }
     }
 
+    (!edits.is_empty()).then(|| LspWorkspaceEdit {
+        edits,
+        server: server.to_owned(),
+    })
+}
+
+fn parse_formatting_edits(
+    result: Option<&Value>,
+    position: &DocumentPosition,
+    server: &str,
+) -> Option<LspWorkspaceEdit> {
+    let mut edits = Vec::new();
+    parse_text_edits_for_uri(&path_to_file_uri(&position.path), result?, &mut edits);
     (!edits.is_empty()).then(|| LspWorkspaceEdit {
         edits,
         server: server.to_owned(),
@@ -1844,6 +1899,100 @@ read_msg >/dev/null
         assert_eq!(edit.edits.len(), 1);
         assert_eq!(edit.edits[0].path, file.canonicalize().unwrap());
         assert_eq!(edit.edits[0].new_text, "new_name");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_formatting_edits_from_mock_stdio_language_server() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!("tscode-lsp-format-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "fn main(){println!(\"hi\");}\n").unwrap();
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": [
+                {
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 1, "character": 0 }
+                    },
+                    "newText": "fn main() {\n    println!(\"hi\");\n}\n"
+                }
+            ]
+        })
+        .to_string();
+        let server = root.join("mock-format-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"documentFormattingProvider":true}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+body=$(read_msg)
+case "$body" in
+  *textDocument/formatting*) send_msg '{}' ;;
+  *) send_msg '{{"jsonrpc":"2.0","id":2,"result":[]}}' ;;
+esac
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":3,"result":null}}'
+read_msg >/dev/null
+"#,
+                response
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-format".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: file.clone(),
+            text: fs::read_to_string(&file).unwrap(),
+            line: 0,
+            col: 0,
+        };
+
+        let edit = request_formatting_with_config(&position, &config)
+            .unwrap()
+            .expect("formatting edit");
+        assert_eq!(edit.server, "mock-format");
+        assert_eq!(edit.edits.len(), 1);
+        assert_eq!(edit.edits[0].path, file.canonicalize().unwrap());
+        assert_eq!(
+            edit.edits[0].new_text,
+            "fn main() {\n    println!(\"hi\");\n}\n"
+        );
 
         let _ = fs::remove_dir_all(root);
     }

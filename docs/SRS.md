@@ -292,7 +292,7 @@ The command palette and editor context menu shall include a Code Action action. 
 
 ### R-237 Format Document
 
-`Shift-alt-f` or the command palette shall format the active editor buffer by piping its current text to a configured external formatter for the file type. Supported formatter integrations shall include `rustfmt` for Rust, `prettier` for JavaScript/TypeScript/JSON/CSS/HTML/Markdown/YAML, `gofmt` for Go, `black` for Python, `shfmt` for shell scripts, and `clang-format` for C-family files where those tools are installed. The command shall update the editor buffer as one undoable edit, mark the tab dirty when formatting changes text, preserve the on-disk file until save, and report a clear message when no formatter is configured.
+`Shift-alt-f` or the command palette shall format the active editor buffer. For file types with a configured or discoverable language server, the app shall first publish the current in-memory buffer and request `textDocument/formatting`; returned `TextEdit` values shall be applied as one undoable dirty-buffer edit without writing the backing file. If no LSP formatting edit is available, the app shall pipe the current text to a configured external formatter for the file type. Supported external formatter integrations shall include `rustfmt` for Rust, `prettier` for JavaScript/TypeScript/JSON/CSS/HTML/Markdown/YAML, `gofmt` for Go, `black` for Python, `shfmt` for shell scripts, and `clang-format` for C-family files where those tools are installed. The command shall mark the tab dirty when formatting changes text, preserve the on-disk file until save, and report a clear message when no formatter is configured.
 
 ### R-238 Occurrence Selection
 

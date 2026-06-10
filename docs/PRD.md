@@ -96,7 +96,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can run detected project tasks from `.vscode/tasks.json`, `package.json` scripts, Cargo, Make, Go, and Python projects in a new integrated PTY terminal.
 - As a developer, I can send the current editor selection, or the current line when nothing is selected, directly into the integrated terminal shell.
 - As a developer, I can clean up trailing spaces and tabs in the active file through the command palette, save the cleaned file, and undo the cleanup if needed.
-- As a developer, I can format the active source file with the language formatter already installed on the machine and review the changed dirty buffer before saving.
+- As a developer, I can format the active source file with an installed language server or formatter and review the changed dirty buffer before saving.
 - As a developer, I can revert the active editor tab back to the file currently on disk when I want to discard unsaved edits or reload external changes.
 - As a developer, I can keep files open while terminal commands, Git operations, or external tools change those files on disk; clean tabs reload automatically, while dirty tabs show conflict status and prevent accidental overwrite saves.
 - As a developer, I can clear the integrated terminal viewport or restart the PTY shell without restarting the whole application.
@@ -178,7 +178,7 @@ Keyboard fallback:
 - `Ctrl-A`, `Ctrl-C`, `Ctrl-X`, and `Ctrl-V` provide editor select-all, copy, cut, and paste when editor focus is active; copy and cut also export text through OSC52-compatible terminal clipboards
 - `Ctrl-Enter` sends the editor selection or current line to the active integrated terminal shell and moves focus to the terminal
 - The command palette provides trim-trailing-whitespace for the active editor buffer
-- `Shift-Alt-F` or the command palette formats the active editor buffer with an installed language formatter
+- `Shift-Alt-F` or the command palette formats the active editor buffer with an installed language server or formatter
 - The command palette provides revert-file for the active editor buffer
 - `Ctrl-D` and `Ctrl-Shift-L` provide occurrence selection for the current word or selection
 - `Ctrl-L`, `Ctrl-/`, `Ctrl-Shift-D`, `Alt-Up`, `Alt-Down`, `Tab`, and `Shift-Tab` provide editor go-to-line and selection-aware line editing actions

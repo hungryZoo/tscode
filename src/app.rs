@@ -3892,7 +3892,7 @@ fn command_catalog() -> Vec<CommandSpec> {
         },
         CommandSpec {
             label: "Format Document",
-            detail: "Format the active editor buffer with an installed language formatter",
+            detail: "Format the active editor buffer with LSP or an installed formatter",
             shortcut: "Shift-Alt-F",
             action: CommandAction::FormatDocument,
         },
@@ -4770,7 +4770,7 @@ impl App {
             },
             ContextMenuAction {
                 label: "Format Document",
-                detail: "Format the active buffer with an installed formatter".to_owned(),
+                detail: "Format the active buffer with LSP or an installed formatter".to_owned(),
                 shortcut: "Shift-Alt-F",
                 action: CommandAction::FormatDocument,
             },
@@ -6997,6 +6997,16 @@ impl App {
         };
 
         let path = self.tabs[index].path.clone();
+        let title = self.tabs[index].title.clone();
+        if let Some(summary) = self.try_lsp_format_document()? {
+            self.ensure_editor_cursor_visible();
+            self.message = Some(format!(
+                "formatted {title} via {}: {} edit(s)",
+                summary.server, summary.edit_count
+            ));
+            return Ok(());
+        }
+
         let Some(formatter) = formatter_command_for_path(&path, &self.root) else {
             self.message = Some(format!(
                 "no formatter configured for {}",
@@ -7009,7 +7019,6 @@ impl App {
 
         let original = self.tabs[index].text();
         let formatted = run_formatter_command(&formatter, &original)?;
-        let title = self.tabs[index].title.clone();
         if self.tabs[index].replace_entire_text_as_edit(&formatted) {
             self.ensure_editor_cursor_visible();
             self.message = Some(format!("formatted {title} with {}", formatter.label));
@@ -7017,6 +7026,16 @@ impl App {
             self.message = Some(format!("already formatted with {}", formatter.label));
         }
         Ok(())
+    }
+
+    fn try_lsp_format_document(&mut self) -> Result<Option<LspRenameSummary>> {
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            return Ok(None);
+        };
+        let Some(workspace_edit) = lsp::formatting(&position)? else {
+            return Ok(None);
+        };
+        self.apply_lsp_workspace_edit(workspace_edit)
     }
 
     fn run_workspace_check(&mut self) -> Result<()> {
