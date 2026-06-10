@@ -6549,6 +6549,19 @@ impl App {
         self.apply_lsp_workspace_edit(workspace_edit)
     }
 
+    fn try_lsp_code_action_command(
+        &mut self,
+        action: &lsp::LspCodeAction,
+    ) -> Result<Option<LspRenameSummary>> {
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            return Ok(None);
+        };
+        let Some(workspace_edit) = lsp::execute_code_action_command(&position, action)? else {
+            return Ok(None);
+        };
+        self.apply_lsp_workspace_edit(workspace_edit)
+    }
+
     fn apply_lsp_workspace_edit(
         &mut self,
         workspace_edit: lsp::LspWorkspaceEdit,
@@ -7864,34 +7877,51 @@ impl App {
         self.lsp_code_actions.clear();
 
         let title = action.title.clone();
-        let Some(edit) = action.edit else {
-            self.focus = FocusPanel::Editor;
-            self.message = Some(
-                action
-                    .command_title
-                    .map(|command| {
-                        format!("code action '{title}' requires unsupported LSP command: {command}")
-                    })
-                    .unwrap_or_else(|| {
-                        format!("code action '{title}' did not include a workspace edit")
-                    }),
-            );
+        if let Some(edit) = action.edit.clone() {
+            match self.apply_lsp_workspace_edit(edit)? {
+                Some(summary) => {
+                    self.focus = FocusPanel::Editor;
+                    self.ensure_editor_cursor_visible();
+                    self.message = Some(format!(
+                        "applied code action '{title}' via {}: {} edit(s), {} open buffer(s), {} saved file(s)",
+                        summary.server, summary.edit_count, summary.open_count, summary.file_count
+                    ));
+                }
+                None => {
+                    self.focus = FocusPanel::Editor;
+                    self.message = Some(format!(
+                        "code action '{title}' produced no applicable edits"
+                    ));
+                }
+            }
             return Ok(());
-        };
+        }
 
-        match self.apply_lsp_workspace_edit(edit)? {
+        if action.command.is_none() {
+            self.focus = FocusPanel::Editor;
+            self.message = Some(format!(
+                "code action '{title}' did not include a workspace edit"
+            ));
+            return Ok(());
+        }
+
+        let command_title = action
+            .command_title
+            .clone()
+            .unwrap_or_else(|| "LSP command".to_owned());
+        match self.try_lsp_code_action_command(&action)? {
             Some(summary) => {
                 self.focus = FocusPanel::Editor;
                 self.ensure_editor_cursor_visible();
                 self.message = Some(format!(
-                    "applied code action '{title}' via {}: {} edit(s), {} open buffer(s), {} saved file(s)",
+                    "executed code action '{title}' via {}: {} edit(s), {} open buffer(s), {} saved file(s)",
                     summary.server, summary.edit_count, summary.open_count, summary.file_count
                 ));
             }
             None => {
                 self.focus = FocusPanel::Editor;
                 self.message = Some(format!(
-                    "code action '{title}' produced no applicable edits"
+                    "code action '{title}' command '{command_title}' produced no applicable edits"
                 ));
             }
         }
@@ -9571,7 +9601,7 @@ fn code_action_preview(action: &lsp::LspCodeAction) -> Option<String> {
     action
         .command_title
         .as_deref()
-        .map(|title| format!("Command execution is not supported yet: {title}"))
+        .map(|title| format!("Runs LSP command: {title}"))
 }
 
 fn lsp_completion_insert_text_is_plain(text: &str) -> bool {
@@ -13932,6 +13962,7 @@ mod tests {
                 }],
             }),
             command_title: None,
+            command: None,
             server: "mock-code-action".to_owned(),
         }];
 

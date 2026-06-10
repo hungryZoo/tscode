@@ -61,7 +61,15 @@ pub struct LspCodeAction {
     pub is_preferred: bool,
     pub edit: Option<LspWorkspaceEdit>,
     pub command_title: Option<String>,
+    pub command: Option<LspCommand>,
     pub server: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspCommand {
+    pub title: String,
+    pub command: String,
+    pub arguments: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +176,19 @@ pub fn code_actions(
         return Ok(Vec::new());
     };
     request_code_actions_with_config(position, diagnostics, &config)
+}
+
+pub fn execute_code_action_command(
+    position: &DocumentPosition,
+    action: &LspCodeAction,
+) -> Result<Option<LspWorkspaceEdit>> {
+    let Some(command) = &action.command else {
+        return Ok(None);
+    };
+    let Some(config) = language_server_for_path(&position.path) else {
+        return Ok(None);
+    };
+    request_execute_command_with_config(position, command, &config)
 }
 
 pub fn rename(position: &DocumentPosition, new_name: &str) -> Result<Option<LspWorkspaceEdit>> {
@@ -363,6 +384,38 @@ fn request_code_actions_with_config(
     Ok(parse_code_actions(response.result.as_ref(), &config.name))
 }
 
+fn request_execute_command_with_config(
+    position: &DocumentPosition,
+    command: &LspCommand,
+    config: &LanguageServerConfig,
+) -> Result<Option<LspWorkspaceEdit>> {
+    let params = json!({
+        "command": command.command.clone(),
+        "arguments": command.arguments.clone()
+    });
+    let (response, mut edits) = run_lsp_request_collecting_workspace_edits(
+        position,
+        config,
+        "workspace/executeCommand",
+        params,
+    )?;
+
+    if let Some(response) = response
+        && let Some(edit) = parse_workspace_edit(response.result.as_ref(), &config.name)
+    {
+        edits.extend(edit.edits);
+    }
+
+    if edits.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(LspWorkspaceEdit {
+        edits,
+        server: config.name.clone(),
+    }))
+}
+
 fn request_rename_with_config(
     position: &DocumentPosition,
     new_name: &str,
@@ -476,6 +529,107 @@ fn run_lsp_request(
     process.finish();
 
     Ok(response)
+}
+
+fn run_lsp_request_collecting_workspace_edits(
+    position: &DocumentPosition,
+    config: &LanguageServerConfig,
+    method: &str,
+    params: Value,
+) -> Result<(Option<LspResponse>, Vec<LspTextEdit>)> {
+    let Ok(mut process) = spawn_lsp(config, &position.root) else {
+        return Ok((None, Vec::new()));
+    };
+
+    let deadline = Instant::now() + request_timeout();
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "rootUri": path_to_file_uri(&position.root),
+            "capabilities": {
+                "workspace": {
+                    "applyEdit": true
+                }
+            },
+            "clientInfo": {
+                "name": "tscode",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }
+    });
+    if send_message(&mut process.stdin, &initialize).is_err() {
+        process.kill();
+        return Ok((None, Vec::new()));
+    }
+    if next_response(&process.messages, 1, deadline).is_none() {
+        process.kill();
+        return Ok((None, Vec::new()));
+    }
+
+    let initialized = json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    });
+    let did_open = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": path_to_file_uri(&position.path),
+                "languageId": config.language_id,
+                "version": 1,
+                "text": position.text
+            }
+        }
+    });
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": method,
+        "params": params
+    });
+
+    if send_message(&mut process.stdin, &initialized).is_err()
+        || send_message(&mut process.stdin, &did_open).is_err()
+        || send_message(&mut process.stdin, &request).is_err()
+    {
+        process.kill();
+        return Ok((None, Vec::new()));
+    }
+
+    let (response_value, edits) =
+        next_response_collecting_workspace_edits(&mut process, 2, deadline, &config.name);
+    let response = response_value.and_then(|value| {
+        if value.get("error").is_some() {
+            None
+        } else {
+            Some(LspResponse {
+                result: value.get("result").cloned(),
+            })
+        }
+    });
+
+    let shutdown = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "shutdown",
+        "params": null
+    });
+    let exit = json!({
+        "jsonrpc": "2.0",
+        "method": "exit",
+        "params": null
+    });
+    let _ = send_message(&mut process.stdin, &shutdown);
+    let _ = next_response(&process.messages, 3, Instant::now() + SHUTDOWN_TIMEOUT);
+    let _ = send_message(&mut process.stdin, &exit);
+    process.finish();
+
+    Ok((response, edits))
 }
 
 struct LspProcess {
@@ -603,6 +757,73 @@ fn next_response(
         }
     }
     None
+}
+
+fn next_response_collecting_workspace_edits(
+    process: &mut LspProcess,
+    id: i64,
+    deadline: Instant,
+    server: &str,
+) -> (Option<Value>, Vec<LspTextEdit>) {
+    let mut edits = Vec::new();
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match process.messages.recv_timeout(remaining) {
+            Ok(Ok(value)) => {
+                if value.get("method").and_then(Value::as_str) == Some("workspace/applyEdit") {
+                    let request_id = value.get("id").cloned().unwrap_or(Value::Null);
+                    let edit = parse_workspace_edit(
+                        value.get("params").and_then(|params| params.get("edit")),
+                        server,
+                    );
+                    let applied = edit.is_some();
+                    if let Some(edit) = edit {
+                        edits.extend(edit.edits);
+                    }
+                    let result = if applied {
+                        json!({ "applied": true })
+                    } else {
+                        json!({
+                            "applied": false,
+                            "failureReason": "tscode did not receive a workspace edit"
+                        })
+                    };
+                    let response = json!({
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": result
+                    });
+                    if send_message(&mut process.stdin, &response).is_err() {
+                        return (None, edits);
+                    }
+                    continue;
+                }
+
+                if let Some(request_id) = value
+                    .get("id")
+                    .cloned()
+                    .filter(|_| value.get("method").and_then(Value::as_str).is_some())
+                {
+                    let response = json!({
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32601,
+                            "message": "method not supported by tscode one-shot LSP client"
+                        }
+                    });
+                    let _ = send_message(&mut process.stdin, &response);
+                    continue;
+                }
+
+                if value.get("id").and_then(Value::as_i64) == Some(id) {
+                    return (Some(value), edits);
+                }
+            }
+            Ok(Err(_)) | Err(_) => return (None, edits),
+        }
+    }
+    (None, edits)
 }
 
 fn text_document_position_params(position: &DocumentPosition) -> Value {
@@ -991,15 +1212,8 @@ fn parse_code_actions(result: Option<&Value>, server: &str) -> Vec<LspCodeAction
             }
 
             let edit = parse_workspace_edit(action.get("edit"), server);
-            let command_title = action
-                .get("command")
-                .and_then(|command| {
-                    command
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .or_else(|| command.as_str().map(|_| title))
-                })
-                .map(str::to_owned);
+            let command = parse_lsp_command(action, title);
+            let command_title = command.as_ref().map(|command| command.title.clone());
             Some(LspCodeAction {
                 title: title.to_owned(),
                 kind: action
@@ -1012,10 +1226,50 @@ fn parse_code_actions(result: Option<&Value>, server: &str) -> Vec<LspCodeAction
                     .unwrap_or(false),
                 edit,
                 command_title,
+                command,
                 server: server.to_owned(),
             })
         })
         .collect()
+}
+
+fn parse_lsp_command(action: &Value, fallback_title: &str) -> Option<LspCommand> {
+    let raw_command = action.get("command")?;
+    if let Some(command) = raw_command.as_str() {
+        let command = command.trim();
+        if command.is_empty() {
+            return None;
+        }
+        return Some(LspCommand {
+            title: fallback_title.to_owned(),
+            command: command.to_owned(),
+            arguments: action
+                .get("arguments")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    let command = raw_command.get("command")?.as_str()?.trim();
+    if command.is_empty() {
+        return None;
+    }
+    let title = raw_command
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or(fallback_title);
+    Some(LspCommand {
+        title: title.to_owned(),
+        command: command.to_owned(),
+        arguments: raw_command
+            .get("arguments")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+    })
 }
 
 fn parse_workspace_edit(result: Option<&Value>, server: &str) -> Option<LspWorkspaceEdit> {
@@ -1292,12 +1546,25 @@ mod tests {
             },
             {
                 "title": "Run command action",
-                "command": "mock.runAction"
+                "command": "mock.runAction",
+                "arguments": [
+                    { "uri": path_to_file_uri(&file) }
+                ]
+            },
+            {
+                "title": "Run object command action",
+                "command": {
+                    "title": "Apply object command",
+                    "command": "mock.applyObjectAction",
+                    "arguments": [
+                        { "uri": path_to_file_uri(&file), "line": 0 }
+                    ]
+                }
             }
         ]);
 
         let parsed = parse_code_actions(Some(&actions), "mock-actions");
-        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed.len(), 3);
         assert_eq!(parsed[0].title, "Import missing item");
         assert_eq!(parsed[0].kind.as_deref(), Some("quickfix"));
         assert!(parsed[0].is_preferred);
@@ -1310,7 +1577,24 @@ mod tests {
             parsed[1].command_title.as_deref(),
             Some("Run command action")
         );
+        let command = parsed[1].command.as_ref().expect("command");
+        assert_eq!(command.title, "Run command action");
+        assert_eq!(command.command, "mock.runAction");
+        assert_eq!(
+            command.arguments,
+            vec![json!({ "uri": path_to_file_uri(&file) })]
+        );
         assert!(parsed[1].edit.is_none());
+        assert_eq!(
+            parsed[2].command_title.as_deref(),
+            Some("Apply object command")
+        );
+        let command = parsed[2].command.as_ref().expect("object command");
+        assert_eq!(command.command, "mock.applyObjectAction");
+        assert_eq!(
+            command.arguments,
+            vec![json!({ "uri": path_to_file_uri(&file), "line": 0 })]
+        );
     }
 
     #[test]
@@ -1557,6 +1841,135 @@ read_msg >/dev/null
         assert_eq!(actions[0].title, "Replace old_name with new_name");
         assert_eq!(actions[0].server, "mock-code-action");
         let edit = actions[0].edit.as_ref().expect("workspace edit");
+        assert_eq!(edit.edits.len(), 1);
+        assert_eq!(edit.edits[0].path, file.canonicalize().unwrap());
+        assert_eq!(edit.edits[0].new_text, "new_name");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executes_code_action_command_and_collects_workspace_apply_edit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = env::temp_dir().join(format!(
+            "tscode-lsp-code-action-command-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "fn main() {\n    old_name();\n}\n").unwrap();
+        let apply_edit = json!({
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "workspace/applyEdit",
+            "params": {
+                "label": "Apply command quick fix",
+                "edit": {
+                    "changes": {
+                        path_to_file_uri(&file): [
+                            {
+                                "range": {
+                                    "start": { "line": 1, "character": 4 },
+                                    "end": { "line": 1, "character": 12 }
+                                },
+                                "newText": "new_name"
+                            }
+                        ]
+                    }
+                }
+            }
+        })
+        .to_string();
+        let execute_response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": null
+        })
+        .to_string();
+        let error_response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "error": {
+                "code": -32000,
+                "message": "apply edit was not acknowledged"
+            }
+        })
+        .to_string();
+        let server = root.join("mock-code-action-command-lsp.sh");
+        fs::write(
+            &server,
+            format!(
+                r#"#!/bin/sh
+read_msg() {{
+  len=""
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=${{line#Content-Length: }} ;;
+    esac
+  done
+  [ -z "$len" ] && exit 0
+  dd bs=1 count="$len" 2>/dev/null
+}}
+send_msg() {{
+  body="$1"
+  printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
+}}
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":1,"result":{{"capabilities":{{"executeCommandProvider":{{"commands":["mock.applyFix"]}}}}}}}}'
+read_msg >/dev/null
+read_msg >/dev/null
+body=$(read_msg)
+case "$body" in
+  *workspace/executeCommand*)
+    send_msg '{}'
+    apply_response=$(read_msg)
+    case "$apply_response" in
+      *'"applied":true'*) send_msg '{}' ;;
+      *) send_msg '{}' ;;
+    esac
+    ;;
+  *) send_msg '{}' ;;
+esac
+read_msg >/dev/null
+send_msg '{{"jsonrpc":"2.0","id":3,"result":null}}'
+read_msg >/dev/null
+"#,
+                apply_edit, execute_response, error_response, error_response
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&server).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&server, permissions).unwrap();
+
+        let config = LanguageServerConfig {
+            name: "mock-command-action".to_owned(),
+            command: server.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            language_id: "rust".to_owned(),
+        };
+        let position = DocumentPosition {
+            root: root.clone(),
+            path: file.clone(),
+            text: fs::read_to_string(&file).unwrap(),
+            line: 1,
+            col: 4,
+        };
+        let command = LspCommand {
+            title: "Apply command quick fix".to_owned(),
+            command: "mock.applyFix".to_owned(),
+            arguments: vec![json!({ "uri": path_to_file_uri(&file) })],
+        };
+
+        let edit = request_execute_command_with_config(&position, &command, &config)
+            .unwrap()
+            .expect("workspace edit");
+        assert_eq!(edit.server, "mock-command-action");
         assert_eq!(edit.edits.len(), 1);
         assert_eq!(edit.edits[0].path, file.canonicalize().unwrap());
         assert_eq!(edit.edits[0].new_text, "new_name");

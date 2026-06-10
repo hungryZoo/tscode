@@ -158,7 +158,7 @@ Keyboard fallback:
 - `Ctrl-Shift-O`, `Ctrl-T`, `Ctrl-]`, `Ctrl-R`, and `F2` provide document symbols, workspace symbols, LSP-first go-to-definition, LSP-first find-references, and LSP-first semantic rename code navigation
 - `Ctrl-Space` or the command palette opens code suggestions for the identifier at the editor cursor, including installed language-server candidates when available
 - The command palette and editor context menu provide Show Hover for installed language-server hover documentation
-- The command palette and editor context menu provide Code Action for installed language-server quick fixes/refactors; returned workspace edits update open buffers as undoable edits and closed files on disk after validation
+- The command palette and editor context menu provide Code Action for installed language-server quick fixes/refactors; returned workspace edits and edit-producing LSP commands update open buffers as undoable edits and closed files on disk after validation
 - The command palette and editor context menu provide Run LSP Diagnostics for active-buffer language-server diagnostics
 - Mouse hover over an editor identifier shows lightweight symbol definition/reference information
 - Editor gutter fold markers, `Alt-[`, `Alt-]`, the command palette, and the editor context menu provide code fold/unfold actions
