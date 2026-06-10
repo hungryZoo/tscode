@@ -28,6 +28,7 @@ const MAX_FILE_OPEN_BYTES: u64 = 5_000_000;
 const READ_ONLY_PREVIEW_BYTES: usize = 4096;
 const MAX_OSC52_CLIPBOARD_BYTES: usize = 512 * 1024;
 const MAX_NAVIGATION_HISTORY: usize = 200;
+const MAX_CLOSED_TABS: usize = 100;
 const WORKSPACE_TREE_CHECK_INTERVAL: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1771,6 +1772,19 @@ impl EditorTab {
         self.clamp_selections();
     }
 
+    fn apply_view_state_from(&mut self, other: &Self) {
+        self.scroll = other.scroll;
+        self.horizontal_scroll = other.horizontal_scroll;
+        self.cursor_line = other.cursor_line.min(self.lines.len().saturating_sub(1));
+        self.cursor_col = other.cursor_col;
+        self.selection_anchor = other.selection_anchor;
+        self.extra_selections = other.extra_selections.clone();
+        self.extra_cursors = other.extra_cursors.clone();
+        self.folded_lines = other.folded_lines.clone();
+        self.clamp_cursor_col();
+        self.clamp_selections();
+    }
+
     fn push_undo(&mut self) {
         self.undo_stack.push(self.snapshot());
         if self.undo_stack.len() > 200 {
@@ -2003,6 +2017,7 @@ pub enum CommandAction {
     RevertFile,
     FormatDocument,
     CloseActiveTab,
+    ReopenClosedEditor,
     OpenActiveTabToSide,
     OpenSelectedExplorerItemToSide,
     CloseEditorSplit,
@@ -2278,6 +2293,7 @@ pub struct App {
     pub explorer: FsTree,
     pub tabs: Vec<EditorTab>,
     pub active_tab: Option<usize>,
+    pub closed_tabs: Vec<EditorTab>,
     pub editor_split: Option<usize>,
     pub active_editor_pane: usize,
     pub focus: FocusPanel,
@@ -2361,6 +2377,7 @@ impl App {
             explorer,
             tabs: Vec::new(),
             active_tab: None,
+            closed_tabs: Vec::new(),
             editor_split: None,
             active_editor_pane: 0,
             focus: FocusPanel::Explorer,
@@ -2539,7 +2556,15 @@ impl App {
                     }
                     return Ok(());
                 }
-                KeyCode::Char('t') | KeyCode::Char('T') => {
+                KeyCode::Char('T') => {
+                    self.reopen_closed_editor();
+                    return Ok(());
+                }
+                KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.reopen_closed_editor();
+                    return Ok(());
+                }
+                KeyCode::Char('t') => {
                     self.open_quick_panel(QuickPanelKind::WorkspaceSymbols)?;
                     return Ok(());
                 }
@@ -3817,6 +3842,7 @@ impl App {
         self.explorer = explorer;
         self.tabs.clear();
         self.active_tab = None;
+        self.closed_tabs.clear();
         self.editor_split = None;
         self.active_editor_pane = 0;
         self.focus = FocusPanel::Explorer;
@@ -5159,6 +5185,12 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::CloseActiveTab,
         },
         CommandSpec {
+            label: "Reopen Closed Editor",
+            detail: "Restore the most recently closed editor tab with its buffer and view state",
+            shortcut: "Ctrl-Shift-T",
+            action: CommandAction::ReopenClosedEditor,
+        },
+        CommandSpec {
             label: "Open Active Editor to Side",
             detail: "Show the active editor tab in a side-by-side editor pane",
             shortcut: "Ctrl-\\",
@@ -6280,6 +6312,12 @@ impl App {
                 detail: "Close the active tab, asking how to handle unsaved edits".to_owned(),
                 shortcut: "Ctrl-W",
                 action: CommandAction::CloseActiveTab,
+            },
+            ContextMenuAction {
+                label: "Reopen Closed Editor",
+                detail: "Restore the most recently closed editor tab".to_owned(),
+                shortcut: "Ctrl-Shift-T",
+                action: CommandAction::ReopenClosedEditor,
             },
         ];
 
@@ -10654,6 +10692,7 @@ impl App {
             CommandAction::RevertFile => self.revert_active_tab()?,
             CommandAction::FormatDocument => self.format_active_document()?,
             CommandAction::CloseActiveTab => self.close_active_tab(),
+            CommandAction::ReopenClosedEditor => self.reopen_closed_editor(),
             CommandAction::OpenActiveTabToSide => self.open_active_tab_to_side(),
             CommandAction::OpenSelectedExplorerItemToSide => self.open_selected_to_side()?,
             CommandAction::CloseEditorSplit => self.close_editor_split(),
@@ -11180,6 +11219,53 @@ impl App {
         self.focus = FocusPanel::Editor;
     }
 
+    fn push_closed_tab(&mut self, tab: EditorTab) {
+        self.closed_tabs.push(tab);
+        if self.closed_tabs.len() > MAX_CLOSED_TABS {
+            let overflow = self.closed_tabs.len() - MAX_CLOSED_TABS;
+            self.closed_tabs.drain(0..overflow);
+        }
+    }
+
+    fn prepare_closed_tab_for_reopen(&self, tab: EditorTab) -> EditorTab {
+        if !tab.untitled
+            && !tab.dirty
+            && tab.path.is_file()
+            && let Ok(mut fresh) = EditorTab::open(tab.path.clone())
+        {
+            fresh.apply_view_state_from(&tab);
+            return fresh;
+        }
+        tab
+    }
+
+    fn reopen_closed_editor(&mut self) {
+        let Some(tab) = self.closed_tabs.pop() else {
+            self.message = Some("no closed editor to reopen".to_owned());
+            return;
+        };
+        if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|open_tab| open_tab.path == tab.path && open_tab.untitled == tab.untitled)
+        {
+            self.active_tab = Some(index);
+            self.focus = FocusPanel::Editor;
+            self.normalize_editor_split();
+            self.message = Some(format!("{} is already open", self.tabs[index].title));
+            return;
+        }
+
+        let tab = self.prepare_closed_tab_for_reopen(tab);
+        let title = tab.title.clone();
+        self.tabs.push(tab);
+        self.active_tab = Some(self.tabs.len() - 1);
+        self.focus = FocusPanel::Editor;
+        self.normalize_editor_split();
+        self.ensure_editor_cursor_visible();
+        self.message = Some(format!("reopened {title}"));
+    }
+
     fn close_active_tab(&mut self) {
         if let Some(index) = self.active_tab {
             self.close_tab(index);
@@ -11192,7 +11278,15 @@ impl App {
             .editor_split
             .and_then(|index| self.tabs.get(index))
             .map(|tab| tab.path.clone());
-        self.tabs.retain(|tab| tab.dirty);
+        let mut index = 0;
+        while index < self.tabs.len() {
+            if self.tabs[index].dirty {
+                index += 1;
+            } else {
+                let tab = self.tabs.remove(index);
+                self.push_closed_tab(tab);
+            }
+        }
         let closed = before.saturating_sub(self.tabs.len());
         self.active_tab = if self.tabs.is_empty() { None } else { Some(0) };
         self.editor_split =
@@ -11226,8 +11320,9 @@ impl App {
         if index >= self.tabs.len() {
             return;
         }
-        let title = self.tabs[index].title.clone();
-        self.tabs.remove(index);
+        let tab = self.tabs.remove(index);
+        let title = tab.title.clone();
+        self.push_closed_tab(tab);
         self.active_tab = if self.tabs.is_empty() {
             None
         } else {
@@ -17440,6 +17535,113 @@ mod tests {
     }
 
     #[test]
+    fn reopen_closed_editor_restores_clean_file_with_view_state() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-reopen-clean-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("main.rs");
+        fs::write(&file, "fn main() {\n    let beta = 1;\n}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&file);
+        {
+            let tab = app.active_tab_mut().unwrap();
+            tab.set_cursor(0, 3);
+            tab.scroll = 0;
+            tab.horizontal_scroll = 3;
+            tab.folded_lines.insert(0);
+        }
+        app.run_command(CommandAction::CloseActiveTab).unwrap();
+        assert!(app.tabs.is_empty());
+        assert_eq!(app.closed_tabs.len(), 1);
+
+        fs::write(&file, "fn main() {\n    let changed = 1;\n}\n").unwrap();
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('T'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ))
+        .unwrap();
+
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.path, file.canonicalize().unwrap());
+        assert_eq!(tab.lines, vec!["fn main() {", "    let changed = 1;", "}"]);
+        assert!(!tab.dirty);
+        assert_eq!(tab.cursor_position(), (0, 3));
+        assert_eq!(tab.scroll, 0);
+        assert_eq!(tab.horizontal_scroll, 3);
+        assert!(tab.is_line_folded(0));
+        assert_eq!(app.focus, FocusPanel::Editor);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("reopened main.rs"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reopen_closed_editor_restores_dirty_and_untitled_buffers() {
+        let root =
+            std::env::temp_dir().join(format!("tscode-test-reopen-dirty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("dirty.rs");
+        fs::write(&file, "fn dirty() {}\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&file);
+        app.active_tab_mut().unwrap().insert_text("// unsaved\n");
+        app.run_command(CommandAction::CloseActiveTab).unwrap();
+        let discard_index = app
+            .quick_panel
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| item.command == Some(CommandAction::DiscardAndCloseTab(0)))
+            .unwrap();
+        app.activate_quick_row(discard_index);
+        assert!(app.tabs.is_empty());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "fn dirty() {}\n");
+
+        app.run_command(CommandAction::ReopenClosedEditor).unwrap();
+        let tab = app.active_tab().unwrap();
+        assert_eq!(tab.path, file.canonicalize().unwrap());
+        assert!(tab.dirty);
+        assert_eq!(tab.text(), "// unsaved\nfn dirty() {}\n");
+
+        app.run_command(CommandAction::NewUntitledFile).unwrap();
+        app.active_tab_mut().unwrap().insert_text("scratch\n");
+        let placeholder = app.active_tab().unwrap().path.clone();
+        app.run_command(CommandAction::CloseActiveTab).unwrap();
+        let discard_index = app
+            .quick_panel
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| item.command == Some(CommandAction::DiscardAndCloseTab(1)))
+            .unwrap();
+        app.activate_quick_row(discard_index);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(!placeholder.exists());
+
+        app.run_command(CommandAction::ReopenClosedEditor).unwrap();
+        let tab = app.active_tab().unwrap();
+        assert!(tab.untitled);
+        assert!(tab.dirty);
+        assert_eq!(tab.title, "Untitled-1");
+        assert_eq!(tab.text(), "scratch\n");
+        assert!(!placeholder.exists());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn format_document_runs_rustfmt_and_marks_buffer_dirty() {
         if Command::new("rustfmt").arg("--version").output().is_err() {
             return;
@@ -17781,6 +17983,12 @@ mod tests {
             commands
                 .iter()
                 .any(|item| item.command == Some(CommandAction::OpenFolder))
+        );
+        let commands = app.command_palette_items("reopen closed");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::ReopenClosedEditor))
         );
 
         let commands = app.command_palette_items("go line");

@@ -188,7 +188,11 @@ The editor shall support a side-by-side split view when at least one editor tab 
 
 ### R-212 Tab Close Safety
 
-Clicking a tab close target, middle-clicking a tab, or pressing `Ctrl-w` shall close a saved tab. Dirty tabs shall not close until saved.
+Clicking a tab close target, middle-clicking a tab, or pressing `Ctrl-w` shall close a saved tab immediately. Dirty tabs shall open a Save and Close / Don't Save / Cancel confirmation before any tab is removed.
+
+### R-212A Reopen Closed Editor
+
+`Ctrl-shift-t`, the command palette, and the editor context menu shall reopen the most recently closed editor tab. Clean file-backed tabs shall reopen from the current file contents while restoring the previous cursor, scroll, horizontal scroll, selection, and fold view state. Dirty file-backed tabs closed with Don't Save and dirty Untitled tabs closed without saving shall reopen from their in-memory buffer snapshots without writing to disk or creating Untitled placeholder files. Reopening shall focus the editor, avoid creating a duplicate if that tab path is already open, and report when no closed editor is available.
 
 ### R-213 Paste
 
