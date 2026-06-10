@@ -4765,6 +4765,92 @@ impl App {
         self.active_tab.and_then(|index| self.tabs.get_mut(index))
     }
 
+    pub fn repair_runtime_state(&mut self) -> Result<()> {
+        let mut repaired = Vec::new();
+
+        if self.terminals.is_empty() {
+            let id = self.next_terminal_id;
+            self.next_terminal_id += 1;
+            self.terminals
+                .push(TerminalSession::new(id, self.root.clone())?);
+            self.active_terminal = 0;
+            self.split_terminal = None;
+            self.terminal_selection = None;
+            repaired.push("terminal session");
+        } else {
+            let previous = self.active_terminal;
+            self.normalize_terminal_split();
+            if self.active_terminal != previous {
+                repaired.push("active terminal index");
+            }
+        }
+
+        if let Some(active) = self.active_tab
+            && active >= self.tabs.len()
+        {
+            self.active_tab = self.tabs.len().checked_sub(1);
+            repaired.push("active editor index");
+        }
+        let previous_split = self.editor_split;
+        self.normalize_editor_split();
+        if self.editor_split != previous_split {
+            repaired.push("editor split index");
+        }
+
+        let visible_nodes = self.visible_nodes();
+        if visible_nodes.is_empty() {
+            self.explorer.selected = 0;
+            self.explorer.scroll = 0;
+        } else {
+            let previous_selected = self.explorer.selected;
+            self.explorer.selected = self.explorer.selected.min(visible_nodes.len() - 1);
+            let max_scroll = visible_nodes
+                .len()
+                .saturating_sub(self.explorer_height.max(1));
+            self.explorer.scroll = self.explorer.scroll.min(max_scroll);
+            if self.explorer.selected != previous_selected {
+                repaired.push("explorer selection");
+            }
+        }
+
+        if self.sidebar_mode == SidebarMode::Outline {
+            let outline_len = self.visible_outline_items().len();
+            if outline_len == 0 {
+                self.outline_selected = 0;
+                self.outline_scroll = 0;
+            } else {
+                self.outline_selected = self.outline_selected.min(outline_len - 1);
+                let max_scroll = outline_len.saturating_sub(self.explorer_height.max(1));
+                self.outline_scroll = self.outline_scroll.min(max_scroll);
+            }
+        }
+
+        if let Some(panel) = &mut self.quick_panel {
+            panel.query_cursor = panel.query_cursor.min(panel.query.chars().count());
+            if panel.items.is_empty() {
+                panel.selected = 0;
+                panel.scroll = 0;
+            } else {
+                panel.selected = panel.selected.min(panel.items.len() - 1);
+                let max_scroll = panel
+                    .items
+                    .len()
+                    .saturating_sub(self.quick_panel_height.max(1));
+                panel.scroll = panel.scroll.min(max_scroll);
+            }
+        }
+
+        if let Some(prompt) = &mut self.prompt {
+            prompt.cursor = prompt.cursor.min(prompt.input.chars().count());
+        }
+
+        if !repaired.is_empty() {
+            self.last_error = Some(format!("recovered invalid state: {}", repaired.join(", ")));
+        }
+
+        Ok(())
+    }
+
     pub fn editor_split_active(&self) -> bool {
         self.active_tab.is_some()
             && self
@@ -19543,6 +19629,55 @@ mod tests {
         app.quick_panel.as_mut().unwrap().selected = untitled_index;
         app.activate_selected_quick_item();
         assert!(app.active_tab().unwrap().untitled);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(canonical_root);
+    }
+
+    #[test]
+    fn repair_runtime_state_recovers_invalid_terminal_prompt_and_panel_indices() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-repair-runtime-state-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        app.kill_all_terminals();
+        app.terminals.clear();
+        app.active_terminal = 42;
+        app.split_terminal = Some(77);
+        app.active_tab = Some(99);
+        app.explorer.selected = usize::MAX;
+        app.explorer.scroll = usize::MAX;
+        app.prompt = Some(PromptState {
+            kind: PromptKind::NewFile,
+            input: "src/main.rs".to_owned(),
+            cursor: 99,
+        });
+        app.quick_panel = Some(QuickPanel {
+            kind: QuickPanelKind::CommandPalette,
+            query: "open".to_owned(),
+            query_cursor: 99,
+            items: Vec::new(),
+            selected: 99,
+            scroll: 99,
+        });
+
+        app.repair_runtime_state().unwrap();
+
+        assert_eq!(app.terminals.len(), 1);
+        assert_eq!(app.active_terminal, 0);
+        assert_eq!(app.split_terminal, None);
+        assert_eq!(app.active_tab, None);
+        assert_eq!(app.prompt.as_ref().unwrap().cursor, "src/main.rs".len());
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.selected, 0);
+        assert_eq!(panel.scroll, 0);
+        assert_eq!(panel.query_cursor, "open".len());
+        assert!(app.last_error.as_deref().unwrap().contains("recovered"));
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(canonical_root);

@@ -5,7 +5,18 @@ mod shell;
 mod syntax;
 mod ui;
 
-use std::{env, ffi::OsString, io, io::Write, path::PathBuf, time::Duration};
+use std::{
+    any::Any,
+    backtrace::Backtrace,
+    env,
+    ffi::OsString,
+    fs, io,
+    io::Write,
+    panic::{self, AssertUnwindSafe},
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Result, anyhow};
 use app::App;
@@ -31,9 +42,51 @@ fn main() -> Result<()> {
     };
 
     let mut terminal = TerminalSession::enter()?;
-    let result = run(&mut terminal.terminal, App::new(root)?);
-    terminal.restore()?;
-    result
+    let panic_report = install_panic_reporter();
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        run(&mut terminal.terminal, App::new(root)?)
+    }));
+    let restore_result = terminal.restore();
+    match result {
+        Ok(result) => {
+            restore_result?;
+            result
+        }
+        Err(payload) => {
+            let report = panic_report
+                .lock()
+                .ok()
+                .and_then(|report| report.clone())
+                .unwrap_or_else(|| {
+                    format!(
+                        "tscode panic\nversion: {}\npanic: {}\nbacktrace:\n{}\n",
+                        env!("CARGO_PKG_VERSION"),
+                        panic_payload_message(payload.as_ref()),
+                        Backtrace::force_capture()
+                    )
+                });
+            match write_crash_report(&report) {
+                Ok(path) => match restore_result {
+                    Ok(()) => Err(anyhow!(
+                        "tscode crashed; terminal restored; crash report written to {}",
+                        path.display()
+                    )),
+                    Err(error) => Err(anyhow!(
+                        "tscode crashed; terminal restore failed: {error}; crash report written to {}",
+                        path.display()
+                    )),
+                },
+                Err(error) => match restore_result {
+                    Ok(()) => Err(anyhow!(
+                        "tscode crashed; terminal restored; failed to write crash report: {error}; {report}"
+                    )),
+                    Err(restore_error) => Err(anyhow!(
+                        "tscode crashed; terminal restore failed: {restore_error}; failed to write crash report: {error}; {report}"
+                    )),
+                },
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,13 +133,16 @@ fn help_text() -> String {
 }
 
 fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> Result<()> {
+    app.repair_runtime_state()?;
     terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
     while !app.should_quit {
+        app.repair_runtime_state()?;
         let terminal_changed = app.drain_terminal();
         let files_changed = app.check_external_file_changes();
         let tree_changed = app.check_workspace_tree_changes();
         if terminal_changed || files_changed || tree_changed {
+            app.repair_runtime_state()?;
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
         }
 
@@ -100,12 +156,68 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                 Event::Paste(text) => app.handle_paste(text)?,
                 Event::FocusGained | Event::FocusLost => {}
             }
+            app.repair_runtime_state()?;
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
             flush_clipboard_export(terminal, &mut app)?;
         }
     }
 
     Ok(())
+}
+
+fn install_panic_reporter() -> Arc<Mutex<Option<String>>> {
+    let report = Arc::new(Mutex::new(None));
+    let report_for_hook = Arc::clone(&report);
+    panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|location| format!("{}:{}", location.file(), location.line()))
+            .unwrap_or_else(|| "unknown".to_owned());
+        let message = panic_payload_message(info.payload());
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let text = format!(
+            "tscode panic\nversion: {}\nunix_time: {timestamp}\nlocation: {location}\npanic: {message}\nbacktrace:\n{}\n",
+            env!("CARGO_PKG_VERSION"),
+            Backtrace::force_capture()
+        );
+        if let Ok(mut report) = report_for_hook.lock() {
+            *report = Some(text);
+        }
+    }));
+    report
+}
+
+fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_owned())
+}
+
+fn write_crash_report(report: &str) -> Result<PathBuf> {
+    let path = crash_report_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, report)?;
+    Ok(path)
+}
+
+fn crash_report_path() -> PathBuf {
+    if let Some(cache_home) = env::var_os("XDG_CACHE_HOME") {
+        return PathBuf::from(cache_home).join("tscode").join("crash.log");
+    }
+    if let Some(home) = env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".cache")
+            .join("tscode")
+            .join("crash.log");
+    }
+    env::temp_dir().join("tscode-crash.log")
 }
 
 fn flush_clipboard_export(

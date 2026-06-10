@@ -4,6 +4,10 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 
 ## Highlights
 
+- Runtime panics now restore the terminal and write a crash report with backtrace to `~/.cache/tscode/crash.log` or `$XDG_CACHE_HOME/tscode/crash.log`.
+- The render loop now repairs invalid runtime indexes for active terminals, split terminals, active editor tabs, split editors, explorer selection, quick panels, and prompt cursors before drawing, preventing common state-drift crashes from killing the TUI.
+- File create, folder create, rename, delete confirmation, Save As, Git prompts, terminal command prompts, and other text prompts now appear as upper centered TUI dialogs instead of replacing the bottom status bar.
+- Prerelease CI is intentionally Apple Silicon-only while the product remains in active development; full multi-platform releases can be restored when requested.
 - Mouse-first file explorer with real filesystem reads, expand/collapse, file open, hover, and wheel scrolling.
 - `tscode path/to/file` now opens the file immediately, uses its parent directory as the workspace root, reveals it in the explorer, and starts the integrated terminal in that parent directory.
 - `tscode --help`/`--version` now print CLI metadata before entering raw mode, making installer and package verification work without an interactive terminal.
@@ -115,7 +119,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Terminal shell-editing shortcuts now forward more real terminal bytes, including `Alt-Backspace`, `Ctrl-Backspace`, `Alt-Enter`, `Alt-Tab`, and control punctuation/digits such as `Ctrl-/`, `Ctrl-6`, and `Ctrl-8`.
 - Terminal clicks on visible existing `path:line:column` references open the file in the editor when the shell is not using terminal mouse mode.
 - Terminal apps that request mouse events now receive xterm-compatible mouse down, release, drag, move, and wheel events through the PTY, including SGR, default, and UTF-8 coordinate encodings.
-- Release CI now builds `aarch64-unknown-linux-gnu` with the Ubuntu `gcc-aarch64-linux-gnu` linker instead of the older cross Docker image path, avoiding a proc-macro resolution failure seen in the prerelease pipeline.
+- Full Linux package and cross-platform release work remains available in history, but current prerelease CI is paused to Apple Silicon-only while core TUI behavior is still being completed.
 - Installer latest-version resolution now compares semantic prerelease tags so `pre.10` sorts after `pre.9` even when the GitHub API returns prereleases out of lexical order.
 - Installer GitHub API and release-asset downloads now use retry, connection timeout, total timeout, and stalled-transfer detection so an idle CDN connection does not hang the install forever.
 - Keyboard fallback for focus cycling, navigation, scrolling, command entry, and exit.
@@ -128,8 +132,5 @@ curl -fsSL https://raw.githubusercontent.com/hungryZoo/tscode/main/install.sh | 
 
 ## Release assets
 
-- macOS: `x86_64-apple-darwin`, `aarch64-apple-darwin`
-- Linux GNU: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `armv7-unknown-linux-gnueabihf`
-- Linux static tarballs: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`
-- Linux packages: `.deb` and `.rpm` for GNU Linux targets
-- Windows: `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
+- macOS: `aarch64-apple-darwin`
+- Full macOS x86_64, Linux, Windows, and Raspberry Pi build assets are paused for active development and can be restored on request.

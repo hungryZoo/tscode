@@ -233,7 +233,7 @@ The repository includes:
 - `dist/` helper scripts for packaging
 - Cargo metadata suitable for `cargo-deb` and `cargo-generate-rpm`
 
-The release workflow builds archive artifacts on macOS, Linux, and Windows runners. Linux package jobs generate `.deb` and `.rpm` packages. The workflow uploads all assets to a GitHub prerelease for tags matching `v*`. The installer keeps the public `curl | sh` path simple, then applies retry, connection-timeout, total-timeout, and low-speed abort options to its internal GitHub API and release-asset downloads, with `TSCODE_CURL_*` environment variables available for unusually slow networks.
+During active product work, the release workflow intentionally builds only the Apple Silicon macOS archive target, `aarch64-apple-darwin`, and uploads that asset plus `install.sh` to GitHub prereleases for tags matching `v*`. The earlier full matrix for macOS x86_64, Linux GNU/MUSL, `.deb`, `.rpm`, Windows, and Raspberry Pi targets is paused until a full-platform release is explicitly requested again. The installer keeps the public `curl | sh` path simple, then applies retry, connection-timeout, total-timeout, and low-speed abort options to its internal GitHub API and release-asset downloads, with `TSCODE_CURL_*` environment variables available for unusually slow networks.
 
 ## 9. Risks and Mitigations
 

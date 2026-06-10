@@ -8,7 +8,7 @@ tscode --help
 tscode --version
 ```
 
-The prerelease includes a real filesystem explorer, editable tabbed code buffers with line numbers, syntax highlighting, code folding, editor bookmarks, matching-bracket navigation, optional installed-language-server hover/signature-help/definition/call-hierarchy/document-highlight/references/rename/completion/code-action/diagnostics, mouse hover/click/wheel interactions, and a bottom integrated terminal backed by a real PTY shell. Passing a file path opens its parent folder as the workspace and opens that file in the editor. Binary, non-UTF-8, and very large files open as protected read-only hex/ascii previews so editing, save, rename, search, and replace cannot corrupt the original bytes.
+The prerelease includes a real filesystem explorer, editable tabbed code buffers with line numbers, syntax highlighting, code folding, editor bookmarks, matching-bracket navigation, optional installed-language-server hover/signature-help/definition/call-hierarchy/document-highlight/references/rename/completion/code-action/diagnostics, mouse hover/click/wheel interactions, and a bottom integrated terminal backed by a real PTY shell. Passing a file path opens its parent folder as the workspace and opens that file in the editor. Binary, non-UTF-8, and very large files open as protected read-only hex/ascii previews so editing, save, rename, search, and replace cannot corrupt the original bytes. If the TUI panics, it restores the terminal and writes a crash report to `~/.cache/tscode/crash.log`.
 
 ## Install
 
@@ -43,7 +43,7 @@ cargo build --release
 - Editor bookmarks: click the leftmost editor gutter marker cell or press `Alt-B` to toggle a bookmark on the active line. `Alt-N`/`Alt-P`, Show Bookmarks, Next Bookmark, Previous Bookmark, Clear Bookmarks, and editor context-menu bookmark actions jump between or manage bookmarks across open tabs. Bookmark counts appear in the status bar and bookmark rows show a `B` gutter marker.
 - Mouse drag in the terminal: select visible shell output when the child terminal app has not requested mouse events; release copies the selection through the internal clipboard and OSC52 where supported. When a child terminal app has requested mouse reporting, hold `Shift` while dragging or scrolling to bypass the child app and control tscode's host selection/scrollback.
 - Mouse wheel: scroll the panel under the cursor, including the hovered outline, explorer, and split editor pane. Horizontal wheel gestures pan long editor lines.
-- `F1` or `Ctrl-Shift-P`: command palette for files, editor actions, explorer actions, focus changes, and terminal management. `F1` is the reliable SSH fallback when a terminal cannot distinguish `Ctrl-P` from `Ctrl-Shift-P`. Prompt and quick-panel inputs support visible cursor editing with `Left`/`Right`, `Home`/`End`, `Backspace`, `Delete`, `Ctrl-A`/`Ctrl-E`, `Ctrl-U`/`Ctrl-K`, and paste insertion at the cursor.
+- `F1` or `Ctrl-Shift-P`: command palette for files, editor actions, explorer actions, focus changes, and terminal management. `F1` is the reliable SSH fallback when a terminal cannot distinguish `Ctrl-P` from `Ctrl-Shift-P`. Prompt and quick-panel inputs support visible cursor editing with `Left`/`Right`, `Home`/`End`, `Backspace`, `Delete`, `Ctrl-A`/`Ctrl-E`, `Ctrl-U`/`Ctrl-K`, and paste insertion at the cursor. Prompts render as upper centered TUI dialogs, so file create/delete/rename and other text confirmations no longer replace the bottom status line.
 - `Tab`: cycle focus from the explorer; indent the current editor line in editor focus; send tab completion to the shell in terminal focus.
 - Explorer: `/` filters the real workspace tree and auto-expands collapsed parent folders for matching nested paths, `s` cycles sorting by name/type/modified time/size while keeping folders first, `.` show/hide dot-prefixed entries, `i` show/hide `.gitignore`/`.ignore` ignored entries plus generated folders such as `target`, `dist`, `build`, and `node_modules`, `Space` toggles explorer multi-select, `Right` expands a folder or moves into its first child, `Left` collapses a folder or moves to its parent, `Shift`+click selects a visible range, `Ctrl`/`Command`/`Meta`+click toggles a row, drag selected rows to move them into another folder, `Alt`+drag copies them, `Ctrl-Enter` opens the selected file to the side, `F5` runs the selected file in a new PTY terminal when its type is supported, `n` new file, `N` new folder, `e` rename, `D` delete with confirmation, `c` copy, `x` cut, `p` paste, `y` duplicate, `v` compare two selected files, `o` reveal active file, `O` opens the selected folder as the new workspace root, `t` open a new terminal in the selected folder or selected file's parent, `r` refresh. Selected explorer rows show a `*` marker and selection background; copy, cut, paste, duplicate, delete, path-copy, drag move, and `Alt`-drag copy operate on every selected row when a multi-selection is active, and two selected text files can be compared into a read-only unified diff tab. Right-clicking an explorer row opens a mouse-selectable context menu for open/toggle, Open to Side, Open Folder as Workspace, Run File in Terminal, new file/folder, copy/cut/paste/duplicate, compare selected files, rename, delete, path copy, New Terminal Here, refresh, collapse, sorting, and visibility toggles. The command palette Open Folder action accepts an existing relative or absolute directory and switches the workspace root after blocking dirty editor tabs. The tree also auto-refreshes after external creates, deletes, renames, and metadata changes from the integrated terminal or other tools while preserving selection, expansion, sort mode, filters, ignore visibility, and Git badges. Command palette actions can copy selected or active-file absolute/relative paths through the terminal clipboard. Deleting a file or folder closes only clean matching tabs and is blocked when any matching open tab has unsaved edits. File rows show size metadata, read-only markers, and Git status badges such as `git:M`, `git:?`, and `git:*` when the workspace is inside a Git repository.
 - Sidebar Outline: press `m` while the left sidebar is focused, or use Show Outline / Show Explorer Files / Toggle Sidebar Mode from the command palette, to switch the left pane between the real file tree and active-file symbols. Outline rows come from installed LSP document symbols when available and otherwise from the local active-buffer symbol extractor; `Up`/`Down`/`PageUp`/`PageDown`/wheel scroll the list, hover highlights rows, and click or `Enter` jumps the editor cursor to that symbol while keeping the sidebar in Outline mode.
@@ -59,19 +59,13 @@ cargo build --release
 - Terminal commands: Run Terminal Command prompts for shell text and submits it to the active PTY; Run Recent Terminal Command opens a filterable picker of commands tscode submitted through Run Command, Run Selection, Run Active File, and Run Task, then re-sends the selected command to the active PTY.
 - App exit: `Ctrl-Q`, or `q`/`Esc` outside terminal focus. Unsaved buffers require typing `quit` to confirm.
 
-## Supported Release Targets
+## Current Prerelease Target
 
-- `x86_64-apple-darwin`
+Until tscode is closer to complete, prerelease CI intentionally publishes only:
+
 - `aarch64-apple-darwin`
-- `x86_64-unknown-linux-gnu`
-- `aarch64-unknown-linux-gnu`
-- `armv7-unknown-linux-gnueabihf`
-- `x86_64-unknown-linux-musl`
-- `aarch64-unknown-linux-musl`
-- `x86_64-pc-windows-msvc`
-- `aarch64-pc-windows-msvc`
 
-Linux release jobs also produce `.deb` and `.rpm` packages for GNU targets.
+The previous full matrix for macOS x86_64, Linux, Windows, and Raspberry Pi targets is paused during active product work and can be restored when requested.
 
 ## Development
 

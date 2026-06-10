@@ -394,7 +394,7 @@ The app shall record the current editor file, line, and column before quick-pane
 
 The command palette shall include Run Workspace Check, Run LSP Diagnostics, and Show Problems actions, and the editor context menu shall include Run LSP Diagnostics. Run Workspace Check shall detect supported project roots, run the matching external checker in the workspace root, collect parseable file diagnostics from checker output, and open a Problems quick panel. Run LSP Diagnostics shall start the configured or discoverable stdio language server for the active editor buffer, initialize it, publish the current in-memory buffer with `textDocument/didOpen`, collect `textDocument/publishDiagnostics` notifications, map severity/source/code/message/location fields into Problems entries, and open the Problems quick panel. Selecting a problem shall open the referenced file and move the editor cursor to the diagnostic line and column. The Problems panel shall be filterable with the same quick-panel query input and shall report when no supported checker or language server is detected, a language server times out, or no parseable diagnostics are found. Collected diagnostics for the active file shall also appear inside the editor as line-level gutter markers, subtle line backgrounds, active-file problem counts, and active-line status text without modifying the file buffer. If dirty editor buffers exist during Run Workspace Check, the completion message shall indicate that unsaved buffers were not checked.
 
-All bottom prompt inputs and quick-panel query inputs shall expose an editable cursor, render the cursor location, accept insertion and paste at the cursor, and support `Left`/`Right`, `Home`/`End`, `Backspace`, `Delete`, `Ctrl-A`, `Ctrl-E`, `Ctrl-U`, and `Ctrl-K`. Quick-panel `Ctrl-Home` and `Ctrl-End` shall continue to jump to the first and last result rows while unmodified `Home` and `End` edit the query cursor.
+Text prompts shall render as upper centered TUI dialogs rather than replacing the bottom status bar. File create, folder create, rename, delete confirmation, Save As, Git, terminal command, search, replace, go-to-line, and quit-confirmation prompts shall expose an editable cursor, render the cursor location, accept insertion and paste at the cursor, and support `Left`/`Right`, `Home`/`End`, `Backspace`, `Delete`, `Ctrl-A`, `Ctrl-E`, `Ctrl-U`, and `Ctrl-K`. Quick-panel query inputs shall keep the same editable cursor behavior. Quick-panel `Ctrl-Home` and `Ctrl-End` shall continue to jump to the first and last result rows while unmodified `Home` and `End` edit the query cursor.
 
 ### R-242 Source Control
 
@@ -566,15 +566,25 @@ When terminal focus is active, printable characters and supported control/naviga
 
 When terminal focus is active and the child PTY application is not owning terminal keyboard shortcuts through alternate-screen or mouse-reporting modes, `Ctrl-PageUp` and `Ctrl-PageDown` shall switch to the previous and next integrated terminal session. When the child owns terminal keyboard shortcuts, those keys shall be forwarded to the PTY.
 
-## 8. Packaging Requirements
+## 8. Runtime Stability Requirements
+
+### R-551 Panic Recovery
+
+If the TUI panics, the application shall restore raw mode, mouse capture, cursor visibility, and the alternate screen before returning control to the parent terminal. The panic report shall include version, location when available, message, and backtrace, and shall be written to `$XDG_CACHE_HOME/tscode/crash.log`, `~/.cache/tscode/crash.log`, or a temporary crash log fallback.
+
+### R-552 State Repair
+
+Before rendering or after handling user input, the application shall clamp or repair invalid active terminal, split terminal, active editor tab, split editor, explorer selection, quick-panel selection, and prompt cursor indexes. Repaired state shall be reported through the app error/status path instead of panicking.
+
+## 9. Packaging Requirements
 
 ### R-601 Release Archives
 
-Each binary target shall be packaged as an archive with `tscode` or `tscode.exe`, README, and license metadata when available.
+During active product work, the prerelease workflow shall package only the Apple Silicon macOS target, `aarch64-apple-darwin`, as an archive with `tscode`, README, and license metadata. The previous full target matrix shall be restored only when explicitly requested.
 
 ### R-602 Linux Packages
 
-The release workflow shall produce `.deb` and `.rpm` packages for supported Linux targets where tooling permits.
+Linux `.deb` and `.rpm` packages are paused while Apple Silicon-only prereleases are active. When full-platform releases are restored, the release workflow shall produce `.deb` and `.rpm` packages for supported GNU Linux targets where tooling permits.
 
 ### R-603 Installer
 
@@ -586,7 +596,7 @@ When `TSCODE_VERSION` is unset or set to `latest`, the installer shall choose th
 
 The GitHub Actions workflow shall build and upload release artifacts when a version tag is pushed.
 
-## 9. Acceptance Tests
+## 10. Acceptance Tests
 
 - Start `cargo run -- .` on macOS and confirm the TUI renders.
 - Click a directory and confirm it expands or collapses.

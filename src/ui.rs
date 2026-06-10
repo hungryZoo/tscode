@@ -75,6 +75,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     draw_editor_hover(frame, app, root_chunks[1]);
     draw_quick_panel(frame, app, root_chunks[1]);
+    draw_prompt_dialog(frame, app, root_chunks[1]);
     draw_status(frame, app, root_chunks[2]);
 }
 
@@ -92,16 +93,6 @@ fn draw_title(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    if let Some(prompt) = &app.prompt {
-        let input = crate::app::editable_text_with_cursor(&prompt.input, prompt.cursor);
-        let text = format!(" {}: {} ", prompt_title(&prompt.kind), input);
-        frame.render_widget(
-            Paragraph::new(text).style(Style::default().fg(Color::White).bg(ACTIVE_BG)),
-            area,
-        );
-        return;
-    }
-
     let active = app
         .active_tab()
         .map(|tab| {
@@ -722,6 +713,63 @@ fn draw_editor_hover(frame: &mut Frame, app: &App, area: Rect) {
         .into_iter()
         .map(|row| Line::from(truncate_width(&row, inner_width)))
         .collect::<Vec<_>>();
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block.style(Style::default().bg(PANEL_BG)), popup);
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(TEXT).bg(PANEL_BG)),
+        inner,
+    );
+}
+
+fn draw_prompt_dialog(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(prompt) = &app.prompt else {
+        return;
+    };
+    if area.width < 12 || area.height < 3 {
+        return;
+    }
+
+    let input = crate::app::editable_text_with_cursor(&prompt.input, prompt.cursor);
+    let title = format!(" {} ", prompt_title(&prompt.kind));
+    let instruction = prompt_instruction(prompt);
+    let width_hint = [title.as_str(), instruction.as_str(), input.as_str()]
+        .into_iter()
+        .map(|text| text.width() + 6)
+        .max()
+        .unwrap_or(34);
+    let width = (width_hint as u16)
+        .clamp(34, 84)
+        .min(area.width.saturating_sub(2).max(1));
+    let height = 6_u16.min(area.height);
+    if width == 0 || height < 3 {
+        return;
+    }
+
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + if area.height > height { 1 } else { 0 };
+    let popup = Rect::new(x, y, width, height);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(ACCENT));
+    let inner = block.inner(popup);
+    let inner_width = inner.width as usize;
+    let lines = vec![
+        Line::styled(
+            truncate_width(&instruction, inner_width),
+            Style::default().fg(MUTED),
+        ),
+        Line::from(""),
+        Line::styled(
+            truncate_width(&format!("> {input}"), inner_width),
+            Style::default().fg(Color::White).bg(ACTIVE_BG),
+        ),
+        Line::styled(
+            truncate_width("Enter confirms   Esc cancels", inner_width),
+            Style::default().fg(MUTED),
+        ),
+    ];
 
     frame.render_widget(Clear, popup);
     frame.render_widget(block.style(Style::default().bg(PANEL_BG)), popup);
@@ -1618,6 +1666,60 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::RenameTerminal => "rename terminal",
         crate::app::PromptKind::GotoLine => "go to line",
         crate::app::PromptKind::QuitDirty => "unsaved: type quit",
+    }
+}
+
+fn prompt_instruction(prompt: &crate::app::PromptState) -> String {
+    match &prompt.kind {
+        crate::app::PromptKind::NewFile => {
+            "Enter a file name or workspace-relative path.".to_owned()
+        }
+        crate::app::PromptKind::NewDir => {
+            "Enter a folder name or workspace-relative path.".to_owned()
+        }
+        crate::app::PromptKind::Rename(_) => "Enter the new item name.".to_owned(),
+        crate::app::PromptKind::DeletePaths(paths) => {
+            let target = if paths.len() == 1 {
+                "this item"
+            } else {
+                "these items"
+            };
+            format!("Type yes to delete {target}.")
+        }
+        crate::app::PromptKind::ExplorerFilter => "Filter the visible explorer tree.".to_owned(),
+        crate::app::PromptKind::OpenFolder => "Enter an existing folder path.".to_owned(),
+        crate::app::PromptKind::Search => "Find text in the active editor.".to_owned(),
+        crate::app::PromptKind::ReplaceFind { .. } => "Find text to replace.".to_owned(),
+        crate::app::PromptKind::ReplaceWith { .. } => "Enter replacement text.".to_owned(),
+        crate::app::PromptKind::WorkspaceReplaceFind => {
+            "Find text across workspace files.".to_owned()
+        }
+        crate::app::PromptKind::WorkspaceReplaceWith { .. } => {
+            "Enter replacement text for workspace files.".to_owned()
+        }
+        crate::app::PromptKind::RenameSymbol { old } => format!("Rename symbol {old}."),
+        crate::app::PromptKind::SaveAs => "Enter a target file path.".to_owned(),
+        crate::app::PromptKind::SaveAsClose { .. } => {
+            "Save this editor to a target file before closing.".to_owned()
+        }
+        crate::app::PromptKind::CreateGitBranch => "Enter a new Git branch name.".to_owned(),
+        crate::app::PromptKind::CommitStagedSourceControlChanges
+        | crate::app::PromptKind::CommitAllSourceControlChanges(_) => {
+            "Enter a Git commit message.".to_owned()
+        }
+        crate::app::PromptKind::DiscardSourceControlPath(_)
+        | crate::app::PromptKind::DiscardAllSourceControlChanges(_) => {
+            "Type discard to permanently discard Git changes.".to_owned()
+        }
+        crate::app::PromptKind::TerminalSearch => "Find text in terminal output.".to_owned(),
+        crate::app::PromptKind::RunTerminalCommand => {
+            "Enter shell text to run in the PTY.".to_owned()
+        }
+        crate::app::PromptKind::RenameTerminal => "Enter a terminal title.".to_owned(),
+        crate::app::PromptKind::GotoLine => "Enter line or line:column.".to_owned(),
+        crate::app::PromptKind::QuitDirty => {
+            "Type quit to close dirty editors and exit.".to_owned()
+        }
     }
 }
 

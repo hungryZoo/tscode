@@ -9,7 +9,7 @@ on:
       tag:
         description: "Release tag to build"
         required: true
-        default: "v0.1.0-pre.51"
+        default: "v0.1.0-pre.115"
 
 permissions:
   contents: write
@@ -28,44 +28,6 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             archive: tar.gz
-          - os: macos-14
-            target: x86_64-apple-darwin
-            archive: tar.gz
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-            cross: true
-            packages: true
-            rpm_arch: x86_64
-          - os: ubuntu-24.04
-            target: aarch64-unknown-linux-gnu
-            archive: tar.gz
-            packages: true
-            rpm_arch: aarch64
-            apt_packages: gcc-aarch64-linux-gnu
-            linker: aarch64-linux-gnu-gcc
-          - os: ubuntu-24.04
-            target: armv7-unknown-linux-gnueabihf
-            archive: tar.gz
-            cross: true
-            packages: true
-            rpm_arch: armv7hl
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            archive: tar.gz
-            cross: true
-          - os: ubuntu-24.04
-            target: aarch64-unknown-linux-musl
-            archive: tar.gz
-            cross: true
-          - os: windows-2022
-            target: x86_64-pc-windows-msvc
-            archive: zip
-            exe: .exe
-          - os: windows-2022
-            target: aarch64-pc-windows-msvc
-            archive: zip
-            exe: .exe
 
     steps:
       - uses: actions/checkout@v4
@@ -205,7 +167,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          shopt -s nullglob
           files=(dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm dist/install.sh)
+          if [[ "${#files[@]}" -le 1 ]]; then
+            echo "no release binaries found in dist" >&2
+            exit 1
+          fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" \
               --title "tscode $RELEASE_TAG" \
