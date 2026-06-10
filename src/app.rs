@@ -1426,6 +1426,22 @@ impl EditorTab {
         self.cursor_col = self.lines[end].chars().count();
     }
 
+    fn select_line_range_from_anchor(&mut self, anchor: usize, active: usize) {
+        let anchor = anchor.min(self.lines.len().saturating_sub(1));
+        let active = active.min(self.lines.len().saturating_sub(1));
+        self.extra_selections.clear();
+        self.extra_cursors.clear();
+        if active < anchor {
+            self.selection_anchor = Some((anchor, self.lines[anchor].chars().count()));
+            self.cursor_line = active;
+            self.cursor_col = 0;
+        } else {
+            self.selection_anchor = Some((anchor, 0));
+            self.cursor_line = active;
+            self.cursor_col = self.lines[active].chars().count();
+        }
+    }
+
     pub fn selected_text(&self) -> Option<String> {
         let ranges = self.selection_ranges();
         if ranges.is_empty() {
@@ -2365,6 +2381,7 @@ pub struct App {
     pub terminal_maximized: bool,
     pub terminal_resize_dragging: bool,
     pub editor_selection_dragging: bool,
+    pub editor_gutter_dragging: Option<usize>,
     pub last_error: Option<String>,
     pub prompt: Option<PromptState>,
     pub message: Option<String>,
@@ -2454,6 +2471,7 @@ impl App {
             terminal_maximized: false,
             terminal_resize_dragging: false,
             editor_selection_dragging: false,
+            editor_gutter_dragging: None,
             last_error: None,
             prompt: None,
             message: Some("F1/Ctrl-Shift-P commands | Ctrl-P files | Editor: Ctrl-A/C/X/V selection | Terminal: Ctrl-Q quit".to_owned()),
@@ -2867,6 +2885,16 @@ impl App {
             )
             && self.handle_terminal_selection_mouse(mouse)?
         {
+            return Ok(());
+        }
+
+        if self.editor_gutter_dragging.is_some()
+            && matches!(
+                mouse.kind,
+                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+            )
+        {
+            self.handle_editor_gutter_selection_mouse(mouse);
             return Ok(());
         }
 
@@ -10241,11 +10269,57 @@ impl App {
         self.focus = FocusPanel::Editor;
         if self.toggle_editor_fold_from_mouse() {
             self.editor_selection_dragging = false;
+            self.editor_gutter_dragging = None;
+            return;
+        }
+
+        if self.start_editor_gutter_selection_from_mouse() {
             return;
         }
 
         self.editor_selection_dragging = true;
         self.set_editor_cursor_from_mouse(false);
+    }
+
+    fn start_editor_gutter_selection_from_mouse(&mut self) -> bool {
+        let Some(line) = self.editor_mouse_gutter_line() else {
+            self.editor_gutter_dragging = None;
+            return false;
+        };
+        let Some(tab) = self.active_tab_mut() else {
+            self.editor_gutter_dragging = None;
+            return false;
+        };
+
+        tab.select_line_range_from_anchor(line, line);
+        self.editor_selection_dragging = false;
+        self.editor_gutter_dragging = Some(line);
+        self.ensure_editor_cursor_visible();
+        self.message = Some(format!("selected line {}", line + 1));
+        true
+    }
+
+    fn handle_editor_gutter_selection_mouse(&mut self, mouse: MouseEvent) {
+        self.focus = FocusPanel::Editor;
+        self.scroll_editor_for_drag(mouse);
+        let anchor = self.editor_gutter_dragging.unwrap_or(0);
+        if let Some(active) = self.editor_mouse_gutter_line_clamped()
+            && let Some(tab) = self.active_tab_mut()
+        {
+            tab.select_line_range_from_anchor(anchor, active);
+            self.ensure_editor_cursor_visible();
+        }
+
+        if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
+            self.editor_gutter_dragging = None;
+            if let Some((start, end)) = self.active_tab().and_then(|tab| {
+                let (start, end, had_selection) = tab.command_line_range();
+                had_selection.then_some((start, end))
+            }) {
+                let count = end.saturating_sub(start) + 1;
+                self.message = Some(format!("{count} editor line(s) selected"));
+            }
+        }
     }
 
     fn handle_editor_selection_mouse(&mut self, mouse: MouseEvent) {
@@ -10376,6 +10450,33 @@ impl App {
         };
         let line = row.line;
         Some((line, col))
+    }
+
+    fn editor_mouse_gutter_line(&self) -> Option<usize> {
+        let body = self.hit_regions.editor_body?;
+        let tab = self.active_tab()?;
+        let gutter_width = editor_gutter_width(tab.lines.len());
+        let local_x = self.hit_regions.last_mouse_x.saturating_sub(body.x) as usize;
+        if local_x >= gutter_width.saturating_sub(1) {
+            return None;
+        }
+        let visible_row =
+            tab.scroll + self.hit_regions.last_mouse_y.saturating_sub(body.y) as usize;
+        self.editor_visual_row_at(body, visible_row)
+            .map(|row| row.line)
+    }
+
+    fn editor_mouse_gutter_line_clamped(&self) -> Option<usize> {
+        let body = self.hit_regions.editor_body?;
+        if body.width == 0 || body.height == 0 {
+            return None;
+        }
+        let tab = self.active_tab()?;
+        let max_y = body.y.saturating_add(body.height.saturating_sub(1));
+        let mouse_y = self.hit_regions.last_mouse_y.clamp(body.y, max_y);
+        let visible_row = tab.scroll + mouse_y.saturating_sub(body.y) as usize;
+        self.editor_visual_row_at_or_last(body, visible_row)
+            .map(|row| row.line)
     }
 
     fn editor_mouse_position_clamped(&self) -> Option<(usize, usize)> {
@@ -17875,6 +17976,68 @@ mod tests {
         );
         app.copy_editor_selection();
         assert_eq!(app.editor_clipboard.as_deref(), Some("alpha\nbeta"));
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_gutter_drag_selects_whole_lines_for_real_line_commands() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-editor-gutter-lines-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(&path, "zero\none\ntwo\nthree\nfour\n").unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.open_file(&path);
+        app.focus = FocusPanel::Editor;
+        app.editor_height = 5;
+        app.editor_width = 32;
+        app.hit_regions.editor_area = Some(Rect::new(0, 0, 32, 5));
+        app.hit_regions.editor_body = Some(Rect::new(0, 0, 32, 5));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+        assert_eq!(app.editor_gutter_dragging, Some(3));
+        assert_eq!(
+            app.active_tab().unwrap().selected_text().as_deref(),
+            Some("three")
+        );
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+
+        assert_eq!(app.editor_gutter_dragging, None);
+        assert_eq!(
+            app.active_tab().unwrap().selected_text().as_deref(),
+            Some("one\ntwo\nthree")
+        );
+        assert_eq!(app.active_tab().unwrap().cursor_position(), (1, 0));
+        assert_eq!(app.message.as_deref(), Some("3 editor line(s) selected"));
+
+        app.run_command(CommandAction::DeleteLine).unwrap();
+        assert_eq!(app.active_tab().unwrap().lines, vec!["zero", "four"]);
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
