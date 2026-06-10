@@ -1,5 +1,6 @@
 mod app;
 mod fs_tree;
+mod lsp;
 mod shell;
 mod syntax;
 mod ui;

@@ -264,7 +264,7 @@ The app shall detect when an open editor tab's backing file is modified or delet
 
 ### R-235 Go To Definition
 
-`Ctrl-]` or the command palette shall use the active editor selection, when it is a valid identifier, or the identifier under the editor cursor to search visible workspace text files for matching code symbol definitions. If one definition is found, the editor shall open that file and move the cursor to the definition. If multiple definitions are found, a quick panel shall list the candidates. Dirty open editor buffers shall be scanned from their in-memory text.
+`Ctrl-]` or the command palette shall use the active editor selection, when it is a valid identifier, or the identifier under the editor cursor to request `textDocument/definition` from an installed language server when a supported server is configured or discoverable for the active file type. If the language server returns one definition, the editor shall open that file and move the cursor to the definition. If the language server returns multiple definitions, a quick panel shall list the candidates. If no language server is configured, the server cannot be started, the request times out, or no LSP definition is returned, the command shall fall back to searching visible workspace text files for matching code symbol definitions. Dirty open editor buffers shall be scanned from their in-memory text during the fallback search.
 
 ### R-236 Find References
 
@@ -272,7 +272,7 @@ The app shall detect when an open editor tab's backing file is modified or delet
 
 ### R-236A Code Suggestions
 
-`Ctrl-space` or the command palette shall open a suggestions quick panel for the active editor cursor. The initial suggestions query shall be seeded from the identifier prefix before the cursor, while activation shall replace the current identifier span around the cursor. Suggestion candidates shall include lightweight code symbols, identifier tokens from visible workspace text files, dirty open editor buffers from memory, and file-type keywords. Selecting a suggestion shall focus the editor, update the active buffer as one undoable edit, mark the tab dirty when text changes, and preserve the backing file on disk until the user saves.
+`Ctrl-space` or the command palette shall open a suggestions quick panel for the active editor cursor. The initial suggestions query shall be seeded from the identifier prefix before the cursor, while activation shall replace the current identifier span around the cursor. Suggestion candidates shall include installed-language-server `textDocument/completion` candidates when available, lightweight code symbols, identifier tokens from visible workspace text files, dirty open editor buffers from memory, and file-type keywords. The app shall request LSP completions once when the suggestions panel opens and then filter cached candidates locally while the quick-panel query changes. Selecting a suggestion shall focus the editor, update the active buffer as one undoable edit, mark the tab dirty when text changes, and preserve the backing file on disk until the user saves. If the language server is absent, fails, or times out, workspace and keyword suggestions shall still appear.
 
 ### R-236B Code Folding
 
@@ -281,6 +281,10 @@ The editor shall detect foldable delimiter and indentation blocks in the active 
 ### R-236C Symbol Hover
 
 Moving the mouse over an identifier in the editor body shall compute a lightweight symbol hover without changing the editor cursor. The hover shall use the same visible workspace text-file provider as go-to-definition and find-references, include dirty open buffers from memory, ignore generated/hidden paths according to the current visibility settings, and display the hovered symbol, definition count, reference count, and first matching definition location/preview when available. Moving the mouse away from the editor body shall clear the symbol hover.
+
+### R-236D Language Server Hover
+
+The command palette and editor context menu shall include a Show Hover action. When invoked with an active editor cursor in a file type with a configured or discoverable language server, the app shall start the server over stdio, perform JSON-RPC/LSP initialization, publish the current in-memory buffer through `textDocument/didOpen`, request `textDocument/hover`, and display non-empty hover contents in a quick panel. If the server is absent, fails, times out, or returns no hover contents, the app shall report a clear status message and keep the editor usable.
 
 ### R-237 Format Document
 

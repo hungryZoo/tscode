@@ -17,6 +17,7 @@ use serde_json::Value;
 
 use crate::{
     fs_tree::{ExplorerSortMode, FsTree, VisibleNode},
+    lsp::{self, DocumentPosition},
     shell::{ShellPanel, TerminalSearchMatch},
     syntax::SyntaxHighlighter,
 };
@@ -1621,6 +1622,7 @@ pub enum QuickPanelKind {
     WorkspaceSearch,
     DocumentSymbols,
     WorkspaceSymbols,
+    LspHover,
     Definitions,
     References,
     Problems,
@@ -1703,6 +1705,7 @@ pub enum CommandAction {
     WorkspaceSearch,
     DocumentSymbols,
     WorkspaceSymbols,
+    ShowHover,
     GoToDefinition,
     FindReferences,
     GoBack,
@@ -1974,6 +1977,7 @@ pub struct App {
     pub show_ignored: bool,
     pub quick_panel: Option<QuickPanel>,
     pub completion_state: Option<CompletionState>,
+    pub lsp_completion_items: Vec<QuickItem>,
     pub editor_hover: Option<EditorHoverInfo>,
     pub quick_panel_height: usize,
     pub explorer_multi_selection: BTreeSet<PathBuf>,
@@ -2047,6 +2051,7 @@ impl App {
             show_ignored: false,
             quick_panel: None,
             completion_state: None,
+            lsp_completion_items: Vec::new(),
             editor_hover: None,
             quick_panel_height: 0,
             explorer_multi_selection: BTreeSet::new(),
@@ -2705,6 +2710,7 @@ impl App {
                     .is_some_and(|panel| panel.kind == QuickPanelKind::Completions)
                 {
                     self.completion_state = None;
+                    self.lsp_completion_items.clear();
                 }
                 self.quick_panel = None;
             }
@@ -3733,8 +3739,14 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::WorkspaceSymbols,
         },
         CommandSpec {
+            label: "Show Hover",
+            detail: "Ask an installed language server for hover information at the editor cursor",
+            shortcut: "",
+            action: CommandAction::ShowHover,
+        },
+        CommandSpec {
             label: "Go to Definition",
-            detail: "Jump from the symbol under the editor cursor to its workspace definition",
+            detail: "Jump from the symbol under the editor cursor using LSP first, then workspace scan",
             shortcut: "Ctrl-]",
             action: CommandAction::GoToDefinition,
         },
@@ -4255,12 +4267,12 @@ impl App {
     }
 
     fn trigger_suggest(&mut self) -> Result<()> {
-        let Some(tab) = self.active_tab() else {
+        let Some(state) = self.active_tab().map(completion_state_for_tab) else {
             self.message = Some("no active editor for suggestions".to_owned());
             return Ok(());
         };
-        let state = completion_state_for_tab(tab);
         let query = state.prefix.clone();
+        self.lsp_completion_items = self.lsp_completion_items_for_state(&state)?;
         self.completion_state = Some(state);
         self.open_quick_panel_with_query(QuickPanelKind::Completions, query)
     }
@@ -4272,6 +4284,7 @@ impl App {
     fn open_quick_panel_with_query(&mut self, kind: QuickPanelKind, query: String) -> Result<()> {
         if kind != QuickPanelKind::Completions {
             self.completion_state = None;
+            self.lsp_completion_items.clear();
         }
         self.quick_panel = Some(QuickPanel {
             kind,
@@ -4289,6 +4302,7 @@ impl App {
         };
         let kind = panel.kind.clone();
         let query = panel.query.clone();
+        let existing_items = panel.items.clone();
         let items = match kind {
             QuickPanelKind::OpenFile => self.quick_open_items(&query)?,
             QuickPanelKind::Completions => self.completion_items(&query)?,
@@ -4299,6 +4313,7 @@ impl App {
             QuickPanelKind::WorkspaceSearch => self.workspace_search_items(&query)?,
             QuickPanelKind::DocumentSymbols => self.document_symbol_items(&query),
             QuickPanelKind::WorkspaceSymbols => self.workspace_symbol_items(&query)?,
+            QuickPanelKind::LspHover => filter_existing_quick_items(existing_items, &query),
             QuickPanelKind::Definitions => self.definition_items(&query)?,
             QuickPanelKind::References => self.reference_items(&query)?,
             QuickPanelKind::Problems => self.problem_items(&query),
@@ -4657,8 +4672,14 @@ impl App {
                 action: CommandAction::GotoLine,
             },
             ContextMenuAction {
+                label: "Show Hover",
+                detail: format!("Show language-server hover for {symbol}"),
+                shortcut: "",
+                action: CommandAction::ShowHover,
+            },
+            ContextMenuAction {
                 label: "Go to Definition",
-                detail: format!("Jump to definition for {symbol}"),
+                detail: format!("Jump to LSP/workspace definition for {symbol}"),
                 shortcut: "Ctrl-]",
                 action: CommandAction::GoToDefinition,
             },
@@ -4676,7 +4697,7 @@ impl App {
             },
             ContextMenuAction {
                 label: "Trigger Suggest",
-                detail: "Open workspace symbol and keyword suggestions".to_owned(),
+                detail: "Open LSP, workspace symbol, and keyword suggestions".to_owned(),
                 shortcut: "Ctrl-Space",
                 action: CommandAction::TriggerSuggest,
             },
@@ -4863,6 +4884,15 @@ impl App {
         let query = query.trim();
         let mut candidates = HashMap::<String, (CompletionRank, QuickItem)>::new();
 
+        for item in &self.lsp_completion_items {
+            let Some(rank) =
+                completion_rank(&item.label, query, 0, 0, item.line.unwrap_or(usize::MAX))
+            else {
+                continue;
+            };
+            upsert_completion_item(&mut candidates, rank, item.clone());
+        }
+
         for file in self.workspace_text_files()? {
             let source_rank = usize::from(file.path != active_path);
             for symbol in extract_code_symbols(&file.path, &file.text) {
@@ -4942,6 +4972,49 @@ impl App {
             .take(MAX_QUICK_ITEMS)
             .map(|(_, item)| item)
             .collect())
+    }
+
+    fn lsp_completion_items_for_state(&self, state: &CompletionState) -> Result<Vec<QuickItem>> {
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            return Ok(Vec::new());
+        };
+        if position.path != state.path || position.line != state.line {
+            return Ok(Vec::new());
+        }
+
+        let mut items = Vec::new();
+        for completion in lsp::completions(&position)? {
+            let label = completion.label.clone();
+            let insert_text = completion
+                .insert_text
+                .as_deref()
+                .filter(|text| lsp_completion_insert_text_is_plain(text))
+                .map(str::to_owned)
+                .unwrap_or_else(|| label.clone());
+            if !is_completion_candidate_name(&insert_text) {
+                continue;
+            }
+            let detail = completion
+                .detail
+                .as_deref()
+                .filter(|detail| !detail.trim().is_empty())
+                .map(|detail| format!("LSP {}  {}", completion.server, compact_preview(detail)))
+                .unwrap_or_else(|| format!("LSP {} completion", completion.server));
+            let preview = (insert_text != label).then_some(label);
+            items.push(QuickItem {
+                label: insert_text,
+                detail,
+                path: state.path.clone(),
+                line: Some(state.line),
+                col: Some(state.start_col),
+                preview,
+                command: None,
+            });
+            if items.len() >= MAX_QUICK_ITEMS {
+                break;
+            }
+        }
+        Ok(items)
     }
 
     fn workspace_search_items(&self, query: &str) -> Result<Vec<QuickItem>> {
@@ -6989,7 +7062,11 @@ impl App {
             self.message = Some("no symbol under cursor".to_owned());
             return Ok(());
         };
-        let definitions = self.definition_items(&symbol)?;
+        let mut definitions = self.lsp_definition_items()?;
+        let used_lsp = !definitions.is_empty();
+        if definitions.is_empty() {
+            definitions = self.definition_items(&symbol)?;
+        }
 
         match definitions.len() {
             0 => {
@@ -6999,7 +7076,11 @@ impl App {
                 let item = definitions.into_iter().next().unwrap();
                 self.open_quick_item(item, None);
                 self.focus = FocusPanel::Editor;
-                self.message = Some(format!("jumped to definition: {symbol}"));
+                self.message = Some(if used_lsp {
+                    format!("jumped to LSP definition: {symbol}")
+                } else {
+                    format!("jumped to definition: {symbol}")
+                });
             }
             _ => {
                 self.quick_panel = Some(QuickPanel {
@@ -7009,10 +7090,72 @@ impl App {
                     selected: 0,
                     scroll: 0,
                 });
-                self.message = Some(format!("multiple definitions: {symbol}"));
+                self.message = Some(if used_lsp {
+                    format!("multiple LSP definitions: {symbol}")
+                } else {
+                    format!("multiple definitions: {symbol}")
+                });
             }
         }
 
+        Ok(())
+    }
+
+    fn lsp_definition_items(&self) -> Result<Vec<QuickItem>> {
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            return Ok(Vec::new());
+        };
+        let mut items = Vec::new();
+        for location in lsp::definitions(&position)? {
+            if !location.path.is_file() {
+                continue;
+            }
+            let relative = relative_path(&self.root, &location.path);
+            items.push(QuickItem {
+                label: format!("{}:{}", relative, location.line + 1),
+                detail: format!("LSP {}  col {}", location.server, location.col + 1),
+                path: location.path,
+                line: Some(location.line),
+                col: Some(location.col),
+                preview: location.preview,
+                command: None,
+            });
+            if items.len() >= MAX_QUICK_ITEMS {
+                break;
+            }
+        }
+        Ok(items)
+    }
+
+    fn show_lsp_hover_under_cursor(&mut self) -> Result<()> {
+        let Some(position) = self.active_lsp_position_at_cursor() else {
+            self.message = Some("no language server configured for the active file".to_owned());
+            return Ok(());
+        };
+        let Some(hover) = lsp::hover(&position)? else {
+            let server = lsp::server_name_for_path(&position.path)
+                .unwrap_or_else(|| "language server".to_owned());
+            self.message = Some(format!("no LSP hover returned by {server}"));
+            return Ok(());
+        };
+
+        let (summary, preview) = hover_quick_text(&hover.contents);
+        self.quick_panel = Some(QuickPanel {
+            kind: QuickPanelKind::LspHover,
+            query: String::new(),
+            items: vec![QuickItem {
+                label: "LSP Hover".to_owned(),
+                detail: format!("{}  {}", hover.server, summary),
+                path: position.path,
+                line: Some(position.line),
+                col: Some(position.col),
+                preview,
+                command: None,
+            }],
+            selected: 0,
+            scroll: 0,
+        });
+        self.message = Some(format!("LSP hover from {}", hover.server));
         Ok(())
     }
 
@@ -7022,6 +7165,18 @@ impl App {
             return Ok(());
         };
         self.open_quick_panel_with_query(QuickPanelKind::References, symbol)
+    }
+
+    fn active_lsp_position_at_cursor(&self) -> Option<DocumentPosition> {
+        let tab = self.active_tab()?;
+        lsp::server_name_for_path(&tab.path)?;
+        Some(DocumentPosition {
+            root: self.root.clone(),
+            path: tab.path.clone(),
+            text: tab.text(),
+            line: tab.cursor_line,
+            col: tab.cursor_col,
+        })
     }
 
     fn active_identifier_under_cursor(&self) -> Option<String> {
@@ -7344,6 +7499,13 @@ impl App {
             return;
         }
 
+        if kind == QuickPanelKind::LspHover {
+            self.quick_panel = None;
+            self.focus = FocusPanel::Editor;
+            self.message = Some("closed LSP hover".to_owned());
+            return;
+        }
+
         if let Some(command) = item.command {
             self.quick_panel = None;
             if let Err(error) = self.run_command(command) {
@@ -7380,6 +7542,7 @@ impl App {
     }
 
     fn apply_completion_item(&mut self, item: QuickItem) {
+        self.lsp_completion_items.clear();
         let Some(state) = self.completion_state.take() else {
             self.message = Some("no active completion request".to_owned());
             return;
@@ -7422,6 +7585,7 @@ impl App {
             CommandAction::WorkspaceSymbols => {
                 self.open_quick_panel(QuickPanelKind::WorkspaceSymbols)?
             }
+            CommandAction::ShowHover => self.show_lsp_hover_under_cursor()?,
             CommandAction::GoToDefinition => self.go_to_definition_under_cursor()?,
             CommandAction::FindReferences => self.find_references_under_cursor()?,
             CommandAction::GoBack => self.go_back(),
@@ -8943,6 +9107,59 @@ fn upsert_completion_item(
             candidates.insert(key, (rank, item));
         }
     }
+}
+
+fn filter_existing_quick_items(items: Vec<QuickItem>, query: &str) -> Vec<QuickItem> {
+    let query = query.trim();
+    if query.is_empty() {
+        return items;
+    }
+    items
+        .into_iter()
+        .filter(|item| {
+            fuzzy_score(
+                &format!(
+                    "{} {} {}",
+                    item.label,
+                    item.detail,
+                    item.preview.as_deref().unwrap_or_default()
+                ),
+                query,
+            )
+            .is_some()
+        })
+        .collect()
+}
+
+fn lsp_completion_insert_text_is_plain(text: &str) -> bool {
+    !text.is_empty() && !text.contains(['\r', '\n', '$'])
+}
+
+fn hover_quick_text(contents: &str) -> (String, Option<String>) {
+    let summary = contents
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(compact_preview)
+        .unwrap_or_else(|| "No hover text".to_owned());
+    let full = compact_preview(contents);
+    let preview = (!full.is_empty() && full != summary).then_some(full);
+    (summary, preview)
+}
+
+fn compact_preview(text: &str) -> String {
+    let mut preview = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    const MAX_PREVIEW_CHARS: usize = 160;
+    if preview.chars().count() > MAX_PREVIEW_CHARS {
+        preview = preview.chars().take(MAX_PREVIEW_CHARS - 1).collect();
+        preview.push_str("...");
+    }
+    preview
 }
 
 fn completion_rank(
