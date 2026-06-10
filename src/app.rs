@@ -1831,6 +1831,8 @@ pub enum PromptKind {
     RenameSymbol { old: String },
     SaveAs,
     SaveAsClose { index: usize },
+    CommitStagedSourceControlChanges,
+    CommitAllSourceControlChanges(Vec<PathBuf>),
     DiscardSourceControlPath(PathBuf),
     DiscardAllSourceControlChanges(Vec<PathBuf>),
     TerminalSearch,
@@ -1980,6 +1982,8 @@ pub enum CommandAction {
     UnstageSourceControlItem,
     StageAllChanges,
     UnstageAllChanges,
+    CommitStagedChanges,
+    CommitAllChanges,
     DiscardSourceControlItem,
     DiscardAllChanges,
     RunTask,
@@ -4927,6 +4931,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::UnstageAllChanges,
         },
         CommandSpec {
+            label: "Commit Staged Changes",
+            detail: "Prompt for a message, then commit the staged Git index",
+            shortcut: "",
+            action: CommandAction::CommitStagedChanges,
+        },
+        CommandSpec {
+            label: "Commit All Changes",
+            detail: "Prompt for a message, stage all Git changes, then commit",
+            shortcut: "",
+            action: CommandAction::CommitAllChanges,
+        },
+        CommandSpec {
             label: "Discard All Changes",
             detail: "Prompt, then discard every Git working tree change and untracked file",
             shortcut: "",
@@ -6687,6 +6703,28 @@ impl App {
                 command: Some(CommandAction::UnstageAllChanges),
             });
         }
+        if git_has_staged_changes(&top_level) {
+            items.push(QuickItem {
+                label: "C Commit Staged Changes".to_owned(),
+                detail: "prompt for a commit message, then run git commit".to_owned(),
+                path: top_level.clone(),
+                line: None,
+                col: None,
+                preview: None,
+                command: Some(CommandAction::CommitStagedChanges),
+            });
+        }
+        if !entries.is_empty() {
+            items.push(QuickItem {
+                label: "C Commit All Changes".to_owned(),
+                detail: "prompt for a commit message, stage all changes, then commit".to_owned(),
+                path: top_level.clone(),
+                line: None,
+                col: None,
+                preview: None,
+                command: Some(CommandAction::CommitAllChanges),
+            });
+        }
         if !entries.is_empty() {
             items.push(QuickItem {
                 label: "! Discard All Changes".to_owned(),
@@ -7251,6 +7289,12 @@ impl App {
                 if let Some(saved_index) = self.save_tab_as_from_prompt(index, prompt.input)? {
                     self.close_tab_without_prompt(saved_index, "saved and closed");
                 }
+            }
+            PromptKind::CommitStagedSourceControlChanges => {
+                self.commit_staged_source_control_changes_confirmed(prompt.input)?;
+            }
+            PromptKind::CommitAllSourceControlChanges(paths) => {
+                self.commit_all_source_control_changes_confirmed(paths, prompt.input)?;
             }
             PromptKind::DiscardSourceControlPath(path) => {
                 if prompt.input == "discard" {
@@ -9751,6 +9795,100 @@ impl App {
         self.reopen_source_control_with_message("unstaged all changes".to_owned())
     }
 
+    fn prompt_commit_staged_source_control_changes(&mut self) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        if !git_has_staged_changes(&top_level) {
+            self.message = Some("no staged Source Control changes to commit".to_owned());
+            return Ok(());
+        }
+        self.start_prompt(PromptKind::CommitStagedSourceControlChanges, "");
+        self.message = Some("enter commit message for staged changes".to_owned());
+        Ok(())
+    }
+
+    fn prompt_commit_all_source_control_changes(&mut self) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        let paths = source_control_changed_paths(&self.root, &top_level);
+        if paths.is_empty() {
+            self.message = Some("no Source Control changes to commit".to_owned());
+            return Ok(());
+        }
+        if let Some(label) = self.dirty_tabs_under_paths(&paths) {
+            self.message = Some(format!(
+                "commit all blocked by unsaved editor tab: {label}; save or close it first"
+            ));
+            return Ok(());
+        }
+        self.start_prompt(PromptKind::CommitAllSourceControlChanges(paths.clone()), "");
+        self.message = Some(format!(
+            "enter commit message to commit {} Git change(s)",
+            paths.len()
+        ));
+        Ok(())
+    }
+
+    fn commit_staged_source_control_changes_confirmed(&mut self, message: String) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        let message = message.trim();
+        if message.is_empty() {
+            self.message = Some("commit cancelled: empty message".to_owned());
+            return Ok(());
+        }
+        if !git_has_staged_changes(&top_level) {
+            self.reopen_source_control_with_message(
+                "no staged Source Control changes to commit".to_owned(),
+            )?;
+            return Ok(());
+        }
+
+        commit_git_staged_changes(&top_level, message)?;
+        self.refresh_explorer_preserving_selection(false)?;
+        self.check_external_file_changes();
+        self.reopen_source_control_with_message(format!("committed staged changes: {message}"))
+    }
+
+    fn commit_all_source_control_changes_confirmed(
+        &mut self,
+        paths: Vec<PathBuf>,
+        message: String,
+    ) -> Result<()> {
+        let top_level = git_top_level(&self.root).context("not a git repository")?;
+        let message = message.trim();
+        if message.is_empty() {
+            self.message = Some("commit cancelled: empty message".to_owned());
+            return Ok(());
+        }
+        let paths = if paths.is_empty() {
+            source_control_changed_paths(&self.root, &top_level)
+        } else {
+            paths
+        };
+        if paths.is_empty() {
+            self.reopen_source_control_with_message(
+                "no Source Control changes to commit".to_owned(),
+            )?;
+            return Ok(());
+        }
+        if let Some(label) = self.dirty_tabs_under_paths(&paths) {
+            self.message = Some(format!(
+                "commit all blocked by unsaved editor tab: {label}; save or close it first"
+            ));
+            return Ok(());
+        }
+
+        stage_all_git_changes(&top_level)?;
+        if !git_has_staged_changes(&top_level) {
+            self.reopen_source_control_with_message(
+                "no staged changes after staging all".to_owned(),
+            )?;
+            return Ok(());
+        }
+        commit_git_staged_changes(&top_level, message)?;
+        self.refresh_explorer_preserving_selection(false)?;
+        self.check_external_file_changes();
+        self.reopen_source_control_with_message(format!("committed all changes: {message}"))
+    }
+
     fn prompt_discard_source_control_path(&mut self, path: &Path) -> Result<()> {
         let top_level = git_top_level(&self.root).context("not a git repository")?;
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -10060,6 +10198,10 @@ impl App {
             }
             CommandAction::StageAllChanges => self.stage_all_source_control_changes()?,
             CommandAction::UnstageAllChanges => self.unstage_all_source_control_changes()?,
+            CommandAction::CommitStagedChanges => {
+                self.prompt_commit_staged_source_control_changes()?
+            }
+            CommandAction::CommitAllChanges => self.prompt_commit_all_source_control_changes()?,
             CommandAction::DiscardSourceControlItem => {
                 self.message =
                     Some("select a Source Control file row to discard that path".to_owned());
@@ -11687,6 +11829,21 @@ fn unstage_all_git_changes(top_level: &Path) -> Result<()> {
         top_level,
         &["rm", "-r", "--cached", "--ignore-unmatch", "--", "."],
     )
+}
+
+fn git_has_staged_changes(top_level: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(top_level)
+        .args(["diff", "--cached", "--name-only", "--"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| !output.stdout.is_empty())
+}
+
+fn commit_git_staged_changes(top_level: &Path, message: &str) -> Result<()> {
+    run_git_command(top_level, &["commit", "--no-gpg-sign", "-m", message])
 }
 
 fn source_control_changed_paths(root: &Path, top_level: &Path) -> Vec<PathBuf> {
@@ -14818,6 +14975,42 @@ mod tests {
         );
         let mut names = String::from_utf8_lossy(&output.stdout)
             .lines()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    fn git_head_subject(root: &Path) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["log", "-1", "--pretty=%s"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git log failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn git_head_changed_names(root: &Path) -> Vec<String> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["show", "--name-only", "--pretty=", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git show failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut names = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
         names.sort();
@@ -18236,6 +18429,179 @@ index 1111111..2222222 100644
         select_quick_item(&mut app, "- Unstage All Changes");
         app.activate_selected_quick_item();
         assert!(cached_git_names(&canonical_root).is_empty());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn source_control_panel_commits_staged_changes_with_message() {
+        if !git_available() {
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-source-control-commit-staged-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    1\n}\n").unwrap();
+
+        init_git_repo(&root);
+        assert_git(&root, &["add", "src/lib.rs"]);
+        assert_git(
+            &root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+            ],
+        );
+
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    2\n}\n").unwrap();
+        fs::write(root.join("new.txt"), "new file\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.run_command(CommandAction::ShowSourceControl).unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert!(panel.items.iter().any(|item| {
+            item.label == "C Commit All Changes"
+                && item.command == Some(CommandAction::CommitAllChanges)
+        }));
+        assert!(
+            !panel
+                .items
+                .iter()
+                .any(|item| item.label == "C Commit Staged Changes")
+        );
+
+        select_quick_item(&mut app, "+ Stage src/lib.rs");
+        app.activate_selected_quick_item();
+        assert_eq!(cached_git_names(&canonical_root), vec!["src/lib.rs"]);
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert!(panel.items.iter().any(|item| {
+            item.label == "C Commit Staged Changes"
+                && item.command == Some(CommandAction::CommitStagedChanges)
+        }));
+
+        select_quick_item(&mut app, "C Commit Staged Changes");
+        app.activate_selected_quick_item();
+        assert_eq!(
+            app.prompt.as_ref().map(|prompt| &prompt.kind),
+            Some(&PromptKind::CommitStagedSourceControlChanges)
+        );
+        app.prompt.as_mut().unwrap().input = "   ".to_owned();
+        app.finish_prompt().unwrap();
+        assert_eq!(git_head_subject(&canonical_root), "initial");
+        assert_eq!(cached_git_names(&canonical_root), vec!["src/lib.rs"]);
+
+        app.run_command(CommandAction::ShowSourceControl).unwrap();
+        select_quick_item(&mut app, "C Commit Staged Changes");
+        app.activate_selected_quick_item();
+        app.prompt.as_mut().unwrap().input = "update lib".to_owned();
+        app.finish_prompt().unwrap();
+
+        assert_eq!(git_head_subject(&canonical_root), "update lib");
+        assert_eq!(git_head_changed_names(&canonical_root), vec!["src/lib.rs"]);
+        assert!(cached_git_names(&canonical_root).is_empty());
+        let entries = load_git_status_entries(&canonical_root);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            relative_path(&canonical_root, &entries[0].path),
+            "new.txt".to_owned()
+        );
+        assert_eq!(entries[0].kind, GitStatusKind::Untracked);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("committed staged changes"))
+        );
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn source_control_commit_all_blocks_dirty_buffers_then_commits_everything() {
+        if !git_available() {
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-source-control-commit-all-{}",
+            std::process::id()
+        ));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    1\n}\n").unwrap();
+
+        init_git_repo(&root);
+        assert_git(&root, &["add", "src/lib.rs"]);
+        assert_git(
+            &root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+            ],
+        );
+
+        fs::write(src.join("lib.rs"), "pub fn value() -> i32 {\n    2\n}\n").unwrap();
+        fs::write(root.join("scratch.txt"), "scratch\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let lib = canonical_root.join("src/lib.rs");
+        let scratch = canonical_root.join("scratch.txt");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&lib);
+        app.active_tab_mut().unwrap().insert_text("// unsaved\n");
+
+        app.run_command(CommandAction::CommitAllChanges).unwrap();
+        assert!(app.prompt.is_none());
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("blocked by unsaved editor tab"))
+        );
+        assert_eq!(git_head_subject(&canonical_root), "initial");
+        assert!(scratch.exists());
+        assert!(!load_git_status_entries(&canonical_root).is_empty());
+
+        app.revert_active_tab().unwrap();
+        app.run_command(CommandAction::CommitAllChanges).unwrap();
+        let PromptKind::CommitAllSourceControlChanges(paths) = &app.prompt.as_ref().unwrap().kind
+        else {
+            panic!("expected commit-all prompt");
+        };
+        let mut paths = paths.clone();
+        paths.sort();
+        let mut expected = vec![lib.clone(), scratch.clone()];
+        expected.sort();
+        assert_eq!(paths, expected);
+        app.prompt.as_mut().unwrap().input = "commit all changes".to_owned();
+        app.finish_prompt().unwrap();
+
+        assert_eq!(git_head_subject(&canonical_root), "commit all changes");
+        assert_eq!(
+            git_head_changed_names(&canonical_root),
+            vec!["scratch.txt", "src/lib.rs"]
+        );
+        assert!(
+            load_git_status_entries(&canonical_root).is_empty(),
+            "commit all should leave a clean working tree"
+        );
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

@@ -69,7 +69,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, explorer filtering finds nested files inside collapsed folders and expands the matching path enough for me to click it.
 - As a developer, I can use `Right` and `Left` in the explorer like a normal file tree: expand, move into children, collapse, and move back to the parent without accidentally toggling the wrong folder.
 - As a developer, I can see Git working tree status badges in the explorer when the workspace is inside a Git repository.
-- As a developer, I can open a Source Control panel, inspect changed Git files and diff hunks, open changed files as read-only Git diff tabs, stage, unstage, or discard selected paths or all changes with confirmation, filter that list, and jump directly from a hunk to the changed source line.
+- As a developer, I can open a Source Control panel, inspect changed Git files and diff hunks, open changed files as read-only Git diff tabs, stage, unstage, commit staged changes, commit all changes, or discard selected paths/all changes with confirmation, filter that list, and jump directly from a hunk to the changed source line.
 - As a developer, I can undo and redo edits, paste text, repeat search matches, close clean tabs immediately, and choose whether to save, discard, or cancel when closing a dirty tab.
 - As a developer, I can save the active editor buffer as a new relative or absolute path, have missing parent folders created, and keep editing the newly saved file.
 - As a developer, I can see all matches for the active file search highlighted in the editor and replace either the next match or all matches.
@@ -187,7 +187,7 @@ Keyboard fallback:
 - Editor gutter fold markers, `Alt-[`, `Alt-]`, the command palette, and the editor context menu provide code fold/unfold actions
 - `Ctrl-Shift-\`, the command palette, and the editor context menu provide matching-bracket navigation for `()`, `[]`, and `{}` pairs
 - The command palette provides Run Workspace Check, Run LSP Diagnostics, and Show Problems actions for project diagnostics
-- The command palette provides Source Control actions for Git changed-file diff tabs, diff hunks, stage all, unstage all, and discard all with a typed confirmation
+- The command palette provides Source Control actions for Git changed-file diff tabs, diff hunks, stage all, unstage all, commit staged, commit all, and discard all with a typed confirmation
 - `Ctrl-Shift-B` or the command palette opens Run Task for detected workspace tasks
 - `F2` or the command palette asks the installed language server for semantic rename first and falls back to renaming the identifier across visible workspace text files
 - `Alt-Left`, `Alt-Right`, or the command palette move backward and forward through editor navigation history
