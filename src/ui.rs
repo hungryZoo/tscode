@@ -1108,6 +1108,7 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         crate::app::QuickPanelKind::SourceControl => " Source Control ",
         crate::app::QuickPanelKind::Branches => " Git Branches ",
         crate::app::QuickPanelKind::Tasks => " Run Task  Ctrl-Shift-B ",
+        crate::app::QuickPanelKind::TerminalCommandHistory => " Recent Terminal Commands ",
         crate::app::QuickPanelKind::CommandPalette => " Command Palette  F1 / Ctrl-Shift-P ",
     };
     let block = Block::default()
@@ -1194,6 +1195,9 @@ fn draw_quick_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             crate::app::QuickPanelKind::Tasks => {
                 "No tasks detected from .vscode/tasks.json, package.json, Cargo.toml, Makefile, go.mod, or pyproject.toml."
+            }
+            crate::app::QuickPanelKind::TerminalCommandHistory => {
+                "No recent tscode-submitted terminal commands yet."
             }
             crate::app::QuickPanelKind::CommandPalette => "Type a command name.",
         };
@@ -1588,6 +1592,7 @@ fn prompt_title(kind: &crate::app::PromptKind) -> &'static str {
         crate::app::PromptKind::DiscardSourceControlPath(_) => "discard: type discard",
         crate::app::PromptKind::DiscardAllSourceControlChanges(_) => "discard all: type discard",
         crate::app::PromptKind::TerminalSearch => "find terminal",
+        crate::app::PromptKind::RunTerminalCommand => "run terminal command",
         crate::app::PromptKind::RenameTerminal => "rename terminal",
         crate::app::PromptKind::GotoLine => "go to line",
         crate::app::PromptKind::QuitDirty => "unsaved: type quit",

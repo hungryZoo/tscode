@@ -478,6 +478,10 @@ When terminal focus is active, `Ctrl-Shift-C` shall copy the active terminal tex
 
 The command palette and terminal context menu shall include Copy Terminal Output and Scroll Terminal to Bottom actions. Copy Terminal Output shall collect the active terminal session's retained scrollback plus visible viewport text, trim only terminal padding at row ends and trailing blank rows, copy that text to the internal clipboard, and queue an OSC52 terminal clipboard export when it is within the configured terminal-safe size limit. Scroll Terminal to Bottom shall reset the active terminal session's user scrollback offset to the live PTY output without clearing terminal contents or restarting the shell.
 
+### R-317B Terminal Command Prompt and Recent Commands
+
+The command palette and terminal context menu shall include Run Terminal Command and Run Recent Terminal Command actions. Run Terminal Command shall prompt for non-empty shell text, normalize CRLF/CR line endings, submit the command to the active PTY with terminal enter bytes, focus the terminal, and add it to a bounded most-recently-used command history. Commands submitted by Run Selection in Terminal, Run Saved File in Terminal, and Run Task shall also enter the same history. Run Recent Terminal Command shall open a filterable quick panel backed by that history, avoid duplicate entries when rerunning a command, and submit the selected command to the active PTY.
+
 ### R-318 Terminal Layout Controls
 
 The application shall support moving focus in and out of the terminal, maximizing/restoring the terminal panel, and increasing/decreasing the normal terminal panel height through shortcuts such as `F6`/``Ctrl-` `` and `F12`/`Ctrl-J`, command palette actions, or mouse dragging the terminal panel's highlighted top border. Mouse drag resizing shall clamp the terminal panel to a usable minimum height while leaving editor space visible. The terminal focus and maximize shortcuts shall work even when the terminal panel is currently focused.

@@ -198,6 +198,8 @@ Run Selection in Terminal is an editor-to-PTY bridge in the app action layer. Th
 
 Run Task is a workspace-to-PTY bridge in the app action layer. Task detection reads real workspace files without executing discovery commands: VS Code JSONC task files are comment-stripped then parsed as JSON, package scripts are read from `package.json`, Cargo/Go/Python default tasks are inferred from project metadata files, and Make targets are parsed from simple target declarations. Activating a task creates a new PTY terminal session for that task and submits the command as shell input so output, ANSI styling, scrollback, terminal selection, and clickable file references all use the same terminal renderer as manually typed commands.
 
+Terminal command submission uses one app-level path for tscode-originated commands. `submit_terminal_command` validates non-empty command text, normalizes line endings for the recent-command history, writes the command to the active `ShellPanel` using the same carriage-return submission helper used by Run Selection, clears stale terminal selection, and focuses the terminal. `App::terminal_command_history` stores a bounded MRU list shared by Run Terminal Command, Run Recent Terminal Command, Run Selection, Run Saved File, and Run Task; the recent-command quick panel filters that list and re-submits the selected command to the currently active PTY without creating a fake terminal buffer.
+
 ## 6. Syntax Highlighting
 
 `syntect` loads default syntax and theme sets once during startup. The renderer chooses syntax by token or file extension, highlights visible lines only, and converts style foreground colors into ratatui `Color::Rgb`.

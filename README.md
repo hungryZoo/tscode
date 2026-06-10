@@ -55,6 +55,7 @@ cargo build --release
 - Terminal stack-frame clicks: Node, Jest, and TypeScript-style output such as `at render (path:line:column)` is recognized even when the path inside the parentheses contains spaces.
 - Terminal links: `http://` and `https://` URLs under the mouse are underlined and copied through the internal/OSC52 clipboard on click, while percent-encoded `file://...:line:column` URLs open the referenced file in the editor.
 - Terminal output: command palette and terminal context menu actions can copy the active terminal viewport plus retained scrollback through the internal/OSC52 clipboard and scroll the terminal back to the live bottom.
+- Terminal commands: Run Terminal Command prompts for shell text and submits it to the active PTY; Run Recent Terminal Command opens a filterable picker of commands tscode submitted through Run Command, Run Selection, Run Active File, and Run Task, then re-sends the selected command to the active PTY.
 - App exit: `Ctrl-Q`, or `q`/`Esc` outside terminal focus. Unsaved buffers require typing `quit` to confirm.
 
 ## Supported Release Targets

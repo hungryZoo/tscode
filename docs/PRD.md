@@ -59,6 +59,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can drag across visible terminal output, see the selected cells highlighted, copy that text, and paste it back into the active shell with terminal-safe shortcuts.
 - As a developer, I can search the integrated terminal's visible output and scrollback, see matches highlighted, and jump between matches without losing the PTY session.
 - As a developer, I can copy the active terminal's retained output without manually dragging across rows, and I can return a scrolled terminal viewport to live bottom output.
+- As a developer, I can prompt for a shell command from tscode, send it to the active PTY, and rerun recent tscode-submitted commands from a filterable picker.
 - As a developer, I can edit text, save files, create files/folders, rename, delete, and refresh the explorer.
 - As a developer, New File and New Folder use the selected explorer folder or selected file's parent as the target, and rename refuses unsafe root moves or target overwrites.
 - As a developer, I can copy, cut, paste, and duplicate files or folders from the explorer.
@@ -166,7 +167,7 @@ Keyboard fallback:
 - Terminal `Ctrl-Shift-C` copies the active terminal text selection; terminal `Ctrl-Shift-V` pastes the internal clipboard to the PTY shell
 - Child terminal apps that emit OSC52 clipboard writes update tscode's internal clipboard and forward the copy to the host terminal clipboard where supported
 - Terminal `Ctrl-F` searches terminal scrollback; terminal `F3` and `Shift-F3` move to next and previous terminal search matches
-- Terminal right-click opens a context menu for copy, paste, search, clear, restart, terminal session switching/creation/splitting/closing, maximize, resize, and focus actions when the child app is not using terminal mouse reporting
+- Terminal right-click opens a context menu for copy, paste, search, run command, run recent command, clear, restart, terminal session switching/creation/splitting/closing, maximize, resize, and focus actions when the child app is not using terminal mouse reporting
 - Terminal top-border hover is visually highlighted and dragging it changes the normal terminal panel height without restarting the PTY session
 - Terminal child apps that request mouse input receive the requested xterm mouse events, including default, SGR, and UTF-8 coordinate encodings where supported by the parser
 - Holding `Shift` over the terminal body overrides child mouse forwarding for host scrollback and visible terminal-output selection
@@ -242,6 +243,7 @@ GitHub Actions should build and upload release artifacts automatically for tagge
 - `cargo build` succeeds on macOS.
 - Running `tscode` on macOS shows explorer, editor, terminal, title/status bars, and hover/click/wheel interactions.
 - The integrated terminal runs a real PTY shell and forwards interactive input.
+- Run Terminal Command and Run Recent Terminal Command write submitted commands to the active PTY and preserve a bounded recent-command picker for commands submitted through tscode actions.
 - Terminal sessions update unlocked tab titles from OSC 0/2 reports, preserve user-renamed titles, and forward child-requested terminal mouse events with the correct xterm coordinate encoding.
 - Cross-platform packaging workflow exists.
 - `install.sh` detects OS/architecture, retries stalled GitHub downloads, and installs the matching release binary.

@@ -29,6 +29,7 @@ const READ_ONLY_PREVIEW_BYTES: usize = 4096;
 const MAX_OSC52_CLIPBOARD_BYTES: usize = 512 * 1024;
 const MAX_NAVIGATION_HISTORY: usize = 200;
 const MAX_CLOSED_TABS: usize = 100;
+const MAX_TERMINAL_COMMAND_HISTORY: usize = 100;
 const WORKSPACE_TREE_CHECK_INTERVAL: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1901,6 +1902,7 @@ pub enum PromptKind {
     DiscardSourceControlPath(PathBuf),
     DiscardAllSourceControlChanges(Vec<PathBuf>),
     TerminalSearch,
+    RunTerminalCommand,
     RenameTerminal,
     GotoLine,
     QuitDirty,
@@ -1938,6 +1940,7 @@ pub enum QuickPanelKind {
     SourceControl,
     Branches,
     Tasks,
+    TerminalCommandHistory,
     CommandPalette,
 }
 
@@ -2144,6 +2147,8 @@ pub enum CommandAction {
     FindInTerminal,
     TerminalSearchNext,
     TerminalSearchPrevious,
+    RunTerminalCommand,
+    RunRecentTerminalCommand,
     FocusExplorer,
     FocusEditor,
     FocusTerminal,
@@ -2411,6 +2416,7 @@ pub struct App {
     pub navigation_forward: Vec<EditorLocation>,
     pub terminal_selection: Option<TerminalSelection>,
     pub terminal_search: Option<TerminalSearchState>,
+    pub terminal_command_history: Vec<String>,
     pub problems: Vec<QuickItem>,
     pending_clipboard_export: Option<String>,
     workspace_snapshot: Option<WorkspaceSnapshot>,
@@ -2501,6 +2507,7 @@ impl App {
             navigation_forward: Vec::new(),
             terminal_selection: None,
             terminal_search: None,
+            terminal_command_history: Vec::new(),
             problems: Vec::new(),
             pending_clipboard_export: None,
             workspace_snapshot,
@@ -4159,6 +4166,7 @@ impl App {
         self.navigation_forward.clear();
         self.terminal_selection = None;
         self.terminal_search = None;
+        self.terminal_command_history.clear();
         self.problems.clear();
         self.pending_clipboard_export = None;
         self.workspace_snapshot = workspace_snapshot;
@@ -5947,6 +5955,18 @@ fn command_catalog() -> Vec<CommandSpec> {
             action: CommandAction::FindInTerminal,
         },
         CommandSpec {
+            label: "Run Terminal Command",
+            detail: "Prompt for a shell command and send it to the active PTY terminal",
+            shortcut: "",
+            action: CommandAction::RunTerminalCommand,
+        },
+        CommandSpec {
+            label: "Run Recent Terminal Command",
+            detail: "Pick a tscode-submitted shell command and send it to the active PTY terminal again",
+            shortcut: "",
+            action: CommandAction::RunRecentTerminalCommand,
+        },
+        CommandSpec {
             label: "Next Terminal Search Match",
             detail: "Jump to the next match in the active terminal scrollback",
             shortcut: "Terminal F3",
@@ -6187,6 +6207,7 @@ impl App {
             QuickPanelKind::SourceControl => self.source_control_items(&query)?,
             QuickPanelKind::Branches => self.branch_items(&query)?,
             QuickPanelKind::Tasks => self.task_items(&query),
+            QuickPanelKind::TerminalCommandHistory => self.terminal_command_history_items(&query),
             QuickPanelKind::CommandPalette => self.command_palette_items(&query),
         };
 
@@ -6822,6 +6843,19 @@ impl App {
                 detail: "Search the active terminal viewport and scrollback".to_owned(),
                 shortcut: "Ctrl-F",
                 action: CommandAction::FindInTerminal,
+            },
+            ContextMenuAction {
+                label: "Run Command",
+                detail: format!("Send a shell command to '{}'", terminal.title),
+                shortcut: "",
+                action: CommandAction::RunTerminalCommand,
+            },
+            ContextMenuAction {
+                label: "Run Recent Command",
+                detail: "Pick a tscode-submitted command and run it again in the active PTY"
+                    .to_owned(),
+                shortcut: "",
+                action: CommandAction::RunRecentTerminalCommand,
             },
             ContextMenuAction {
                 label: "Clear Terminal",
@@ -7641,6 +7675,43 @@ impl App {
         items.into_iter().take(MAX_QUICK_ITEMS).collect()
     }
 
+    fn terminal_command_history_items(&self, query: &str) -> Vec<QuickItem> {
+        let query = query.trim();
+        let mut scored = self
+            .terminal_command_history
+            .iter()
+            .enumerate()
+            .filter_map(|(index, command)| {
+                let score = if query.is_empty() {
+                    Some(index)
+                } else {
+                    fuzzy_score(command, query)
+                }?;
+                let line_count = command.lines().count().max(1);
+                Some((
+                    score,
+                    index,
+                    QuickItem {
+                        label: truncate_chars(command, 80),
+                        detail: command.clone(),
+                        path: self.active_terminal().cwd.clone(),
+                        line: None,
+                        col: None,
+                        preview: Some(format!("{line_count} line(s)")),
+                        command: None,
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        scored
+            .into_iter()
+            .take(MAX_QUICK_ITEMS)
+            .map(|(_, _, item)| item)
+            .collect()
+    }
+
     fn workspace_text_files(&self) -> Result<Vec<WorkspaceTextFile>> {
         let open_texts = self
             .tabs
@@ -8075,6 +8146,9 @@ impl App {
                 }
             }
             PromptKind::TerminalSearch => self.terminal_search_from_prompt(prompt.input),
+            PromptKind::RunTerminalCommand => {
+                self.run_terminal_command_from_prompt(prompt.input)?
+            }
             PromptKind::RenameTerminal => self.rename_terminal_from_prompt(prompt.input),
             PromptKind::GotoLine => self.goto_line_from_prompt(prompt.input),
             PromptKind::QuitDirty => {
@@ -9698,6 +9772,7 @@ impl App {
             return Ok(());
         };
 
+        self.record_terminal_command(&text);
         let submitted = terminal_submission_text(&text);
         self.active_terminal_mut().shell.send_text(&submitted)?;
         self.focus = FocusPanel::Terminal;
@@ -9805,6 +9880,7 @@ impl App {
         self.focus = FocusPanel::Terminal;
         self.terminal_selection = None;
 
+        self.record_terminal_command(command);
         let submitted = terminal_submission_text(command);
         self.active_terminal_mut().shell.send_text(&submitted)?;
         Ok(())
@@ -10645,6 +10721,14 @@ impl App {
             return;
         }
 
+        if kind == QuickPanelKind::TerminalCommandHistory {
+            self.quick_panel = None;
+            if let Err(error) = self.submit_terminal_command(&item.detail) {
+                self.last_error = Some(error.to_string());
+            }
+            return;
+        }
+
         if kind == QuickPanelKind::Completions {
             self.quick_panel = None;
             self.apply_completion_item(item);
@@ -11399,6 +11483,8 @@ impl App {
             CommandAction::FindInTerminal => self.start_terminal_search_prompt(),
             CommandAction::TerminalSearchNext => self.next_terminal_search_match(),
             CommandAction::TerminalSearchPrevious => self.previous_terminal_search_match(),
+            CommandAction::RunTerminalCommand => self.start_terminal_command_prompt(),
+            CommandAction::RunRecentTerminalCommand => self.open_terminal_command_history()?,
             CommandAction::FocusExplorer => self.focus = FocusPanel::Explorer,
             CommandAction::FocusEditor => self.focus = FocusPanel::Editor,
             CommandAction::FocusTerminal => self.focus = FocusPanel::Terminal,
@@ -11599,6 +11685,58 @@ impl App {
             text.chars().count()
         ));
         Ok(())
+    }
+
+    fn start_terminal_command_prompt(&mut self) {
+        self.start_prompt(PromptKind::RunTerminalCommand, "");
+        self.message = Some("enter a shell command for the active terminal".to_owned());
+    }
+
+    fn run_terminal_command_from_prompt(&mut self, input: String) -> Result<()> {
+        let command = input.trim();
+        if command.is_empty() {
+            self.message = Some("terminal command cancelled".to_owned());
+            return Ok(());
+        }
+        self.submit_terminal_command(command)
+    }
+
+    fn submit_terminal_command(&mut self, command: &str) -> Result<()> {
+        let command = command.trim();
+        if command.is_empty() {
+            self.message = Some("terminal command is empty".to_owned());
+            return Ok(());
+        }
+        self.record_terminal_command(command);
+        let submitted = terminal_submission_text(command);
+        self.active_terminal_mut().shell.send_text(&submitted)?;
+        self.terminal_selection = None;
+        self.focus = FocusPanel::Terminal;
+        self.message = Some(format!(
+            "sent terminal command: {}",
+            truncate_chars(command, 80)
+        ));
+        Ok(())
+    }
+
+    fn record_terminal_command(&mut self, command: &str) {
+        let command = normalize_terminal_history_command(command);
+        if command.is_empty() {
+            return;
+        }
+        self.terminal_command_history
+            .retain(|existing| existing != &command);
+        self.terminal_command_history.insert(0, command);
+        self.terminal_command_history
+            .truncate(MAX_TERMINAL_COMMAND_HISTORY);
+    }
+
+    fn open_terminal_command_history(&mut self) -> Result<()> {
+        if self.terminal_command_history.is_empty() {
+            self.message = Some("no recent terminal commands yet".to_owned());
+            return Ok(());
+        }
+        self.open_quick_panel(QuickPanelKind::TerminalCommandHistory)
     }
 
     fn start_terminal_search_prompt(&mut self) {
@@ -12529,6 +12667,14 @@ fn terminal_submission_text(text: &str) -> String {
         normalized.push('\n');
     }
     normalized.replace('\n', "\r")
+}
+
+fn normalize_terminal_history_command(command: &str) -> String {
+    command
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17056,6 +17202,15 @@ mod tests {
                 .any(|item| item.label == "Scroll to Bottom"
                     && item.command == Some(CommandAction::ScrollTerminalToBottom))
         );
+        assert!(panel.items.iter().any(|item| item.label == "Run Command"
+            && item.command == Some(CommandAction::RunTerminalCommand)));
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| item.label == "Run Recent Command"
+                    && item.command == Some(CommandAction::RunRecentTerminalCommand))
+        );
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
@@ -19399,6 +19554,18 @@ mod tests {
                 .iter()
                 .any(|item| item.command == Some(CommandAction::FindInTerminal))
         );
+        let commands = app.command_palette_items("run terminal command");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RunTerminalCommand))
+        );
+        let commands = app.command_palette_items("recent terminal command");
+        assert!(
+            commands
+                .iter()
+                .any(|item| item.command == Some(CommandAction::RunRecentTerminalCommand))
+        );
         let commands = app.command_palette_items("next terminal search");
         assert!(
             commands
@@ -19455,6 +19622,10 @@ mod tests {
         assert_eq!(
             terminal_submission_text("echo one\r\necho two"),
             "echo one\recho two\r"
+        );
+        assert_eq!(
+            normalize_terminal_history_command(" echo one\r\necho two\r "),
+            "echo one\necho two"
         );
     }
 
@@ -19566,7 +19737,7 @@ mod tests {
         let initial_terminals = app.terminals.len();
         app.run_task_item(QuickItem {
             label: "shell smoke".to_owned(),
-            detail: command,
+            detail: command.clone(),
             path: root.clone(),
             line: None,
             col: None,
@@ -19578,6 +19749,7 @@ mod tests {
         assert_eq!(app.focus, FocusPanel::Terminal);
         assert_eq!(app.terminals.len(), initial_terminals + 1);
         assert!(app.active_terminal().title.starts_with("task: shell smoke"));
+        assert_eq!(app.terminal_command_history.first(), Some(&command));
         for _ in 0..50 {
             app.drain_terminal();
             if out.exists() {
@@ -19607,6 +19779,10 @@ mod tests {
         app.focus = FocusPanel::Editor;
         app.run_selection_in_terminal().unwrap();
         assert_eq!(app.focus, FocusPanel::Terminal);
+        assert_eq!(
+            app.terminal_command_history.first(),
+            Some(&format!("printf run-ok > {}", out.display()))
+        );
 
         for _ in 0..50 {
             app.drain_terminal();
@@ -19617,6 +19793,62 @@ mod tests {
         }
 
         assert_eq!(fs::read_to_string(&out).unwrap(), "run-ok");
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn terminal_command_prompt_and_recent_picker_send_real_pty_input() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-terminal-command-history-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let out = root.join("history.out");
+        let command = format!(
+            "printf x >> {}",
+            shell_escape_task_arg(&out.to_string_lossy())
+        );
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.run_command(CommandAction::RunTerminalCommand).unwrap();
+        assert_eq!(
+            app.prompt.as_ref().map(|prompt| &prompt.kind),
+            Some(&PromptKind::RunTerminalCommand)
+        );
+        app.prompt.as_mut().unwrap().input = command.clone();
+        app.finish_prompt().unwrap();
+        assert_eq!(app.focus, FocusPanel::Terminal);
+        assert_eq!(app.terminal_command_history, vec![command.clone()]);
+
+        for _ in 0..50 {
+            app.drain_terminal();
+            if fs::read_to_string(&out).unwrap_or_default() == "x" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(fs::read_to_string(&out).unwrap(), "x");
+
+        app.run_command(CommandAction::RunRecentTerminalCommand)
+            .unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.kind, QuickPanelKind::TerminalCommandHistory);
+        assert_eq!(panel.items[0].detail, command);
+        app.activate_selected_quick_item();
+        assert_eq!(app.terminal_command_history, vec![command]);
+
+        for _ in 0..50 {
+            app.drain_terminal();
+            if fs::read_to_string(&out).unwrap_or_default() == "xx" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(fs::read_to_string(&out).unwrap(), "xx");
+
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);
     }
