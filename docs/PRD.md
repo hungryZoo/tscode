@@ -101,7 +101,7 @@ If `path` is omitted, `tscode` opens the current working directory. The initial 
 - As a developer, I can revert the active editor tab back to the file currently on disk when I want to discard unsaved edits or reload external changes.
 - As a developer, I can keep files open while terminal commands, Git operations, or external tools change those files on disk; clean tabs reload automatically, while dirty tabs show conflict status and prevent accidental overwrite saves.
 - As a developer, I can clear the integrated terminal viewport or restart the PTY shell without restarting the whole application.
-- As a developer, I can see which terminal session is active, where it is running, whether it is live, whether its child app reported a title, and whether scrollback or terminal child modes are active.
+- As a developer, I can see which terminal session is active, where it is running, whether it is live, its exit code or termination signal after the shell exits, whether its child app reported a title, and whether scrollback or terminal child modes are active.
 - As a developer, I can focus the integrated terminal quickly, maximize it when command output needs more space, and resize its normal panel height by dragging the panel border or using commands.
 - As a developer, I can create multiple integrated terminal sessions, switch between them, close them, and keep each shell's state independent.
 - As a developer, I can split the active integrated terminal into side-by-side PTY panes, click either pane to focus that shell, and close one pane without killing the other shell.

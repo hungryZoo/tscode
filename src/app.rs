@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::{
     fs_tree::{ExplorerSortMode, FsTree, VisibleNode},
     lsp::{self, DocumentPosition},
-    shell::{ShellPanel, TerminalSearchMatch},
+    shell::{ShellExitStatus, ShellPanel, TerminalSearchMatch},
     syntax::SyntaxHighlighter,
 };
 
@@ -1881,6 +1881,7 @@ pub struct TerminalSession {
     pub cwd: PathBuf,
     pub shell: ShellPanel,
     pub exited: bool,
+    pub exit_status: Option<ShellExitStatus>,
 }
 
 impl TerminalSession {
@@ -1913,6 +1914,7 @@ impl TerminalSession {
             shell: ShellPanel::new(cwd.clone())?,
             cwd,
             exited: false,
+            exit_status: None,
         })
     }
 }
@@ -3148,14 +3150,17 @@ impl App {
                 terminal.title = title;
                 changed = true;
             }
-            if !terminal.exited && terminal.shell.child_exited() {
+            if !terminal.exited
+                && let Some(status) = terminal.shell.child_exit_status()
+            {
                 terminal.exited = true;
-                exited.push(terminal.title.clone());
+                terminal.exit_status = Some(status.clone());
+                exited.push(format!("{} ({})", terminal.title, status.label()));
             }
         }
         if !exited.is_empty() {
             self.message = if self.terminals.len() == 1 {
-                Some("terminal shell exited".to_owned())
+                Some(format!("terminal shell exited {}", exited[0]))
             } else {
                 Some(format!("terminal exited: {}", exited.join(", ")))
             };
@@ -8698,6 +8703,7 @@ impl App {
             shell: ShellPanel::new(cwd.clone())?,
             cwd,
             exited: false,
+            exit_status: None,
         };
         self.focus = FocusPanel::Terminal;
         self.message = Some(format!("terminal restarted: {title}"));
@@ -14465,6 +14471,48 @@ index 1111111..2222222 100644
         app.close_active_terminal().unwrap();
         assert_eq!(app.terminals.len(), 1);
         assert_eq!(app.active_terminal, 0);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_records_exit_status_and_restart_clears_it() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-terminal-exit-status-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let mut app = App::new(root.clone()).unwrap();
+        app.active_terminal_mut()
+            .shell
+            .send_text("exit 7\r")
+            .unwrap();
+
+        for _ in 0..60 {
+            app.drain_terminal();
+            if app.active_terminal().exited {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        assert!(app.active_terminal().exited);
+        let status = app.active_terminal().exit_status.as_ref().unwrap();
+        assert_eq!(status.code, 7);
+        assert_eq!(status.label(), "exit:7");
+        assert!(!status.success);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|message| message.contains("exit:7"))
+        );
+
+        app.restart_terminal().unwrap();
+        assert!(!app.active_terminal().exited);
+        assert_eq!(app.active_terminal().exit_status, None);
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

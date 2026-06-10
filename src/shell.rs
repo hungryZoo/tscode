@@ -72,6 +72,31 @@ pub struct TerminalSearchMatch {
     pub end: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellExitStatus {
+    pub code: u32,
+    pub signal: Option<String>,
+    pub success: bool,
+}
+
+impl ShellExitStatus {
+    fn from_status(status: portable_pty::ExitStatus) -> Self {
+        Self {
+            code: status.exit_code(),
+            signal: status.signal().map(str::to_owned),
+            success: status.success(),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        if let Some(signal) = &self.signal {
+            format!("signal:{signal}")
+        } else {
+            format!("exit:{}", self.code)
+        }
+    }
+}
+
 pub struct ShellPanel {
     parser: vt100::Parser,
     master: Box<dyn MasterPty + Send>,
@@ -458,8 +483,12 @@ impl ShellPanel {
         output
     }
 
-    pub fn child_exited(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(Some(_)))
+    pub fn child_exit_status(&mut self) -> Option<ShellExitStatus> {
+        self.child
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(ShellExitStatus::from_status)
     }
 }
 
@@ -1007,6 +1036,21 @@ mod tests {
         );
         assert_eq!(terminal_line_matches("écho alpha", "alpha"), vec![(5, 10)]);
         assert!(terminal_line_matches("alpha", "").is_empty());
+    }
+
+    #[test]
+    fn shell_exit_status_labels_codes_and_signals() {
+        let success = ShellExitStatus::from_status(portable_pty::ExitStatus::with_exit_code(0));
+        assert_eq!(success.label(), "exit:0");
+        assert!(success.success);
+
+        let failure = ShellExitStatus::from_status(portable_pty::ExitStatus::with_exit_code(7));
+        assert_eq!(failure.label(), "exit:7");
+        assert!(!failure.success);
+
+        let signal = ShellExitStatus::from_status(portable_pty::ExitStatus::with_signal("TERM"));
+        assert_eq!(signal.label(), "signal:TERM");
+        assert!(!signal.success);
     }
 
     #[test]

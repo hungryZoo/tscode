@@ -336,7 +336,7 @@ Typing while the terminal is focused shall send input bytes to the shell PTY.
 
 The terminal panel shall parse PTY output and render the resulting terminal screen.
 
-The terminal panel shall show active-session status including terminal title, working directory, live/exited state, nonzero scrollback offset, and active child-requested modes such as alternate screen, bracketed paste, and mouse reporting. Unlocked terminal sessions shall update their displayed title when the child emits OSC 0 or OSC 2 title reports.
+The terminal panel shall show active-session status including terminal title, working directory, live/exited state, child exit code or signal when available, nonzero scrollback offset, and active child-requested modes such as alternate screen, bracketed paste, and mouse reporting. Exited terminal tabs shall remain visible until closed or restarted, and restarting a terminal shall clear the stored exit status. Unlocked terminal sessions shall update their displayed title when the child emits OSC 0 or OSC 2 title reports.
 
 ### R-304 Working Directory
 

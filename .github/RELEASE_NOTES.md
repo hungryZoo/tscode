@@ -68,7 +68,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 - Explorer collapse-all is available through the command palette.
 - Tab close support through the tab `x`, middle click, or `Ctrl-W`, with a mouse-selectable Save and Close / Don't Save / Cancel panel for dirty tabs, including Save As then close for Untitled tabs.
 - File save preserves existing trailing newlines.
-- Bottom integrated terminal panel backed by a real PTY shell with forwarded keyboard input, shell state, `Ctrl-C`, terminal scrollback, clear-terminal, restart-terminal commands, and a live header showing the active session, cwd, live/exited state, scrollback offset, and active terminal modes.
+- Bottom integrated terminal panel backed by a real PTY shell with forwarded keyboard input, shell state, `Ctrl-C`, terminal scrollback, clear-terminal, restart-terminal commands, and a live header showing the active session, cwd, live/exited state, child `exit:N` or `signal:NAME` status, scrollback offset, and active terminal modes.
 - Terminal cwd tracking now consumes OSC 7 current-directory reports and automatically hooks zsh/bash sessions so `cd` updates the terminal header, context menus, and restart-terminal working directory.
 - Terminal title tracking now consumes OSC 0/2 title reports from shells and terminal apps for unlocked sessions, while user-renamed terminal tabs stay locked to the chosen title.
 - Multiple integrated terminal sessions: `F7` creates a new PTY shell, `F8` switches to the next terminal, `F9` closes the active terminal, terminal tabs switch on click, tab close targets close on click or middle-click, and `+` creates a new terminal.

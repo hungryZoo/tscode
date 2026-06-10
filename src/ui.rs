@@ -707,7 +707,15 @@ fn draw_terminal_pane(
 
 fn terminal_panel_title(app: &App) -> String {
     let terminal = app.active_terminal();
-    let state = if terminal.exited { "exited" } else { "live" };
+    let state = if terminal.exited {
+        terminal
+            .exit_status
+            .as_ref()
+            .map(|status| status.label())
+            .unwrap_or_else(|| "exited".to_owned())
+    } else {
+        "live".to_owned()
+    };
     let cwd = terminal_cwd_label(&terminal.cwd, &app.root);
     let scroll = terminal.shell.scrollback();
     let scroll = if scroll == 0 {
@@ -781,9 +789,12 @@ fn draw_terminal_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
     let terminals = app
         .terminals
         .iter()
-        .map(|terminal| (terminal.title.clone(), terminal.exited))
+        .map(|terminal| {
+            let exit_label = terminal.exit_status.as_ref().map(|status| status.label());
+            (terminal.title.clone(), terminal.exited, exit_label)
+        })
         .collect::<Vec<_>>();
-    for (index, (title, exited)) in terminals.into_iter().enumerate() {
+    for (index, (title, exited, exit_label)) in terminals.into_iter().enumerate() {
         if x >= area.right() {
             break;
         }
@@ -813,7 +824,32 @@ fn draw_terminal_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             Style::default().fg(TEXT).bg(Color::Rgb(18, 24, 33))
         };
+        let style = if exited {
+            style.fg(Color::Rgb(248, 113, 113))
+        } else {
+            style
+        };
         frame.render_widget(Paragraph::new(label).style(style), rect);
+        if let Some(exit_label) = exit_label
+            && active
+            && rect.width > 12
+        {
+            let hint_width = exit_label
+                .width()
+                .min(rect.width.saturating_sub(4) as usize) as u16;
+            if hint_width > 0 {
+                let hint_rect = Rect::new(
+                    rect.right().saturating_sub(hint_width + 3),
+                    rect.y,
+                    hint_width,
+                    1,
+                );
+                frame.render_widget(
+                    Paragraph::new(exit_label).style(style.add_modifier(Modifier::BOLD)),
+                    hint_rect,
+                );
+            }
+        }
         x = x.saturating_add(width);
     }
 
