@@ -6,6 +6,7 @@ This prerelease delivers the first SSH-friendly VS Code-style TUI workspace.
 
 - Runtime panics now restore the terminal and write a crash report with backtrace to `~/.cache/tscode/crash.log` or `$XDG_CACHE_HOME/tscode/crash.log`.
 - The render loop now repairs invalid runtime indexes for active terminals, split terminals, active editor tabs, split editors, explorer selection, quick panels, and prompt cursors before drawing, preventing common state-drift crashes from killing the TUI.
+- Editor mouse wheel events now skip expensive symbol hover definition/reference scans and perform only scroll work, making rapid wheel input over open files responsive.
 - File create, folder create, rename, delete confirmation, Save As, Git prompts, terminal command prompts, and other text prompts now appear as upper centered TUI dialogs instead of replacing the bottom status bar.
 - Prerelease CI is intentionally Apple Silicon-only while the product remains in active development; full multi-platform releases can be restored when requested.
 - Mouse-first file explorer with real filesystem reads, expand/collapse, file open, hover, and wheel scrolling.

@@ -17,6 +17,7 @@ macOS x86_64, Linux, Windows, Raspberry Pi 전체 빌드 매트릭스는 반복 
 - 크래시 로그는 기존 내용을 덮어쓰지 않고 append한다.
 - 각 크래시 로그 항목은 UTC 날짜/시간 헤더, `time_utc`, `unix_time`, 버전, 발생 위치, panic 메시지, backtrace를 포함한다.
 - 마우스 휠/hover 경로에서 짧은 코드 라인의 실제 길이보다 큰 column이 들어와도 식별자 계산이 panic하지 않도록 경계 처리를 수정했다.
+- 열린 파일 위에서 휠 스크롤할 때 symbol hover의 definition/reference 검색을 건너뛰어 빠른 연속 휠 입력이 workspace 검색을 반복하지 않도록 했다.
 - crossterm 공식 문서 기준으로 `ScrollUp`, `ScrollDown`, `ScrollLeft`, `ScrollRight` 이벤트를 명시적으로 처리하고, 터미널 앱이 마우스 모드를 소유한 경우에는 휠 이벤트를 PTY로 전달한다.
 
 ## 구현됨

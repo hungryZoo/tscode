@@ -239,6 +239,16 @@ fn terminal_host_mouse_override(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::SHIFT)
 }
 
+fn is_scroll_mouse_event(kind: MouseEventKind) -> bool {
+    matches!(
+        kind,
+        MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight
+    )
+}
+
 #[derive(Debug, Clone)]
 struct EditorSnapshot {
     lines: Vec<String>,
@@ -3052,7 +3062,7 @@ impl App {
         self.hit_regions.last_mouse_y = mouse.row;
         let target = self.hit_regions.target_at(mouse.column, mouse.row);
         self.hover = target.clone();
-        self.update_editor_hover_for_target(&target);
+        self.update_editor_hover_for_mouse(&target, mouse.kind);
 
         if self.explorer_drag.is_some()
             && matches!(
@@ -11193,13 +11203,16 @@ impl App {
         Some((line, col))
     }
 
-    fn update_editor_hover_for_target(&mut self, target: &HoverTarget) {
-        self.editor_hover =
-            if is_editor_target(target) && self.prompt.is_none() && self.quick_panel.is_none() {
-                self.editor_hover_at_mouse()
-            } else {
-                None
-            };
+    fn update_editor_hover_for_mouse(&mut self, target: &HoverTarget, kind: MouseEventKind) {
+        self.editor_hover = if is_editor_target(target)
+            && !is_scroll_mouse_event(kind)
+            && self.prompt.is_none()
+            && self.quick_panel.is_none()
+        {
+            self.editor_hover_at_mouse()
+        } else {
+            None
+        };
     }
 
     fn editor_hover_at_mouse(&self) -> Option<EditorHoverInfo> {
@@ -25020,6 +25033,47 @@ src/lib.rs:3:1: note: trailing note
         .unwrap();
 
         assert!(app.active_tab().unwrap().scroll > 0);
+        assert!(app.editor_hover.is_none());
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_wheel_over_symbol_scrolls_without_expensive_hover_lookup() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-editor-wheel-skip-hover-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("main.rs");
+        fs::write(
+            &path,
+            "let value = 1\nlet next = value + 1\nlet done = next + 1\n",
+        )
+        .unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let file = canonical_root.join("main.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&file);
+        app.focus = FocusPanel::Editor;
+        app.editor_height = 1;
+        app.editor_width = 80;
+        app.hit_regions.editor_body = Some(Rect::new(0, 0, 80, 1));
+        app.hit_regions.editor_area = Some(Rect::new(0, 0, 80, 1));
+        let gutter = editor_gutter_width(app.active_tab().unwrap().lines.len()) as u16;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: gutter + 5,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        assert_eq!(app.active_tab().unwrap().scroll, 2);
         assert!(app.editor_hover.is_none());
 
         app.kill_all_terminals();
