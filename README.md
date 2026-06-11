@@ -8,7 +8,7 @@ tscode --help
 tscode --version
 ```
 
-The prerelease includes a real filesystem explorer, editable tabbed code buffers with line numbers, syntax highlighting, code folding, editor bookmarks, matching-bracket navigation, optional installed-language-server hover/signature-help/definition/call-hierarchy/document-highlight/references/rename/completion/code-action/diagnostics, mouse hover/click/wheel interactions, and a bottom integrated terminal backed by a real PTY shell. Passing a file path opens its parent folder as the workspace and opens that file in the editor. Binary, non-UTF-8, and very large files open as protected read-only hex/ascii previews so editing, save, rename, search, and replace cannot corrupt the original bytes. If the TUI panics, it restores the terminal and writes a crash report to `~/.cache/tscode/crash.log`.
+The prerelease includes a real filesystem explorer, editable tabbed code buffers with line numbers, syntax highlighting, code folding, editor bookmarks, matching-bracket navigation, optional installed-language-server hover/signature-help/definition/call-hierarchy/document-highlight/references/rename/completion/code-action/diagnostics, mouse hover/click/wheel interactions, and a bottom integrated terminal backed by a real PTY shell. Passing a file path opens its parent folder as the workspace and opens that file in the editor. Binary, non-UTF-8, and very large files open as protected read-only hex/ascii previews so editing, save, rename, search, and replace cannot corrupt the original bytes. If the TUI panics, it restores the terminal and appends a dated UTC crash report to `~/.cache/tscode/crash.log`.
 
 ## Install
 

@@ -13,7 +13,7 @@ use std::{
     fs, io,
     io::Write,
     panic::{self, AssertUnwindSafe},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -58,9 +58,14 @@ fn main() -> Result<()> {
                 .ok()
                 .and_then(|report| report.clone())
                 .unwrap_or_else(|| {
+                    let timestamp = current_unix_time();
+                    let time_utc = format_unix_timestamp_utc(timestamp);
                     format!(
-                        "tscode panic\nversion: {}\npanic: {}\nbacktrace:\n{}\n",
+                        "{}\nversion: {}\ntime_utc: {}\nunix_time: {}\nlocation: unknown\npanic: {}\nbacktrace:\n{}\n",
+                        crash_report_header(&time_utc),
                         env!("CARGO_PKG_VERSION"),
+                        time_utc,
+                        timestamp,
                         panic_payload_message(payload.as_ref()),
                         Backtrace::force_capture()
                     )
@@ -174,13 +179,14 @@ fn install_panic_reporter() -> Arc<Mutex<Option<String>>> {
             .map(|location| format!("{}:{}", location.file(), location.line()))
             .unwrap_or_else(|| "unknown".to_owned());
         let message = panic_payload_message(info.payload());
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
+        let timestamp = current_unix_time();
+        let time_utc = format_unix_timestamp_utc(timestamp);
         let text = format!(
-            "tscode panic\nversion: {}\nunix_time: {timestamp}\nlocation: {location}\npanic: {message}\nbacktrace:\n{}\n",
+            "{}\nversion: {}\ntime_utc: {}\nunix_time: {}\nlocation: {location}\npanic: {message}\nbacktrace:\n{}\n",
+            crash_report_header(&time_utc),
             env!("CARGO_PKG_VERSION"),
+            time_utc,
+            timestamp,
             Backtrace::force_capture()
         );
         if let Ok(mut report) = report_for_hook.lock() {
@@ -200,11 +206,27 @@ fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
 
 fn write_crash_report(report: &str) -> Result<PathBuf> {
     let path = crash_report_path();
+    append_crash_report_to_path(&path, report)?;
+    Ok(path)
+}
+
+fn append_crash_report_to_path(path: &Path, report: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&path, report)?;
-    Ok(path)
+    let mut entry = report.to_owned();
+    if !entry.ends_with('\n') {
+        entry.push('\n');
+    }
+    if !entry.ends_with("\n\n") {
+        entry.push('\n');
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(entry.as_bytes())?;
+    Ok(())
 }
 
 fn crash_report_path() -> PathBuf {
@@ -218,6 +240,41 @@ fn crash_report_path() -> PathBuf {
             .join("crash.log");
     }
     env::temp_dir().join("tscode-crash.log")
+}
+
+fn crash_report_header(time_utc: &str) -> String {
+    format!("--- tscode panic {time_utc} ---")
+}
+
+fn current_unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn format_unix_timestamp_utc(timestamp: u64) -> String {
+    let days = (timestamp / 86_400) as i64;
+    let seconds_of_day = timestamp % 86_400;
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+fn civil_from_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
+    let z = days_since_unix_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    (year as i32, month as u32, day as u32)
 }
 
 fn flush_clipboard_export(
@@ -309,5 +366,30 @@ mod tests {
         );
         assert!(cli_action([OsString::from("--wat")]).is_err());
         assert!(help_text().contains("tscode --version"));
+    }
+
+    #[test]
+    fn crash_report_timestamp_formats_utc() {
+        assert_eq!(format_unix_timestamp_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            format_unix_timestamp_utc(1_781_141_921),
+            "2026-06-11T01:38:41Z"
+        );
+    }
+
+    #[test]
+    fn crash_report_writer_appends_entries_with_separator() {
+        let path = env::temp_dir().join(format!(
+            "tscode-test-crash-report-{}.log",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+
+        append_crash_report_to_path(&path, "first").unwrap();
+        append_crash_report_to_path(&path, "second\n").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "first\n\nsecond\n\n");
+
+        let _ = fs::remove_file(path);
     }
 }

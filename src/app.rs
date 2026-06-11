@@ -15651,10 +15651,13 @@ fn identifier_range_at_char(line: &str, char_col: usize) -> Option<(usize, usize
         return None;
     }
 
-    let mut index = char_col.min(chars.len().saturating_sub(1));
-    if char_col >= chars.len() || !is_symbol_ident_continue(chars[index]) {
-        if char_col > 0 && is_symbol_ident_continue(chars[char_col - 1]) {
-            index = char_col - 1;
+    let mut index = char_col.min(chars.len() - 1);
+    if char_col > chars.len() {
+        return None;
+    }
+    if !is_symbol_ident_continue(chars[index]) {
+        if index > 0 && is_symbol_ident_continue(chars[index - 1]) {
+            index -= 1;
         } else {
             return None;
         }
@@ -21275,6 +21278,14 @@ mod tests {
     }
 
     #[test]
+    fn identifier_range_at_char_ignores_columns_far_past_line_end() {
+        assert_eq!(identifier_at_char("x", 1), Some("x".to_owned()));
+        assert_eq!(identifier_at_char("foo", 3), Some("foo".to_owned()));
+        assert_eq!(identifier_at_char("foo;", 3), Some("foo".to_owned()));
+        assert_eq!(identifier_at_char("foo", 22), None);
+    }
+
+    #[test]
     fn rename_symbol_updates_open_buffers_and_closed_workspace_files() {
         let root =
             std::env::temp_dir().join(format!("tscode-test-rename-symbol-{}", std::process::id()));
@@ -24876,6 +24887,140 @@ src/lib.rs:3:1: note: trailing note
         );
         assert!(app.tabs[0].scroll > 0);
         assert_eq!(app.tabs[1].scroll, 0);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explorer_wheel_scrolls_tree_in_terminal_direction() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-explorer-wheel-direction-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..12 {
+            fs::write(root.join(format!("file-{index}.rs")), "fn main() {}\n").unwrap();
+        }
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.focus = FocusPanel::Explorer;
+        app.explorer_height = 4;
+        app.hit_regions.explorer_area = Some(Rect::new(0, 0, 30, 4));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        assert!(app.explorer.scroll > 0);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        assert_eq!(app.explorer.scroll, 0);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quick_panel_wheel_scrolls_results_and_keeps_selection_visible() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-quick-panel-wheel-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.quick_panel_height = 3;
+        app.quick_panel = Some(QuickPanel {
+            kind: QuickPanelKind::CommandPalette,
+            query: String::new(),
+            query_cursor: 0,
+            items: (0..8)
+                .map(|index| QuickItem {
+                    label: format!("item {index}"),
+                    detail: String::new(),
+                    path: PathBuf::new(),
+                    line: None,
+                    col: None,
+                    preview: None,
+                    command: None,
+                })
+                .collect(),
+            selected: 0,
+            scroll: 0,
+        });
+        app.hit_regions.quick_rows = vec![(Rect::new(0, 0, 40, 3), 0)];
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.scroll, 3);
+        assert_eq!(panel.selected, 3);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+        let panel = app.quick_panel.as_ref().unwrap();
+        assert_eq!(panel.scroll, 0);
+        assert!(panel.selected < app.quick_panel_height);
+
+        app.kill_all_terminals();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_wheel_far_past_short_line_does_not_panic_hover_lookup() {
+        let root = std::env::temp_dir().join(format!(
+            "tscode-test-editor-wheel-hover-bounds-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("short.rs");
+        fs::write(&path, "fn\nlet value = 1\nlet next = 2\nlet done = 3\n").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        let file = canonical_root.join("short.rs");
+        let mut app = App::new(canonical_root.clone()).unwrap();
+        app.open_file(&file);
+        app.focus = FocusPanel::Editor;
+        app.editor_height = 2;
+        app.editor_width = 80;
+        app.hit_regions.editor_body = Some(Rect::new(0, 0, 80, 2));
+        app.hit_regions.editor_area = Some(Rect::new(0, 0, 80, 2));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 30,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        })
+        .unwrap();
+
+        assert!(app.active_tab().unwrap().scroll > 0);
+        assert!(app.editor_hover.is_none());
 
         app.kill_all_terminals();
         let _ = fs::remove_dir_all(root);

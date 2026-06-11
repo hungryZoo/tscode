@@ -570,7 +570,7 @@ When terminal focus is active and the child PTY application is not owning termin
 
 ### R-551 Panic Recovery
 
-If the TUI panics, the application shall restore raw mode, mouse capture, cursor visibility, and the alternate screen before returning control to the parent terminal. The panic report shall include version, location when available, message, and backtrace, and shall be written to `$XDG_CACHE_HOME/tscode/crash.log`, `~/.cache/tscode/crash.log`, or a temporary crash log fallback.
+If the TUI panics, the application shall restore raw mode, mouse capture, cursor visibility, and the alternate screen before returning control to the parent terminal. The panic report shall include an entry header with UTC date and time, version, location when available, message, and backtrace, and shall be appended to `$XDG_CACHE_HOME/tscode/crash.log`, `~/.cache/tscode/crash.log`, or a temporary crash log fallback instead of overwriting previous crash entries.
 
 ### R-552 State Repair
 
